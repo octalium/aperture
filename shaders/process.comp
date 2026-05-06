@@ -1,0 +1,41 @@
+#version 450
+
+// Stage 1: decode the sRGB-encoded input into a linear-light working buffer
+// and apply edit-state transforms (currently just exposure).
+//
+// Working space is linear with sRGB / Rec.709 primaries for now. When
+// Rec.2020 or ACEScg working space lands, an additional 3x3 primaries
+// transform applies after decode and before edits.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba8)   uniform readonly  image2D in_image;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
+
+layout(push_constant) uniform PushConstants {
+    float exposure_ev;
+} pc;
+
+vec3 srgb_to_linear(vec3 c)
+{
+    bvec3 cutoff = lessThanEqual(c, vec3(0.04045));
+    vec3  low    = c / 12.92;
+    vec3  high   = pow((c + 0.055) / 1.055, vec3(2.4));
+    return mix(high, low, vec3(cutoff));
+}
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(in_image);
+    if (coord.x >= size.x || coord.y >= size.y) {
+        return;
+    }
+
+    vec4 raw    = imageLoad(in_image, coord);
+    vec3 linear = srgb_to_linear(raw.rgb);
+
+    linear *= exp2(pc.exposure_ev);
+
+    imageStore(out_image, coord, vec4(linear, raw.a));
+}
