@@ -6,16 +6,19 @@ isn't coming back without a deliberate decision.
 
 ## Goal
 
-A personal raw photo processor built because existing FOSS options (darktable,
-RawTherapee) feel wrong for the author's workflow. Single-developer scope.
-Equal parts learning project and usable tool — the long-term test is whether
-it replaces darktable for the author's own editing.
+An opinionated raw photo processor for photographers who find existing FOSS
+options (darktable, RawTherapee) workflow-wrong or architecturally
+compromised. Aperture is a focused, non-destructive editor built around a
+clean Vulkan compute pipeline, a TOML sidecar format aperture owns end to
+end, and a UI that stays out of the way. Narrow scope by design — feature
+parity with mature tools is explicitly not the goal.
 
 ## Non-goals
 
 - Feature parity with darktable, RawTherapee, or Lightroom
 - Catalog / library / database
-- Broad camera support (v1 targets the author's camera only)
+- Broad camera support at v1 (initial release targets a small list of
+  well-tested cameras; the matrix grows in later phases)
 - Interoperability with other apps' edit data, metadata sidecars, or catalog
   formats — see "Architectural stance" below
 - Tethered shooting, print module, mobile, web, cloud sync, multi-user
@@ -165,13 +168,15 @@ All stored in the `.aperture` sidecar:
   raw EXIF timestamp
 
 Search/filter UI over these fields is a v3+ concern; until then, fields
-are authored and persisted but discovery relies on the filesystem.
+are authored and persisted but discovery relies on the filesystem and
+external tools.
 
 ### Geotagging via GPX
 
-Workflow: author carries a GPS recorder while shooting; aperture matches
-photo capture timestamps against the GPX track and writes interpolated
-GPS coordinates into the sidecar (and into exported file EXIF).
+Workflow: a photographer records a GPS track during a shoot (handheld,
+watch, phone, etc.); aperture matches photo capture timestamps against
+the track and writes interpolated GPS coordinates into the sidecar (and
+into exported file EXIF).
 
 **GPX format.** Small XML schema. The relevant subset:
 
@@ -278,8 +283,8 @@ Precedent: Nuke, Houdini, Substance Designer, Blender's editors.
 
 ### Input
 
-- **Raw** — whatever LibRaw decodes for the author's camera at v1; broader
-  list at v3+
+- **Raw** — formats LibRaw decodes for the v1 supported camera list;
+  broader list at v3+
 - **DNG** — first-class input from v0 (LibRaw handles it)
 - **JPEG / TIFF / PNG** — for editing already-processed images and for
   sidecar testing; same pipeline runs, demosaic stage is bypassed
@@ -296,10 +301,12 @@ Precedent: Nuke, Houdini, Substance Designer, Blender's editors.
 
 ## Performance targets
 
+Targets assume reference hardware: a mid-range modern desktop GPU
+(roughly RTX 3060 / RX 6700-class) driving a 4K display.
+
 - Slider drag latency: visible-region update under **16ms** at 4K viewport
-  on the author's hardware (interactive feel)
+  (interactive feel)
 - Full-image re-render on parameter change: under **200ms** for a 45MP raw
-  on the author's GPU
 - Cold open of a raw file: under **2s** including LibRaw decode
 - Idle CPU/GPU when not editing: effectively zero
 
@@ -308,17 +315,19 @@ inputs is acceptable; missing them on common cases is a bug.
 
 ## Platform support
 
-- **Linux (primary).** Author's daily driver. Wayland-first.
+- **Linux (primary).** Wayland-first. The reference development and CI
+  platform. Modern desktop distributions (anything shipping recent Vulkan
+  drivers) are supported.
 - **Windows / macOS** — not v1. Vulkan + ImGui + chosen libs are all
-  portable; porting is mechanical when motivated.
+  portable; porting is mechanical when contributors are motivated.
 
 ## Scope phases
 
 ### v0 — End-to-end skeleton
 
-Goal: prove the whole stack works end-to-end with one image.
+Goal: prove the whole stack works end-to-end on one image.
 
-- Open one raw file from the author's camera
+- Open one raw file from a v0-supported camera
 - LibRaw decode → simple bilinear demosaic → fixed WB → linear-to-sRGB
 - ImGui shell with viewport and exposure / contrast / WB sliders
 - JPEG export with EXIF passthrough
@@ -326,7 +335,8 @@ Goal: prove the whole stack works end-to-end with one image.
 
 ### v1 — Usable for actual editing
 
-Goal: the author edits real photos with it.
+Goal: photographers can use aperture as a daily editor for the cameras
+and lenses targeted at v1.
 
 - Full Lightroom-vocabulary tone tools
 - AMaZE or RCD demosaic
@@ -385,8 +395,9 @@ Goal: the author edits real photos with it.
 - **No external interop.** Aperture defines its own sidecar and ignores
   third-party edit data and metadata sidecars. Migration is a third-party
   concern.
-- **Single-camera at v1.** Color profile work is per-sensor. Generalize
-  after the pipeline is proven on one body.
+- **Narrow camera support at v1.** Color profile work is per-sensor.
+  Initial release targets a small list of well-tested cameras; the matrix
+  grows once the pipeline is proven on a few bodies.
 - **No catalog.** The filesystem is the catalog. Metadata is authored and
   persisted in the `.aperture` sidecar.
 - **Pipeline is UI-independent.** UI shell is swappable. ImGui is the v1

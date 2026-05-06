@@ -1,9 +1,10 @@
 # aperture
 
-Personal raw photo processor. C + Vulkan + Dear ImGui.
+An opinionated raw photo processor. C + Vulkan + Dear ImGui.
 
-Built because existing FOSS raw processors don't fit the author's workflow.
-Single-developer scope, single-camera target at v1, no catalog.
+A focused, non-destructive editor for photographers who find existing FOSS
+raw processors workflow-wrong or architecturally compromised. Narrow scope
+by design — feature parity with mature tools is explicitly not the goal.
 
 See [SPEC.md](SPEC.md) for design, scope, and stack rationale.
 
