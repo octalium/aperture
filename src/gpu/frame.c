@@ -1,6 +1,7 @@
 #include "gpu_internal.h"
 
 #include "core/log.h"
+#include "gpu/compute.h"
 #include "ui/imgui.h"
 
 int gpu_frames_create(struct ap_gpu *g)
@@ -81,10 +82,15 @@ static void image_barrier(VkCommandBuffer cmd, VkImage image,
     vkCmdPipelineBarrier2(cmd, &dep);
 }
 
-static int record_frame(struct ap_gpu *g, VkCommandBuffer cmd, uint32_t image_index)
+static int record_frame(struct ap_gpu *g, VkCommandBuffer cmd,
+                        uint32_t image_index, const ap_edit_state *edit)
 {
     VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     VK_CHECK(vkBeginCommandBuffer(cmd, &bi));
+
+    if (g->current_compute) {
+        ap_compute_record(g->current_compute, cmd, edit);
+    }
 
     VkImage target  = g->swapchain_images[image_index].image;
     VkImageView vw  = g->swapchain_images[image_index].view;
@@ -126,7 +132,7 @@ static int record_frame(struct ap_gpu *g, VkCommandBuffer cmd, uint32_t image_in
     return 0;
 }
 
-int gpu_frame_render(struct ap_gpu *g)
+int gpu_frame_render(struct ap_gpu *g, const ap_edit_state *edit)
 {
     gpu_frame *f = &g->frames[g->current_frame];
 
@@ -147,7 +153,7 @@ int gpu_frame_render(struct ap_gpu *g)
     VK_CHECK(vkResetFences(g->device, 1, &f->in_flight));
     VK_CHECK(vkResetCommandBuffer(f->cmd, 0));
 
-    if (record_frame(g, f->cmd, image_index) < 0) {
+    if (record_frame(g, f->cmd, image_index, edit) < 0) {
         return -1;
     }
 

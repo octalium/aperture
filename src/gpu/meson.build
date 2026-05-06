@@ -1,4 +1,5 @@
 aperture_sources += files(
+  'compute.c',
   'device.c',
   'frame.c',
   'gpu.c',

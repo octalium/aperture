@@ -32,6 +32,8 @@ void     ap_imgui_unregister_texture(uint64_t tex_id);
 void     ap_imgui_viewport_window(const char *title, uint64_t tex_id,
                                   int img_width, int img_height);
 
+void     ap_imgui_edit_panel(float *exposure_ev);
+
 #ifdef __cplusplus
 }
 #endif
