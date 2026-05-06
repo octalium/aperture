@@ -1,5 +1,6 @@
 # Build output
 build/
+build-*/
 out/
 cmake-build-*/
 *.o
@@ -14,6 +15,12 @@ cmake-build-*/
 compile_commands.json
 .cache/
 .ccls-cache/
+
+# Meson subprojects (lives in dep/): track .wrap files, ignore fetched sources
+/dep/*/
+!/dep/*.wrap
+/dep/packagecache/
+/dep/packagefiles/
 
 # Editors / IDEs
 .vscode/

@@ -1,0 +1,5 @@
+# Build-time options for aperture.
+#
+# No project-specific options defined yet. Add `option(...)` calls here
+# as configuration knobs are introduced (e.g. sanitizer toggles, vendoring
+# overrides, optional feature gates).
