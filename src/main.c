@@ -1,11 +1,28 @@
-#include <stdio.h>
+#include "core/log.h"
+#include "gpu/gpu.h"
 
 #ifndef APERTURE_VERSION
-#define APERTURE_VERSION "0.0.0"
+#error "APERTURE_VERSION must be defined at compile time (set via meson)"
 #endif
 
 int main(void)
 {
-    printf("aperture %s\n", APERTURE_VERSION);
+    AP_INFO("aperture %s", APERTURE_VERSION);
+
+    ap_gpu *g = ap_gpu_create(1280, 720, "aperture");
+    if (!g) {
+        return 1;
+    }
+
+    while (ap_gpu_should_run(g)) {
+        if (ap_gpu_render_frame(g) < 0) {
+            ap_gpu_wait_idle(g);
+            ap_gpu_destroy(g);
+            return 1;
+        }
+    }
+
+    ap_gpu_wait_idle(g);
+    ap_gpu_destroy(g);
     return 0;
 }

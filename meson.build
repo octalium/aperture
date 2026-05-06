@@ -16,6 +16,14 @@ add_project_arguments(
   language: 'c',
 )
 
+vulkan_dep = dependency('vulkan')
+glfw_dep   = dependency('glfw3')
+
+aperture_deps = [
+  vulkan_dep,
+  glfw_dep,
+]
+
 aperture_inc = include_directories('src')
 aperture_sources = []
 
@@ -25,5 +33,6 @@ aperture_exe = executable(
   'aperture',
   aperture_sources,
   include_directories: aperture_inc,
+  dependencies: aperture_deps,
   install: true,
 )

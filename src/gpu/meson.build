@@ -1,2 +1,8 @@
-# gpu: Vulkan context, device, swapchain, pipeline helpers, compute dispatch.
-# Sources will be added as the component is built out.
+aperture_sources += files(
+  'device.c',
+  'frame.c',
+  'gpu.c',
+  'instance.c',
+  'swapchain.c',
+  'window.c',
+)
