@@ -103,7 +103,7 @@ static bool meets_api_version(VkPhysicalDevice dev)
     return props.apiVersion >= VK_API_VERSION_1_3;
 }
 
-static bool supports_synchronization2(VkPhysicalDevice dev)
+static bool supports_required_v13_features(VkPhysicalDevice dev)
 {
     VkPhysicalDeviceVulkan13Features v13 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
@@ -113,7 +113,7 @@ static bool supports_synchronization2(VkPhysicalDevice dev)
         .pNext = &v13,
     };
     vkGetPhysicalDeviceFeatures2(dev, &f);
-    return v13.synchronization2 == VK_TRUE;
+    return v13.synchronization2 == VK_TRUE && v13.dynamicRendering == VK_TRUE;
 }
 
 static int score_device(VkPhysicalDevice dev)
@@ -151,7 +151,7 @@ static int pick_physical_device(struct ap_gpu *g)
         if (!find_queue_families(devs[i], g->surface, &graphics, &present)) continue;
         if (!extensions_supported(devs[i])) continue;
         if (!surface_has_formats_and_modes(devs[i], g->surface)) continue;
-        if (!supports_synchronization2(devs[i])) continue;
+        if (!supports_required_v13_features(devs[i])) continue;
 
         int s = score_device(devs[i]);
         if (s > best_score) {
@@ -213,6 +213,7 @@ int gpu_device_create(struct ap_gpu *g)
     VkPhysicalDeviceVulkan13Features v13 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
         .synchronization2 = VK_TRUE,
+        .dynamicRendering = VK_TRUE,
     };
 
     VkDeviceCreateInfo ci = {

@@ -16,11 +16,14 @@ compile_commands.json
 .cache/
 .ccls-cache/
 
-# Meson subprojects (lives in dep/): track .wrap files, ignore fetched sources
+# Meson subprojects (lives in dep/): track .wrap files and our overlay
+# files in packagefiles/, ignore fetched-source subdirectories and the
+# transient .wraplock (revisit if we start pinning revisions explicitly).
 /dep/*/
 !/dep/*.wrap
+!/dep/packagefiles/
 /dep/packagecache/
-/dep/packagefiles/
+/dep/.wraplock
 
 # Editors / IDEs
 .vscode/
