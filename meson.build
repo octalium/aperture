@@ -22,17 +22,19 @@ glfw_dep   = dependency('glfw3')
 cimgui_dep = dependency('cimgui')
 libraw_dep = dependency('libraw')
 
+aperture_inc = include_directories('src')
+aperture_sources = []
+
+subdir('shaders')
+subdir('src')
+
 aperture_deps = [
   vulkan_dep,
   glfw_dep,
   cimgui_dep,
   libraw_dep,
+  shaders_dep,
 ]
-
-aperture_inc = include_directories('src')
-aperture_sources = []
-
-subdir('src')
 
 aperture_exe = executable(
   'aperture',

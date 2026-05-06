@@ -55,6 +55,8 @@ struct ap_gpu {
     VkCommandPool command_pool;
     gpu_frame frames[APERTURE_FRAMES_IN_FLIGHT];
     uint32_t current_frame;
+
+    struct ap_compute *current_compute;
 };
 
 const char *gpu_vk_result_str(VkResult r);
@@ -74,7 +76,7 @@ int  gpu_swapchain_recreate(struct ap_gpu *g);
 
 int  gpu_frames_create(struct ap_gpu *g);
 void gpu_frames_destroy(struct ap_gpu *g);
-int  gpu_frame_render(struct ap_gpu *g);
+int  gpu_frame_render(struct ap_gpu *g, const ap_edit_state *edit);
 
 #define VK_CHECK(call)                                                  \
     do {                                                                \

@@ -141,6 +141,17 @@ extern "C" void ap_imgui_unregister_texture(uint64_t tex_id)
     ImGui_ImplVulkan_RemoveTexture(ds);
 }
 
+extern "C" void ap_imgui_edit_panel(float *exposure_ev)
+{
+    if (!exposure_ev) {
+        return;
+    }
+    if (ImGui::Begin("edit")) {
+        ImGui::SliderFloat("Exposure (EV)", exposure_ev, -5.0f, 5.0f, "%.2f");
+    }
+    ImGui::End();
+}
+
 extern "C" void ap_imgui_viewport_window(const char *title, uint64_t tex_id,
                                          int img_width, int img_height)
 {

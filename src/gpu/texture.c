@@ -121,13 +121,15 @@ ap_texture *ap_texture_create_rgba8(ap_gpu *g, const uint8_t *pixels,
     VkImageCreateInfo ici = {
         .sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType     = VK_IMAGE_TYPE_2D,
-        .format        = VK_FORMAT_R8G8B8A8_SRGB,
+        .format        = VK_FORMAT_R8G8B8A8_UNORM,
         .extent        = { (uint32_t)width, (uint32_t)height, 1 },
         .mipLevels     = 1,
         .arrayLayers   = 1,
         .samples       = VK_SAMPLE_COUNT_1_BIT,
         .tiling        = VK_IMAGE_TILING_OPTIMAL,
-        .usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        .usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                       | VK_IMAGE_USAGE_SAMPLED_BIT
+                       | VK_IMAGE_USAGE_STORAGE_BIT,
         .sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
@@ -188,9 +190,9 @@ ap_texture *ap_texture_create_rgba8(ap_gpu *g, const uint8_t *pixels,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
     transition(cmd, t->image,
-               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-               VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT);
+               VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
 
     vkEndCommandBuffer(cmd);
 
@@ -216,7 +218,7 @@ ap_texture *ap_texture_create_rgba8(ap_gpu *g, const uint8_t *pixels,
         .sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .image    = t->image,
         .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format   = VK_FORMAT_R8G8B8A8_SRGB,
+        .format   = VK_FORMAT_R8G8B8A8_UNORM,
         .components = {
             VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
             VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
@@ -272,6 +274,6 @@ void ap_texture_destroy(ap_texture *t)
 
 VkImageView   ap_texture_view(const ap_texture *t)    { return t->view; }
 VkSampler     ap_texture_sampler(const ap_texture *t) { return t->sampler; }
-VkImageLayout ap_texture_layout(const ap_texture *t)  { (void)t; return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; }
+VkImageLayout ap_texture_layout(const ap_texture *t)  { (void)t; return VK_IMAGE_LAYOUT_GENERAL; }
 int           ap_texture_width(const ap_texture *t)   { return t->width; }
 int           ap_texture_height(const ap_texture *t)  { return t->height; }

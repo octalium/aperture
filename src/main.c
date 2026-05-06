@@ -1,4 +1,5 @@
 #include "core/log.h"
+#include "gpu/compute.h"
 #include "gpu/gpu.h"
 #include "gpu/texture.h"
 #include "io/raw.h"
@@ -20,6 +21,7 @@ int main(int argc, char **argv)
     }
 
     ap_texture *texture = NULL;
+    ap_compute *compute = NULL;
     uint64_t    tex_id  = 0;
     int         img_w   = 0;
     int         img_h   = 0;
@@ -40,29 +42,45 @@ int main(int argc, char **argv)
             return 1;
         }
 
-        tex_id = ap_imgui_register_texture(ap_texture_sampler(texture),
-                                           ap_texture_view(texture),
-                                           ap_texture_layout(texture));
-        img_w  = ap_texture_width(texture);
-        img_h  = ap_texture_height(texture);
+        compute = ap_compute_create(g, texture);
+        if (!compute) {
+            ap_texture_destroy(texture);
+            ap_gpu_wait_idle(g);
+            ap_gpu_destroy(g);
+            return 1;
+        }
+        ap_gpu_set_compute(g, compute);
+
+        tex_id = ap_imgui_register_texture(ap_compute_output_sampler(compute),
+                                           ap_compute_output_view(compute),
+                                           ap_compute_output_layout(compute));
+        img_w  = ap_compute_output_width(compute);
+        img_h  = ap_compute_output_height(compute);
     }
+
+    ap_edit_state edit = { .exposure_ev = 0.0f };
 
     int rc = 0;
     while (ap_gpu_should_run(g)) {
         ap_imgui_new_frame();
         ap_imgui_demo_window("aperture", APERTURE_VERSION);
-        if (texture) {
+        if (compute) {
+            ap_imgui_edit_panel(&edit.exposure_ev);
             ap_imgui_viewport_window("image", tex_id, img_w, img_h);
         }
-        if (ap_gpu_render_frame(g) < 0) {
+        if (ap_gpu_render_frame(g, &edit) < 0) {
             rc = 1;
             break;
         }
     }
 
     ap_gpu_wait_idle(g);
-    if (texture) {
+    if (compute) {
         ap_imgui_unregister_texture(tex_id);
+        ap_gpu_set_compute(g, NULL);
+        ap_compute_destroy(compute);
+    }
+    if (texture) {
         ap_texture_destroy(texture);
     }
     ap_gpu_destroy(g);
