@@ -14,42 +14,63 @@ it replaces darktable for the author's own editing.
 ## Non-goals
 
 - Feature parity with darktable, RawTherapee, or Lightroom
-- Catalog / library / database (browse, rate, keyword, search at scale) — see
-  metadata section for what *is* in scope
+- Catalog / library / database
 - Broad camera support (v1 targets the author's camera only)
-- Tethered shooting
-- Print module
-- Mobile, web, or cloud sync
-- Multi-user
+- Interoperability with other apps' edit data, metadata sidecars, or catalog
+  formats — see "Architectural stance" below
+- Tethered shooting, print module, mobile, web, cloud sync, multi-user
 
-These are deliberately deferred — not "maybe later" hedges. Scope creep into
-any of them resets the project's odds of shipping.
+## Architectural stance
+
+Two principles drive every dependency and format decision in this spec:
+
+1. **Build the best solution, not on the shoulders of false giants.** Use a
+   third-party library when it solves a problem we genuinely cannot solve
+   ourselves (raw decoding, ICC math, lens databases). Drop wrappers, config
+   frameworks, and "convenience" layers — they bring surface area without
+   carrying their weight.
+2. **No external interop.** Aperture defines its own sidecar format and reads
+   only the metadata that the source file's container specifies (EXIF in raw
+   files, etc.). It does not read XMP sidecars from Lightroom or darktable,
+   does not write XMP for them to consume, and does not pretend its data is
+   portable. If a user wants migration, a third-party converter is the right
+   abstraction — not a bidirectional compatibility layer baked into the core.
 
 ## Tech stack
 
-- **Language:** C (C11 or newer)
-- **Graphics + compute:** Vulkan (single context, shared between pipeline
-  compute and viewport render)
-- **UI:** Dear ImGui via `cimgui` C bindings, **`docking` branch** (gives
-  dockable panels and multi-viewport — viewport can detach as its own OS
-  window, e.g. fullscreen on a second monitor)
-- **UI addons (optional, later):** `imnodes` if a node-graph view of the
-  pipeline becomes desirable; `ImPlot` for histogram / waveform / vectorscope
-- **Raw decode:** LibRaw
-- **Lens corrections:** Lensfun
-- **Color management:** LittleCMS (ICC) + OpenColorIO (working-space transforms)
-- **Image I/O (export):** OpenImageIO
-- **Metadata read/write:** TBD — likely Exiv2 with a thin C++ shim (covers
-  EXIF + IPTC + XMP in one library); fallback path is libexif + libiptcdata +
-  Exempi
-- **GPX parsing:** TBD — likely Expat (small streaming XML in C); GPX schema
-  is simple enough to roll our own if a dependency feels heavy
-- **Build system:** TBD (CMake or Meson — pick at v0)
+### Language and runtime
 
-Rationale: leaning heavily on standard libraries for parts where reinventing
-is decades of work (raw decode, lens DBs, color management, metadata
-serialization). The novel work is the pipeline architecture, the Vulkan
-compute graph, the edit state model, and the UI.
+- **C** (C11 or newer)
+- **Vulkan** for compute and viewport rendering (single context shared)
+- **Build:** Meson — chosen for cross-compilation ergonomics and clean
+  vendored-dependency management
+
+### Dependencies kept
+
+| Library | Job | Why kept |
+|---|---|---|
+| **LibRaw** | Raw decode + EXIF read | Decades of per-camera reverse engineering; not reproducible |
+| **Lensfun** | Lens corrections | The lens correction *database* is the value; can't be recreated |
+| **LittleCMS** | ICC profile math | ICC color management is non-trivial math against a real format |
+| **libjpeg-turbo** | JPEG encode/decode | Real giant; format is non-trivial |
+| **libtiff** | TIFF encode/decode | Real giant; handles 8/16/32-bit, ICC embedding, EXIF as IFD |
+| **libpng** | PNG encode/decode | Real giant |
+| **cimgui** (ImGui `docking` branch) | UI shell | Deliberate aesthetic + functional fit |
+| **Vulkan SDK / volk / VMA** | Graphics API + helpers | The platform |
+
+### Dependencies deliberately not used
+
+| Library | Job it was for | Why dropped |
+|---|---|---|
+| OpenColorIO | Color-space transform config | A config wrapper aimed at VFX; our compute shaders apply working-space transforms directly |
+| OpenImageIO | Image I/O abstraction | A wrapper over libjpeg/libtiff/libpng; we use those directly |
+| Exiv2 | EXIF/IPTC/XMP read/write | Brings C++ runtime and XMP semantics; we don't need XMP, EXIF read comes from LibRaw, EXIF write is bounded |
+| Expat / libxml2 | GPX parsing | GPX subset we care about is small enough to parse directly |
+
+### UI addons (later, optional)
+
+- `imnodes` if a node-graph view of the pipeline becomes desirable
+- `ImPlot` for histogram / waveform / vectorscope rendering
 
 ## Pipeline architecture
 
@@ -59,160 +80,176 @@ Stages, in order:
 2. **Demosaic** — start with a known-good algorithm (AMaZE or RCD); X-Trans
    deferred until needed
 3. **White balance** + **camera color profile** → working color space
-   (scene-referred linear, likely Rec. 2020 or ACEScg)
 4. **Lens corrections** (Lensfun) — distortion, vignette, chromatic aberration
 5. **Geometric edits** — crop, rotate, straighten, perspective correction
-   (applied as a single resampling step downstream of lens corrections so the
+   (single resampling step downstream of lens corrections, so the
    undistorted image is what gets cropped)
-6. **Tone mapping** — exposure, highlights, shadows, whites, blacks, contrast.
-   Algorithm choice TBD (filmic, sigmoid, or curve); Lightroom's slider
-   vocabulary is the user-facing contract regardless.
+6. **Tone mapping** — exposure, highlights, shadows, whites, blacks, contrast
 7. **Local edits** (v2+) — masks, gradients, brushes; per-mask tone adjustments
 8. **Noise reduction + sharpening** (v3+)
 9. **Output transform** → display or export color space
-10. **Export** — JPEG / TIFF / PNG with embedded ICC profile and full
-    metadata round-trip (see metadata section)
+10. **Export** — JPEG / TIFF / PNG with embedded ICC profile and authored EXIF
 
 All stages run as Vulkan compute shaders against a tiled image graph. Edits
-are non-destructive; pipeline state lives in a sidecar (see edit state model).
+are non-destructive; pipeline state lives in the `.aperture` sidecar (see
+edit state model).
 
 The pipeline module is **UI-independent**. The ImGui shell is one frontend;
 the same pipeline must be usable from a CLI batch processor.
 
-## Geometric edits
+### Working color space
 
-Treated as a pipeline stage rather than a UI gimmick because crops affect
-histogram, scopes, and any local-edit mask coordinates downstream.
+Default: **Rec. 2020 linear**. Stored as a configurable runtime parameter
+from day one — *not* a hardcoded constant. The pipeline accepts a working
+space identifier and the corresponding transform matrices; swapping to
+ACEScg or any other wide-gamut linear space is a configuration change, not
+a code change. ACES integration is *not* a v1 deliverable; the seam to add
+it cheaply later is.
 
-- **Crop** with aspect-ratio constraints (free, original, common ratios,
-  custom)
-- **Rotate** in 90° increments (lossless reorientation of the canvas)
-- **Straighten** with a horizon line tool
-- **Perspective correction** — manual four-point or guided vertical/horizontal
-- **Resample** at export only; previews use the GPU's bilinear/bicubic in the
+### Tone mapping
+
+Default: **sigmoid**. Filmic and traditional tone curve must also be
+selectable per-image. The tone-mapping stage is a dispatchable family —
+pipeline state names which mapper to use, and the mapper is fully
+parameterized in the sidecar. Default does not constrain user choice.
+
+### Geometric edits
+
+- Crop with aspect-ratio constraints (free, original, common ratios, custom)
+- Rotate in 90° increments (lossless reorientation of the canvas)
+- Straighten with a horizon-line tool
+- Perspective correction — manual four-point or guided vertical/horizontal
+- Resample at export only; previews use the GPU's bilinear/bicubic in the
   viewport shader
 
 ## Metadata & tagging
 
-A first-class concern, not an afterthought. Photographs without metadata are
-unsearchable, untimestamped, and rights-ambiguous. Aperture writes metadata
-that other tools (and the author's future self) can read without aperture
-present.
+Metadata that aperture authors lives in the `.aperture` sidecar. Metadata
+that the source file already carries (camera, exposure, lens, capture time,
+GPS if present) is read once via LibRaw on import and copied into the
+sidecar's "captured" section. The source raw is never modified.
 
-### Standards
+### Read paths
 
-- **EXIF** — camera/exposure data, GPS, orientation, capture time. Read from
-  raw, preserved on export, written on geotag.
-- **IPTC Core / Extension** — captions, headlines, keywords, copyright,
-  creator, contact info, location names. The interoperability format for
-  authorship and descriptive metadata.
-- **XMP** — Adobe's RDF/XML container; carries IPTC fields plus tool-specific
-  edit data. Used both embedded (in JPEG/TIFF/DNG) and as sidecar (`.xmp`
-  next to `.raw`).
-- **Maker notes** — preserved on round-trip, not interpreted.
+- **EXIF on import** — LibRaw exposes the dictionary; we copy what we care
+  about into the sidecar.
+- **No external XMP**. Aperture does not read `.xmp`, `.pp3`, `.cof`, or any
+  other tool's sidecar. Migration tools are a third-party concern.
 
-Edit state lives in **aperture's own XMP namespace** inside the standard XMP
-container. Interop with other apps' edit data is explicitly not a goal —
-aperture-to-aperture round-trip is.
+### Write paths
 
-### Library / catalog metadata (without a catalog)
+- **`.aperture` sidecar** — the canonical record of all aperture-authored
+  metadata and edit state.
+- **Embedded EXIF on export** — JPEG/TIFF/PNG outputs carry EXIF (camera,
+  exposure, lens, capture time, GPS coordinates aperture authored via GPX
+  geotagging or manual entry). Implementation: small in-house EXIF/TIFF-IFD
+  writer (~few hundred lines, isolated in `src/metadata/exif_writer.c`).
+  No external EXIF library.
+- **Embedded ICC on export** — via LittleCMS through the libjpeg-turbo /
+  libtiff / libpng metadata APIs.
 
-The author's stance: a catalog database is the wrong abstraction. Filesystem
-folders are the catalog. But the *metadata* a catalog would track is still
-useful — it just lives in the file or sidecar, not a database.
+### Authored metadata fields
 
-Supported per-image:
+All stored in the `.aperture` sidecar:
 
-- **Rating** — 0–5 stars (`xmp:Rating`)
-- **Color label** — red / yellow / green / blue / purple (`xmp:Label`)
-- **Pick / reject flag** — Lightroom-compatible (`lr:pick` extension)
-- **Keywords** — flat and **hierarchical** (e.g. `Animals|Birds|Sparrow`);
-  standard XMP/IPTC encoding so Lightroom, digiKam, and others see them
-- **Title**, **caption/description**, **headline**
-- **Creator / copyright / rights** — IPTC Core fields, settable as
-  per-import or per-image defaults
-- **Location** — IPTC location fields (city, state, country) plus EXIF GPS
+- **Rating** — 0–5 stars
+- **Color label** — red / yellow / green / blue / purple
+- **Pick / reject flag**
+- **Keywords** — flat and **hierarchical**. Default authoring separator
+  `|`; configurable. On read, separator is detected per-keyword.
+- **Title**, **caption**, **headline**
+- **Creator**, **copyright**, **rights**, **contact** — settable as
+  per-import or per-camera defaults
+- **Location** — city, state, country (textual) plus GPS coordinates
+- **Capture time + originating timezone** — UTC + IANA zone alongside the
+  raw EXIF timestamp
 
-Search/filter UI over these fields is a v2+ concern. Until then, metadata is
-authored and persisted; finding things relies on the filesystem and external
-tools.
+Search/filter UI over these fields is a v3+ concern; until then, fields
+are authored and persisted but discovery relies on the filesystem.
 
 ### Geotagging via GPX
 
-Workflow: author carries a GPS recorder (handheld, watch, phone) while
-shooting. The recorder produces a GPX track. Aperture matches each photo's
-capture timestamp against the track and writes interpolated GPS coordinates
-to the photo's EXIF GPS tags.
+Workflow: author carries a GPS recorder while shooting; aperture matches
+photo capture timestamps against the GPX track and writes interpolated
+GPS coordinates into the sidecar (and into exported file EXIF).
 
-**GPX format.** GPX is a small, well-defined XML schema. The relevant subset:
+**GPX format.** Small XML schema. The relevant subset:
 
 ```
 gpx > trk > trkseg > trkpt[@lat, @lon] > ele, time
 ```
 
-Multiple tracks per file, multiple segments per track, gaps between segments
-treated as "no signal."
+Multiple tracks per file, multiple segments per track, gaps between
+segments treated as "no signal."
+
+**Parser.** In-house. ~150 lines of C. The schema is small enough that
+pulling in a general XML library is unjustified.
 
 **Timestamp interpolation.**
 
 - Linear interpolation between adjacent `trkpt` timestamps for lat/lon/ele
-- Camera capture time comes from EXIF `DateTimeOriginal` / `SubSecTimeOriginal`
+- Camera capture time comes from EXIF `DateTimeOriginal` /
+  `SubSecTimeOriginal`
 - A photo whose timestamp falls inside a segment gets interpolated coords
 - A photo near (within configurable threshold, default 60s) but outside a
   segment can be snapped to the nearest endpoint or refused — user setting
 - A photo far from any segment is left untagged with a warning
 
 **Clock offset reconciliation.** Camera clocks drift. The user provides a
-fixed offset (e.g. "camera is +47s vs GPS UTC") that aperture applies to all
-EXIF timestamps before interpolation. Helper UI: shoot a photo of the GPS
-display, aperture computes the offset from the visible time vs the photo's
-EXIF time.
+fixed offset (e.g. "camera is +47s vs GPS UTC") that aperture applies to
+all EXIF timestamps before interpolation. Helper UI: shoot a photo of the
+GPS display; aperture computes the offset from the visible time vs the
+photo's EXIF time.
 
 **Timezone handling.** EXIF `DateTimeOriginal` is naive (no timezone). GPX
 times are UTC. The user provides the camera's timezone (default: system
-timezone at import); aperture converts to UTC for matching. v1 stores
-timezone alongside edits in the sidecar.
+timezone at import); aperture stores both the original timestamp and
+resolved UTC in the sidecar.
 
 **Batch workflow.** Load one or more GPX files into a session. Select
-photos. Apply geotag. Diff preview before write (which photos match, which
-don't, which are at endpoints). Commit writes to EXIF and to sidecar.
+photos. Apply geotag. Diff preview before write (which photos match,
+which don't, which are at endpoints). Commit writes coordinates to the
+`.aperture` sidecar; export carries them into output EXIF.
 
-**Existing GPS data.** If a photo already has GPS coords (e.g. shot on a
-phone), aperture preserves them by default. Overwrite is opt-in per session.
-
-### Authorship & rights
-
-- Per-import defaults (creator, copyright, contact, usage terms) configurable
-  per-camera or per-folder profile
-- Applied to IPTC fields automatically on import; user can override per-image
-- Survives export round-trip
-
-### Timezone handling
-
-- All internal timestamps stored as UTC + originating timezone
-- Display in user's local zone or shooting zone, configurable
-- GPX matching always done in UTC
+**Existing GPS data.** If a photo already has GPS coords in source EXIF,
+aperture preserves them by default. Overwrite is opt-in per session.
 
 ## Edit state model
 
 Non-destructive editing is the foundation. Every edit is a stack of
 parameters; the source raw is never modified.
 
-- **Pipeline state** — every stage's parameters, serialized as JSON or RDF
-  inside the XMP sidecar under aperture's namespace
-- **Undo/redo** — in-memory ring buffer per session; not persisted
-- **History** — persistent ordered log of significant edits (param-level
-  history is too noisy); user can roll back to any history entry
-- **Snapshots** — named save-points of the full edit state, persisted in the
-  sidecar; cheap because they're parameter sets, not pixels
-- **Virtual copies** — multiple independent edit stacks pointing at the same
-  source raw, persisted in the sidecar as separate entries
-- **Sidecar layout** — one `.xmp` per source file, sitting next to it.
-  Standard XMP container so other tools see metadata; aperture's namespace
-  carries edit data they ignore.
+### The `.aperture` sidecar
 
-The sidecar **schema** is defined and committed before v1 ships. v0 may
-prototype freely; v1 freezes the schema and any future changes are migrations.
+- **One file per source image**, sitting alongside it: `IMG_0001.RAF` →
+  `IMG_0001.RAF.aperture`
+- **TOML format.** Diffable, human-readable, well-tooled, schema-friendly
+- **Top-level schema version field.** Migrations between schema versions
+  are explicit code paths, not best-effort guessing
+- **Sections** (proposed; final shape designed before v1):
+  - `[aperture]` — schema version, aperture version that wrote it
+  - `[source]` — path/hash to source raw, captured EXIF dictionary
+  - `[metadata]` — authored ratings, keywords, captions, location, etc.
+  - `[edit]` — pipeline parameters per virtual copy
+  - `[history]` — ordered list of significant edits, with rollback targets
+  - `[snapshots]` — named full-state save points
+  - `[copies]` — virtual copies (independent edit stacks against same source)
+
+### Behaviors
+
+- **Undo / redo** — in-memory ring buffer per session; not persisted
+- **History** — persistent ordered log of significant edits (parameter-level
+  noise is filtered out); user can roll back to any history entry
+- **Snapshots** — named save-points of the full edit state, persisted in
+  the sidecar
+- **Virtual copies** — multiple independent edit stacks against the same
+  source raw, persisted in the sidecar as separate entries
+
+### Schema commitment
+
+The `.aperture` schema is **frozen at v1**. v0 may iterate freely. Once
+v1 ships, schema changes go through versioned migrations with explicit
+upgrade code. Schema design gets its own design doc when we approach v1.
 
 ## UI vision
 
@@ -249,14 +286,13 @@ Precedent: Nuke, Houdini, Substance Designer, Blender's editors.
 
 ### Output
 
-- **JPEG** — 8-bit, embedded ICC, embedded EXIF/IPTC/XMP, configurable quality
-- **TIFF** — 8 / 16 / 32-bit, optional compression, embedded ICC and metadata
-- **PNG** — 8 / 16-bit, embedded ICC and metadata
+- **JPEG** — 8-bit, embedded ICC, embedded EXIF, configurable quality
+- **TIFF** — 8 / 16 / 32-bit, optional compression, embedded ICC and EXIF
+- **PNG** — 8 / 16-bit, embedded ICC and EXIF
 
 ### Sidecar
 
-- **`.xmp`** — one per source file, RDF/XML, standard XMP namespaces plus
-  aperture's namespace for edit data
+- **`.aperture`** — one per source file, TOML, aperture's own schema
 
 ## Performance targets
 
@@ -267,15 +303,14 @@ Precedent: Nuke, Houdini, Substance Designer, Blender's editors.
 - Cold open of a raw file: under **2s** including LibRaw decode
 - Idle CPU/GPU when not editing: effectively zero
 
-These are targets, not contracts. Missing them by 50% on pathological inputs
-is acceptable; missing them on common cases is a bug.
+These are targets, not contracts. Missing them by 50% on pathological
+inputs is acceptable; missing them on common cases is a bug.
 
 ## Platform support
 
-- **Linux (primary).** Author's daily driver. Wayland-first, X11 by accident
-  via SDL/GLFW.
-- **Windows / macOS** — not v1. Vulkan + ImGui + chosen libs are all portable;
-  porting is mechanical when motivated.
+- **Linux (primary).** Author's daily driver. Wayland-first.
+- **Windows / macOS** — not v1. Vulkan + ImGui + chosen libs are all
+  portable; porting is mechanical when motivated.
 
 ## Scope phases
 
@@ -299,9 +334,9 @@ Goal: the author edits real photos with it.
 - Lens corrections via Lensfun
 - Geometric edits (crop, rotate, straighten)
 - Histogram + before/after
-- XMP sidecar persistence with frozen schema
-- Metadata read on import (EXIF, existing IPTC/XMP)
-- TIFF/JPEG/PNG export with embedded ICC, EXIF, IPTC, XMP
+- `.aperture` sidecar persistence with frozen schema
+- Metadata read on import (EXIF via LibRaw)
+- TIFF/JPEG/PNG export with embedded ICC and authored EXIF
 
 ### v1.5 — Metadata authoring
 
@@ -310,7 +345,7 @@ Goal: the author edits real photos with it.
 - Captions, titles, copyright
 - Per-import authorship defaults
 - GPX-based geotagging (full workflow: load tracks, offset reconciliation,
-  batch apply, EXIF GPS write)
+  batch apply, EXIF GPS write on export)
 
 ### v2 — Local edits
 
@@ -333,6 +368,7 @@ Goal: the author edits real photos with it.
 ## Deliberately deferred
 
 - Catalog / library database
+- Reading or writing other apps' sidecars (XMP, .pp3, .cof)
 - AI subject / sky detection
 - Tethered shooting
 - Print module
@@ -342,36 +378,37 @@ Goal: the author edits real photos with it.
 
 ## Key decisions and constraints
 
-- **Single-camera at v1.** Color profile work is per-sensor. Generalize after
-  the pipeline is proven on one body.
-- **No catalog at v1 (or ever, probably).** Operate on a folder. The
-  filesystem is the catalog. Metadata is authored and persisted in standard
-  formats so external catalogs can index aperture's output if anyone wants.
+- **No false giants.** Every dependency must be the *right tool*, not a
+  convenience wrapper. Wrappers (OCIO, OIIO) are dropped; format-specific
+  giants (libjpeg-turbo, libtiff, libpng, LibRaw, Lensfun, LittleCMS) are
+  kept.
+- **No external interop.** Aperture defines its own sidecar and ignores
+  third-party edit data and metadata sidecars. Migration is a third-party
+  concern.
+- **Single-camera at v1.** Color profile work is per-sensor. Generalize
+  after the pipeline is proven on one body.
+- **No catalog.** The filesystem is the catalog. Metadata is authored and
+  persisted in the `.aperture` sidecar.
 - **Pipeline is UI-independent.** UI shell is swappable. ImGui is the v1
   frontend, not a load-bearing decision.
 - **Vulkan from the start, not a CPU prototype.** A CPU prototype would be
   rewritten anyway; the pipeline graph and tile management are the actual
   work.
-- **Color science is the long pole.** Plumbing is fast with coding agents;
-  taste-testing output is not. Budget time accordingly.
-- **Metadata is interoperable; edit data is not.** Aperture writes standard
-  EXIF/IPTC/XMP that any tool can read. Aperture's edit parameters live in
-  aperture's namespace and are not expected to round-trip with Lightroom.
-- **No workarounds.** If a stage produces wrong output, fix the stage. If the
-  architecture forces special-casing in another stage, the architecture is
-  wrong. (See user's global engineering standards.)
+- **Color science is the long pole.** Plumbing is fast; taste-testing
+  output is not. Budget time accordingly.
+- **No workarounds.** If a stage produces wrong output, fix the stage. If
+  the architecture forces special-casing in another stage, the architecture
+  is wrong.
 
 ## Open questions
 
-- **Build system:** CMake vs Meson
-- **Working color space:** Rec. 2020 linear vs ACEScg
-- **Tone mapper default:** filmic vs sigmoid vs curve
-- **Sidecar schema:** define before v1 ships; v0 may iterate
-- **Vulkan tile / memory management** strategy for >40MP images at
-  interactive rates
-- **Metadata library choice:** Exiv2 (C++ shim cost) vs libexif + libiptcdata
-  + Exempi (three deps, all C, more surface area)
-- **GPX parser choice:** Expat vs roll-our-own (schema is small enough that
-  the second is reasonable)
-- **Hierarchical keyword separator:** `|` (Lightroom) vs `/` (digiKam) — pick
-  one for our authoring UI; on read, accept both
+- **`.aperture` TOML schema** — final shape designed before v1 ships. v0
+  iterates freely.
+- **Working color space configuration interface** — the parameter exists
+  from day one; the exact API for swapping it (config file, runtime
+  setting, both) is a v1 design call.
+- **DCP vs ICC** for camera color profiles — both are well-defined; pick
+  one (or support both) when v1 color profile work begins.
+- **Tone-mapper coefficient defaults** — sigmoid is the default mapper;
+  the default coefficients (curve shape) need taste-testing on real images
+  before v1.
