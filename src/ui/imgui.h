@@ -27,6 +27,11 @@ void ap_imgui_render(VkCommandBuffer cmd);
 
 void ap_imgui_demo_window(const char *title, const char *version);
 
+uint64_t ap_imgui_register_texture(VkSampler sampler, VkImageView view, VkImageLayout layout);
+void     ap_imgui_unregister_texture(uint64_t tex_id);
+void     ap_imgui_viewport_window(const char *title, uint64_t tex_id,
+                                  int img_width, int img_height);
+
 #ifdef __cplusplus
 }
 #endif
