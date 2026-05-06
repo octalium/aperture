@@ -4,5 +4,6 @@ aperture_sources += files(
   'gpu.c',
   'instance.c',
   'swapchain.c',
+  'texture.c',
   'window.c',
 )

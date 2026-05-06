@@ -123,3 +123,47 @@ extern "C" void ap_imgui_demo_window(const char *title, const char *version)
     }
     ImGui::End();
 }
+
+extern "C" uint64_t ap_imgui_register_texture(VkSampler sampler,
+                                              VkImageView view,
+                                              VkImageLayout layout)
+{
+    VkDescriptorSet ds = ImGui_ImplVulkan_AddTexture(sampler, view, layout);
+    return reinterpret_cast<uint64_t>(ds);
+}
+
+extern "C" void ap_imgui_unregister_texture(uint64_t tex_id)
+{
+    if (tex_id == 0) {
+        return;
+    }
+    VkDescriptorSet ds = reinterpret_cast<VkDescriptorSet>(tex_id);
+    ImGui_ImplVulkan_RemoveTexture(ds);
+}
+
+extern "C" void ap_imgui_viewport_window(const char *title, uint64_t tex_id,
+                                         int img_width, int img_height)
+{
+    ImGui::SetNextWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin(title)) {
+        ImVec2 avail = ImGui::GetContentRegionAvail();
+        if (avail.x > 0.0f && avail.y > 0.0f && img_width > 0 && img_height > 0) {
+            float src_aspect = (float)img_width / (float)img_height;
+            float dst_aspect = avail.x / avail.y;
+            ImVec2 size;
+            if (src_aspect > dst_aspect) {
+                size.x = avail.x;
+                size.y = avail.x / src_aspect;
+            } else {
+                size.y = avail.y;
+                size.x = avail.y * src_aspect;
+            }
+            ImVec2 cursor = ImGui::GetCursorPos();
+            cursor.x += (avail.x - size.x) * 0.5f;
+            cursor.y += (avail.y - size.y) * 0.5f;
+            ImGui::SetCursorPos(cursor);
+            ImGui::Image(static_cast<ImTextureID>(tex_id), size);
+        }
+    }
+    ImGui::End();
+}

@@ -20,11 +20,13 @@ add_project_arguments(
 vulkan_dep = dependency('vulkan')
 glfw_dep   = dependency('glfw3')
 cimgui_dep = dependency('cimgui')
+libraw_dep = dependency('libraw')
 
 aperture_deps = [
   vulkan_dep,
   glfw_dep,
   cimgui_dep,
+  libraw_dep,
 ]
 
 aperture_inc = include_directories('src')
