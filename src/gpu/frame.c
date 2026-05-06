@@ -1,6 +1,7 @@
 #include "gpu_internal.h"
 
 #include "core/log.h"
+#include "ui/imgui.h"
 
 int gpu_frames_create(struct ap_gpu *g)
 {
@@ -80,30 +81,45 @@ static void image_barrier(VkCommandBuffer cmd, VkImage image,
     vkCmdPipelineBarrier2(cmd, &dep);
 }
 
-static int record_clear(struct ap_gpu *g, VkCommandBuffer cmd, uint32_t image_index)
+static int record_frame(struct ap_gpu *g, VkCommandBuffer cmd, uint32_t image_index)
 {
     VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     VK_CHECK(vkBeginCommandBuffer(cmd, &bi));
 
-    VkImage target = g->swapchain_images[image_index].image;
+    VkImage target  = g->swapchain_images[image_index].image;
+    VkImageView vw  = g->swapchain_images[image_index].view;
 
     image_barrier(cmd, target,
-                  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                   VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                  VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                  VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
 
-    VkClearColorValue clear = { .float32 = { 0.18f, 0.18f, 0.18f, 1.0f } };
-    VkImageSubresourceRange range = {
-        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-        .baseMipLevel = 0, .levelCount = 1,
-        .baseArrayLayer = 0, .layerCount = 1,
+    VkRenderingAttachmentInfo color = {
+        .sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView   = vw,
+        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .loadOp      = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp     = VK_ATTACHMENT_STORE_OP_STORE,
+        .clearValue  = { .color = { .float32 = { 0.18f, 0.18f, 0.18f, 1.0f } } },
     };
-    vkCmdClearColorImage(cmd, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                         &clear, 1, &range);
+
+    VkRenderingInfo rendering = {
+        .sType                = VK_STRUCTURE_TYPE_RENDERING_INFO,
+        .renderArea           = { .offset = {0, 0}, .extent = g->swapchain_extent },
+        .layerCount           = 1,
+        .colorAttachmentCount = 1,
+        .pColorAttachments    = &color,
+    };
+
+    vkCmdBeginRendering(cmd, &rendering);
+    ap_imgui_render(cmd);
+    vkCmdEndRendering(cmd);
 
     image_barrier(cmd, target,
-                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                  VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                  VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                   VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0);
 
     VK_CHECK(vkEndCommandBuffer(cmd));
@@ -131,7 +147,7 @@ int gpu_frame_render(struct ap_gpu *g)
     VK_CHECK(vkResetFences(g->device, 1, &f->in_flight));
     VK_CHECK(vkResetCommandBuffer(f->cmd, 0));
 
-    if (record_clear(g, f->cmd, image_index) < 0) {
+    if (record_frame(g, f->cmd, image_index) < 0) {
         return -1;
     }
 
@@ -140,7 +156,7 @@ int gpu_frame_render(struct ap_gpu *g)
     VkSemaphoreSubmitInfo wait_si = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
         .semaphore = f->image_available,
-        .stageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT,
+        .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
     };
     VkSemaphoreSubmitInfo signal_si = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,

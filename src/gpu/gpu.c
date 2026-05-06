@@ -1,6 +1,7 @@
 #include "gpu_internal.h"
 
 #include "core/log.h"
+#include "ui/imgui.h"
 
 #include <stdlib.h>
 
@@ -60,6 +61,12 @@ ap_gpu *ap_gpu_create(int width, int height, const char *title)
     if (gpu_swapchain_create(g) < 0)                      goto fail;
     if (gpu_frames_create(g) < 0)                         goto fail;
 
+    if (!ap_imgui_init(g->window, g->instance, g->physical, g->device,
+                       g->graphics_family, g->graphics_queue,
+                       g->swapchain_image_count, g->swapchain_format)) {
+        goto fail;
+    }
+
     return g;
 
 fail:
@@ -74,6 +81,8 @@ void ap_gpu_destroy(ap_gpu *g)
     if (g->device) {
         vkDeviceWaitIdle(g->device);
     }
+
+    ap_imgui_shutdown();
 
     gpu_frames_destroy(g);
     gpu_swapchain_destroy(g);

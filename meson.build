@@ -1,9 +1,10 @@
 project(
   'aperture',
-  'c',
+  ['c', 'cpp'],
   version: '0.0.1',
   default_options: [
     'c_std=c17',
+    'cpp_std=c++17',
     'warning_level=2',
     'b_ndebug=if-release',
   ],
@@ -13,15 +14,17 @@ project(
 
 add_project_arguments(
   '-DAPERTURE_VERSION="@0@"'.format(meson.project_version()),
-  language: 'c',
+  language: ['c', 'cpp'],
 )
 
 vulkan_dep = dependency('vulkan')
 glfw_dep   = dependency('glfw3')
+cimgui_dep = dependency('cimgui')
 
 aperture_deps = [
   vulkan_dep,
   glfw_dep,
+  cimgui_dep,
 ]
 
 aperture_inc = include_directories('src')
