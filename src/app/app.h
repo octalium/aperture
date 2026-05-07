@@ -1,0 +1,47 @@
+#ifndef APERTURE_APP_H
+#define APERTURE_APP_H
+
+#include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef enum {
+    AP_MODE_LIBRARY = 0,
+    AP_MODE_PHOTO   = 1,
+    AP_MODE_EXPORT  = 2,
+} ap_mode;
+
+// Sentinel for panels that should appear in every mode (info / FPS / etc.).
+#define AP_MODE_ANY  ((ap_mode)-1)
+
+typedef struct ap_app   ap_app;
+typedef struct ap_photo ap_photo;
+
+// Top-level application: owns the gpu, the current mode, and the
+// currently-open photo (if any).
+ap_app *ap_app_create(int width, int height, const char *title);
+void    ap_app_destroy(ap_app *app);
+
+// Main loop helpers.
+bool ap_app_should_run(ap_app *app);
+int  ap_app_run_frame(ap_app *app);
+void ap_app_wait_idle(ap_app *app);
+
+// Mode access. Default at create-time is AP_MODE_LIBRARY; opening a
+// photo transitions to AP_MODE_PHOTO automatically; closing the photo
+// transitions back to AP_MODE_LIBRARY.
+ap_mode ap_app_mode(const ap_app *app);
+void    ap_app_set_mode(ap_app *app, ap_mode mode);
+
+// Photo lifecycle. open_photo replaces any currently-open photo.
+int       ap_app_open_photo(ap_app *app, const char *path);
+void      ap_app_close_photo(ap_app *app);
+ap_photo *ap_app_photo(ap_app *app);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

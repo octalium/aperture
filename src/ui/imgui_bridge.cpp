@@ -112,18 +112,6 @@ extern "C" void ap_imgui_render(VkCommandBuffer cmd)
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd, VK_NULL_HANDLE);
 }
 
-extern "C" void ap_imgui_demo_window(const char *title, const char *version)
-{
-    ImGuiIO &io = ImGui::GetIO();
-    if (ImGui::Begin(title)) {
-        ImGui::Text("aperture %s", version);
-        ImGui::Separator();
-        ImGui::Text("FPS: %.1f", io.Framerate);
-        ImGui::Text("Frame time: %.3f ms", 1000.0f / io.Framerate);
-    }
-    ImGui::End();
-}
-
 extern "C" uint64_t ap_imgui_register_texture(VkSampler sampler,
                                               VkImageView view,
                                               VkImageLayout layout)
@@ -139,46 +127,4 @@ extern "C" void ap_imgui_unregister_texture(uint64_t tex_id)
     }
     VkDescriptorSet ds = reinterpret_cast<VkDescriptorSet>(tex_id);
     ImGui_ImplVulkan_RemoveTexture(ds);
-}
-
-extern "C" void ap_imgui_edit_panel(float *exposure_ev,
-                                    float *tone_contrast,
-                                    float *tone_pivot)
-{
-    if (!exposure_ev || !tone_contrast || !tone_pivot) {
-        return;
-    }
-    if (ImGui::Begin("edit")) {
-        ImGui::SliderFloat("Exposure (EV)", exposure_ev,   -5.0f,  5.0f, "%.2f");
-        ImGui::SliderFloat("Contrast",      tone_contrast,  0.5f,  4.0f, "%.2f");
-        ImGui::SliderFloat("Pivot",         tone_pivot,     0.05f, 0.5f, "%.3f");
-    }
-    ImGui::End();
-}
-
-extern "C" void ap_imgui_viewport_window(const char *title, uint64_t tex_id,
-                                         int img_width, int img_height)
-{
-    ImGui::SetNextWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin(title)) {
-        ImVec2 avail = ImGui::GetContentRegionAvail();
-        if (avail.x > 0.0f && avail.y > 0.0f && img_width > 0 && img_height > 0) {
-            float src_aspect = (float)img_width / (float)img_height;
-            float dst_aspect = avail.x / avail.y;
-            ImVec2 size;
-            if (src_aspect > dst_aspect) {
-                size.x = avail.x;
-                size.y = avail.x / src_aspect;
-            } else {
-                size.y = avail.y;
-                size.x = avail.y * src_aspect;
-            }
-            ImVec2 cursor = ImGui::GetCursorPos();
-            cursor.x += (avail.x - size.x) * 0.5f;
-            cursor.y += (avail.y - size.y) * 0.5f;
-            ImGui::SetCursorPos(cursor);
-            ImGui::Image(static_cast<ImTextureID>(tex_id), size);
-        }
-    }
-    ImGui::End();
 }
