@@ -5,6 +5,7 @@
 #include "core/log.h"
 
 #include "process_comp_spv.h"
+#include "tone_comp_spv.h"
 #include "encode_comp_spv.h"
 
 #include <stdlib.h>
@@ -16,6 +17,11 @@
 typedef struct {
     float exposure_ev;
 } process_push_t;
+
+typedef struct {
+    float contrast;
+    float pivot;
+} tone_push_t;
 
 typedef struct {
     uint32_t transfer_function;
@@ -34,14 +40,23 @@ struct ap_compute {
     VkPipeline            process_pipeline;
     VkDescriptorSet       process_ds;
 
+    VkDescriptorSetLayout tone_dsl;
+    VkPipelineLayout      tone_pl;
+    VkPipeline            tone_pipeline;
+    VkDescriptorSet       tone_ds;
+
     VkDescriptorSetLayout encode_dsl;
     VkPipelineLayout      encode_pl;
     VkPipeline            encode_pipeline;
     VkDescriptorSet       encode_ds;
 
-    VkImage        working_image;
-    VkDeviceMemory working_memory;
-    VkImageView    working_view;
+    VkImage        stage_a_image;
+    VkDeviceMemory stage_a_memory;
+    VkImageView    stage_a_view;
+
+    VkImage        stage_b_image;
+    VkDeviceMemory stage_b_memory;
+    VkImageView    stage_b_view;
 
     VkImage        display_image;
     VkDeviceMemory display_memory;
@@ -221,11 +236,11 @@ static int allocate_descriptors(ap_compute *c)
 {
     VkDescriptorPoolSize pool_size = {
         .type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-        .descriptorCount = 4,
+        .descriptorCount = 6,
     };
     VkDescriptorPoolCreateInfo pci = {
         .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .maxSets       = 2,
+        .maxSets       = 3,
         .poolSizeCount = 1,
         .pPoolSizes    = &pool_size,
     };
@@ -234,12 +249,12 @@ static int allocate_descriptors(ap_compute *c)
         return -1;
     }
 
-    VkDescriptorSetLayout layouts[2] = { c->process_dsl, c->encode_dsl };
-    VkDescriptorSet       sets[2]    = { 0 };
+    VkDescriptorSetLayout layouts[3] = { c->process_dsl, c->tone_dsl, c->encode_dsl };
+    VkDescriptorSet       sets[3]    = { 0 };
     VkDescriptorSetAllocateInfo dai = {
         .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .descriptorPool     = c->descriptor_pool,
-        .descriptorSetCount = 2,
+        .descriptorSetCount = 3,
         .pSetLayouts        = layouts,
     };
     if (vkAllocateDescriptorSets(c->gpu->device, &dai, sets) != VK_SUCCESS) {
@@ -247,48 +262,35 @@ static int allocate_descriptors(ap_compute *c)
         return -1;
     }
     c->process_ds = sets[0];
-    c->encode_ds  = sets[1];
+    c->tone_ds    = sets[1];
+    c->encode_ds  = sets[2];
     return 0;
 }
 
 static void update_descriptors(ap_compute *c, VkImageView input_view)
 {
-    VkDescriptorImageInfo process_in = {
-        .imageView   = input_view,
-        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-    };
-    VkDescriptorImageInfo process_out = {
-        .imageView   = c->working_view,
-        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-    };
-    VkDescriptorImageInfo encode_in = {
-        .imageView   = c->working_view,
-        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-    };
-    VkDescriptorImageInfo encode_out = {
-        .imageView   = c->display_view_unorm,
-        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-    };
+    VkDescriptorImageInfo process_in   = { .imageView = input_view,           .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+    VkDescriptorImageInfo process_out  = { .imageView = c->stage_a_view,      .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+    VkDescriptorImageInfo tone_in      = { .imageView = c->stage_a_view,      .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+    VkDescriptorImageInfo tone_out     = { .imageView = c->stage_b_view,      .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+    VkDescriptorImageInfo encode_in    = { .imageView = c->stage_b_view,      .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+    VkDescriptorImageInfo encode_out   = { .imageView = c->display_view_unorm,.imageLayout = VK_IMAGE_LAYOUT_GENERAL };
 
-    VkWriteDescriptorSet writes[4] = {
-        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-          .dstSet = c->process_ds, .dstBinding = 0, .descriptorCount = 1,
-          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-          .pImageInfo = &process_in },
-        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-          .dstSet = c->process_ds, .dstBinding = 1, .descriptorCount = 1,
-          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-          .pImageInfo = &process_out },
-        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-          .dstSet = c->encode_ds, .dstBinding = 0, .descriptorCount = 1,
-          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-          .pImageInfo = &encode_in },
-        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-          .dstSet = c->encode_ds, .dstBinding = 1, .descriptorCount = 1,
-          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-          .pImageInfo = &encode_out },
+    VkWriteDescriptorSet writes[6] = {
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = c->process_ds, .dstBinding = 0,
+          .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &process_in },
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = c->process_ds, .dstBinding = 1,
+          .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &process_out },
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = c->tone_ds,    .dstBinding = 0,
+          .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &tone_in },
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = c->tone_ds,    .dstBinding = 1,
+          .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &tone_out },
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = c->encode_ds,  .dstBinding = 0,
+          .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &encode_in },
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = c->encode_ds,  .dstBinding = 1,
+          .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &encode_out },
     };
-    vkUpdateDescriptorSets(c->gpu->device, 4, writes, 0, NULL);
+    vkUpdateDescriptorSets(c->gpu->device, 6, writes, 0, NULL);
 }
 
 static int initial_layout_transitions(ap_compute *c)
@@ -308,9 +310,9 @@ static int initial_layout_transitions(ap_compute *c)
     };
     vkBeginCommandBuffer(cmd, &bi);
 
-    VkImage targets[2] = { c->working_image, c->display_image };
-    VkImageMemoryBarrier2 barriers[2];
-    for (int i = 0; i < 2; i++) {
+    VkImage targets[3] = { c->stage_a_image, c->stage_b_image, c->display_image };
+    VkImageMemoryBarrier2 barriers[3];
+    for (int i = 0; i < 3; i++) {
         barriers[i] = (VkImageMemoryBarrier2){
             .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
             .srcStageMask  = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
@@ -331,7 +333,7 @@ static int initial_layout_transitions(ap_compute *c)
     }
     VkDependencyInfo dep = {
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .imageMemoryBarrierCount = 2,
+        .imageMemoryBarrierCount = 3,
         .pImageMemoryBarriers    = barriers,
     };
     vkCmdPipelineBarrier2(cmd, &dep);
@@ -373,9 +375,17 @@ ap_compute *ap_compute_create(ap_gpu *g, ap_texture *input)
                      VK_FORMAT_R16G16B16A16_SFLOAT,
                      VK_IMAGE_USAGE_STORAGE_BIT,
                      0, NULL, 0,
-                     &c->working_image, &c->working_memory) < 0) goto fail;
-    if (create_view(g->device, c->working_image, VK_FORMAT_R16G16B16A16_SFLOAT,
-                    0, &c->working_view) < 0) goto fail;
+                     &c->stage_a_image, &c->stage_a_memory) < 0) goto fail;
+    if (create_view(g->device, c->stage_a_image, VK_FORMAT_R16G16B16A16_SFLOAT,
+                    0, &c->stage_a_view) < 0) goto fail;
+
+    if (create_image(g->device, g->physical, c->width, c->height,
+                     VK_FORMAT_R16G16B16A16_SFLOAT,
+                     VK_IMAGE_USAGE_STORAGE_BIT,
+                     0, NULL, 0,
+                     &c->stage_b_image, &c->stage_b_memory) < 0) goto fail;
+    if (create_view(g->device, c->stage_b_image, VK_FORMAT_R16G16B16A16_SFLOAT,
+                    0, &c->stage_b_view) < 0) goto fail;
 
     VkFormat display_view_formats[2] = { VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB };
     if (create_image(g->device, g->physical, c->width, c->height,
@@ -408,6 +418,10 @@ ap_compute *ap_compute_create(ap_gpu *g, ap_texture *input)
                                sizeof(process_push_t),
                                &c->process_dsl, &c->process_pl,
                                &c->process_pipeline) < 0) goto fail;
+    if (create_pipeline_object(c, tone_comp_spv, tone_comp_spv_size,
+                               sizeof(tone_push_t),
+                               &c->tone_dsl, &c->tone_pl,
+                               &c->tone_pipeline) < 0) goto fail;
     if (create_pipeline_object(c, encode_comp_spv, encode_comp_spv_size,
                                sizeof(encode_push_t),
                                &c->encode_dsl, &c->encode_pl,
@@ -435,15 +449,23 @@ void ap_compute_destroy(ap_compute *c)
     if (c->display_image)      vkDestroyImage(dev, c->display_image, NULL);
     if (c->display_memory)     vkFreeMemory(dev, c->display_memory, NULL);
 
-    if (c->working_view)   vkDestroyImageView(dev, c->working_view, NULL);
-    if (c->working_image)  vkDestroyImage(dev, c->working_image, NULL);
-    if (c->working_memory) vkFreeMemory(dev, c->working_memory, NULL);
+    if (c->stage_b_view)   vkDestroyImageView(dev, c->stage_b_view, NULL);
+    if (c->stage_b_image)  vkDestroyImage(dev, c->stage_b_image, NULL);
+    if (c->stage_b_memory) vkFreeMemory(dev, c->stage_b_memory, NULL);
+
+    if (c->stage_a_view)   vkDestroyImageView(dev, c->stage_a_view, NULL);
+    if (c->stage_a_image)  vkDestroyImage(dev, c->stage_a_image, NULL);
+    if (c->stage_a_memory) vkFreeMemory(dev, c->stage_a_memory, NULL);
 
     if (c->descriptor_pool)  vkDestroyDescriptorPool(dev, c->descriptor_pool, NULL);
 
     if (c->encode_pipeline)  vkDestroyPipeline(dev, c->encode_pipeline, NULL);
     if (c->encode_pl)        vkDestroyPipelineLayout(dev, c->encode_pl, NULL);
     if (c->encode_dsl)       vkDestroyDescriptorSetLayout(dev, c->encode_dsl, NULL);
+
+    if (c->tone_pipeline)    vkDestroyPipeline(dev, c->tone_pipeline, NULL);
+    if (c->tone_pl)          vkDestroyPipelineLayout(dev, c->tone_pl, NULL);
+    if (c->tone_dsl)         vkDestroyDescriptorSetLayout(dev, c->tone_dsl, NULL);
 
     if (c->process_pipeline) vkDestroyPipeline(dev, c->process_pipeline, NULL);
     if (c->process_pl)       vkDestroyPipelineLayout(dev, c->process_pl, NULL);
@@ -527,7 +549,20 @@ void ap_compute_record(ap_compute *c, VkCommandBuffer cmd, const ap_edit_state *
                        0, sizeof(process_pc), &process_pc);
     vkCmdDispatch(cmd, gx, gy, 1);
 
-    compute_to_compute_barrier(cmd, c->working_image);
+    compute_to_compute_barrier(cmd, c->stage_a_image);
+
+    tone_push_t tone_pc = {
+        .contrast = edit ? edit->tone_contrast : 1.0f,
+        .pivot    = edit ? edit->tone_pivot    : 0.18f,
+    };
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, c->tone_pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, c->tone_pl,
+                            0, 1, &c->tone_ds, 0, NULL);
+    vkCmdPushConstants(cmd, c->tone_pl, VK_SHADER_STAGE_COMPUTE_BIT,
+                       0, sizeof(tone_pc), &tone_pc);
+    vkCmdDispatch(cmd, gx, gy, 1);
+
+    compute_to_compute_barrier(cmd, c->stage_b_image);
 
     encode_push_t encode_pc = {
         .transfer_function = TRANSFER_SRGB,
