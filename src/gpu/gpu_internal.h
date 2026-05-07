@@ -56,7 +56,7 @@ struct ap_gpu {
     gpu_frame frames[APERTURE_FRAMES_IN_FLIGHT];
     uint32_t current_frame;
 
-    struct ap_compute *current_compute;
+    struct ap_pipeline_graph *current_graph;
 };
 
 const char *gpu_vk_result_str(VkResult r);

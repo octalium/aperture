@@ -109,9 +109,9 @@ int ap_gpu_render_frame(ap_gpu *g, const ap_edit_state *edit)
     return gpu_frame_render(g, edit);
 }
 
-void ap_gpu_set_compute(ap_gpu *g, ap_compute *c)
+void ap_gpu_set_graph(ap_gpu *g, ap_pipeline_graph *graph)
 {
-    g->current_compute = c;
+    g->current_graph = graph;
 }
 
 void ap_gpu_wait_idle(ap_gpu *g)

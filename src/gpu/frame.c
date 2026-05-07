@@ -1,7 +1,7 @@
 #include "gpu_internal.h"
 
 #include "core/log.h"
-#include "gpu/compute.h"
+#include "gpu/pipeline_graph.h"
 #include "ui/imgui.h"
 
 int gpu_frames_create(struct ap_gpu *g)
@@ -88,8 +88,8 @@ static int record_frame(struct ap_gpu *g, VkCommandBuffer cmd,
     VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     VK_CHECK(vkBeginCommandBuffer(cmd, &bi));
 
-    if (g->current_compute) {
-        ap_compute_record(g->current_compute, cmd, edit);
+    if (g->current_graph) {
+        ap_pipeline_graph_record(g->current_graph, cmd, edit);
     }
 
     VkImage target  = g->swapchain_images[image_index].image;

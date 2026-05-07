@@ -7,8 +7,8 @@
 extern "C" {
 #endif
 
-typedef struct ap_gpu     ap_gpu;
-typedef struct ap_compute ap_compute;
+typedef struct ap_gpu             ap_gpu;
+typedef struct ap_pipeline_graph  ap_pipeline_graph;
 
 typedef struct {
     float exposure_ev;
@@ -23,7 +23,7 @@ bool ap_gpu_should_run(ap_gpu *g);
 int  ap_gpu_render_frame(ap_gpu *g, const ap_edit_state *edit);
 void ap_gpu_wait_idle(ap_gpu *g);
 
-void ap_gpu_set_compute(ap_gpu *g, ap_compute *c);
+void ap_gpu_set_graph(ap_gpu *g, ap_pipeline_graph *graph);
 
 #ifdef __cplusplus
 }
