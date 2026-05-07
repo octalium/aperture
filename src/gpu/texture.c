@@ -61,25 +61,27 @@ static void transition(VkCommandBuffer cmd, VkImage image,
     vkCmdPipelineBarrier2(cmd, &dep);
 }
 
-ap_texture *ap_texture_create_rgba8(ap_gpu *g, const uint8_t *pixels,
-                                    int width, int height)
+static ap_texture *create_from_cpu_buffer(ap_gpu *g, const void *pixels,
+                                          int width, int height,
+                                          VkFormat format, int bytes_per_pixel)
 {
     if (width <= 0 || height <= 0 || !pixels) {
-        AP_ERROR("ap_texture_create_rgba8: invalid args (%dx%d, pixels=%p)",
-                 width, height, (void *)pixels);
+        AP_ERROR("ap_texture: invalid args (%dx%d, pixels=%p)",
+                 width, height, pixels);
         return NULL;
     }
 
     ap_texture *t = calloc(1, sizeof(*t));
     if (!t) {
-        AP_ERROR("ap_texture_create_rgba8: out of memory");
+        AP_ERROR("ap_texture: out of memory");
         return NULL;
     }
     t->gpu    = g;
     t->width  = width;
     t->height = height;
 
-    VkDeviceSize buffer_size = (VkDeviceSize)width * (VkDeviceSize)height * 4;
+    VkDeviceSize buffer_size = (VkDeviceSize)width * (VkDeviceSize)height
+                             * (VkDeviceSize)bytes_per_pixel;
 
     VkBufferCreateInfo bci = {
         .sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -121,7 +123,7 @@ ap_texture *ap_texture_create_rgba8(ap_gpu *g, const uint8_t *pixels,
     VkImageCreateInfo ici = {
         .sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType     = VK_IMAGE_TYPE_2D,
-        .format        = VK_FORMAT_R8G8B8A8_UNORM,
+        .format        = format,
         .extent        = { (uint32_t)width, (uint32_t)height, 1 },
         .mipLevels     = 1,
         .arrayLayers   = 1,
@@ -218,7 +220,7 @@ ap_texture *ap_texture_create_rgba8(ap_gpu *g, const uint8_t *pixels,
         .sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .image    = t->image,
         .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format   = VK_FORMAT_R8G8B8A8_UNORM,
+        .format   = format,
         .components = {
             VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
             VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
@@ -259,6 +261,20 @@ fail:
     if (staging)        vkDestroyBuffer(g->device, staging, NULL);
     ap_texture_destroy(t);
     return NULL;
+}
+
+ap_texture *ap_texture_create_rgba8(ap_gpu *g, const uint8_t *pixels,
+                                    int width, int height)
+{
+    return create_from_cpu_buffer(g, pixels, width, height,
+                                  VK_FORMAT_R8G8B8A8_UNORM, 4);
+}
+
+ap_texture *ap_texture_create_r16(ap_gpu *g, const uint16_t *pixels,
+                                  int width, int height)
+{
+    return create_from_cpu_buffer(g, pixels, width, height,
+                                  VK_FORMAT_R16_UNORM, 2);
 }
 
 void ap_texture_destroy(ap_texture *t)

@@ -34,15 +34,16 @@ int main(int argc, char **argv)
             return 1;
         }
 
-        texture = ap_texture_create_rgba8(g, raw.pixels, raw.width, raw.height);
-        ap_raw_image_free(&raw);
+        texture = ap_texture_create_r16(g, raw.bayer, raw.width, raw.height);
         if (!texture) {
+            ap_raw_image_free(&raw);
             ap_gpu_wait_idle(g);
             ap_gpu_destroy(g);
             return 1;
         }
 
-        compute = ap_compute_create(g, texture);
+        compute = ap_compute_create(g, texture, &raw.meta);
+        ap_raw_image_free(&raw);
         if (!compute) {
             ap_texture_destroy(texture);
             ap_gpu_wait_idle(g);

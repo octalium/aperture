@@ -1,0 +1,27 @@
+#version 450
+
+// Exposure: linear-light EV multiply on the working buffer.
+// Input is already linear (sRGB primaries) — the demosaic pass handled
+// black-level, white-balance, and the camera-RGB → sRGB-linear matrix.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D in_image;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
+
+layout(push_constant) uniform PushConstants {
+    float exposure_ev;
+} pc;
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(in_image);
+    if (coord.x >= size.x || coord.y >= size.y) {
+        return;
+    }
+
+    vec4 c = imageLoad(in_image, coord);
+    c.rgb *= exp2(pc.exposure_ev);
+    imageStore(out_image, coord, c);
+}

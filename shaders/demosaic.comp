@@ -1,0 +1,93 @@
+#version 450
+
+// Stage 0: Bayer demosaic + black-level + white-balance + camera-RGB → sRGB
+// linear matrix.
+//
+// Input is a single-channel R16_UNORM storage image holding the raw Bayer
+// plane. The CFA pattern is described by `channel_map`: a 2x2 tile where
+// channel_map[(y&1)*2 + (x&1)] is the channel sampled at pixel (x, y).
+// Values: 0=R, 1=G, 2=B, 3=G2 (treated as G).
+//
+// Demosaic strategy: 3x3 neighborhood average per channel. Cheap, slightly
+// soft, no false-color artifacts on most images. Replace with AMaZE / RCD
+// in v3+.
+//
+// After demosaic the per-channel values are normalized by black/white
+// levels, multiplied by the daylight white-balance multipliers, and
+// transformed by the camera-RGB → sRGB-linear matrix. Output is linear
+// scene-referred RGBA in sRGB primaries.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, r16)     uniform readonly  image2D in_image;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
+
+// All-vec4 layout, 7 * 16 = 112 bytes. Avoids std140 mat3 padding traps.
+// cam_to_srgb is laid out as three rows; each row is a vec3 plus one float
+// of padding (.w is unused).
+layout(push_constant) uniform PushConstants {
+    uvec4 channel_map;       // [c00, c01, c10, c11], 0=R 1=G 2=B 3=G2
+    vec4  black_level;       // R, G, B, G2
+    vec4  wb_mul;            // R, G, B, G2 (G usually = 1.0)
+    vec4  white_minus_black; // (white - black) per channel
+    vec4  cam_to_srgb_r0;    // matrix row 0 (.xyz used)
+    vec4  cam_to_srgb_r1;
+    vec4  cam_to_srgb_r2;
+} pc;
+
+vec3 cam_to_srgb_mul(vec3 cam)
+{
+    return vec3(
+        dot(pc.cam_to_srgb_r0.xyz, cam),
+        dot(pc.cam_to_srgb_r1.xyz, cam),
+        dot(pc.cam_to_srgb_r2.xyz, cam)
+    );
+}
+
+uint channel_at(ivec2 p)
+{
+    return pc.channel_map[(p.y & 1) * 2 + (p.x & 1)];
+}
+
+float sample_raw(ivec2 p, ivec2 size)
+{
+    p = clamp(p, ivec2(0), size - 1);
+    return imageLoad(in_image, p).r * 65535.0;
+}
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(in_image);
+    if (coord.x >= size.x || coord.y >= size.y) {
+        return;
+    }
+
+    // Accumulate sums per output channel (R/G/B), neighbourhood-averaged.
+    vec3 sum   = vec3(0.0);
+    vec3 count = vec3(0.0);
+
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            ivec2 p     = coord + ivec2(dx, dy);
+            uint  ch    = channel_at(p);
+            float raw   = sample_raw(p, size);
+            // Channel mapping for output:
+            //   0 (R) -> sum.r
+            //   1 (G) -> sum.g
+            //   2 (B) -> sum.b
+            //   3 (G2)-> sum.g
+            uint  out_ch = (ch == 3u) ? 1u : ch;
+            float v      = (raw - pc.black_level[ch])
+                         / max(pc.white_minus_black[ch], 1.0);
+            v *= pc.wb_mul[ch];
+            sum[out_ch]   += v;
+            count[out_ch] += 1.0;
+        }
+    }
+
+    vec3 cam_rgb = sum / max(count, vec3(1.0));
+    vec3 srgb    = cam_to_srgb_mul(cam_rgb);
+
+    imageStore(out_image, coord, vec4(srgb, 1.0));
+}

@@ -4,7 +4,8 @@
 
 #include "core/log.h"
 
-#include "process_comp_spv.h"
+#include "demosaic_comp_spv.h"
+#include "exposure_comp_spv.h"
 #include "tone_comp_spv.h"
 #include "encode_comp_spv.h"
 
@@ -15,8 +16,18 @@
 #define TRANSFER_SRGB 0u
 
 typedef struct {
+    uint32_t channel_map[4];
+    float    black_level[4];
+    float    wb_mul[4];
+    float    white_minus_black[4];
+    float    cam_to_srgb_r0[4];
+    float    cam_to_srgb_r1[4];
+    float    cam_to_srgb_r2[4];
+} demosaic_push_t;
+
+typedef struct {
     float exposure_ev;
-} process_push_t;
+} exposure_push_t;
 
 typedef struct {
     float contrast;
@@ -35,10 +46,15 @@ struct ap_compute {
 
     VkDescriptorPool descriptor_pool;
 
-    VkDescriptorSetLayout process_dsl;
-    VkPipelineLayout      process_pl;
-    VkPipeline            process_pipeline;
-    VkDescriptorSet       process_ds;
+    VkDescriptorSetLayout demosaic_dsl;
+    VkPipelineLayout      demosaic_pl;
+    VkPipeline            demosaic_pipeline;
+    VkDescriptorSet       demosaic_ds;
+
+    VkDescriptorSetLayout exposure_dsl;
+    VkPipelineLayout      exposure_pl;
+    VkPipeline            exposure_pipeline;
+    VkDescriptorSet       exposure_ds;
 
     VkDescriptorSetLayout tone_dsl;
     VkPipelineLayout      tone_pl;
@@ -63,6 +79,8 @@ struct ap_compute {
     VkImageView    display_view_unorm;
     VkImageView    display_view_srgb;
     VkSampler      display_sampler;
+
+    demosaic_push_t demosaic_pc;
 };
 
 static int find_memory_type(VkPhysicalDevice phys, uint32_t type_bits,
@@ -236,11 +254,11 @@ static int allocate_descriptors(ap_compute *c)
 {
     VkDescriptorPoolSize pool_size = {
         .type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-        .descriptorCount = 6,
+        .descriptorCount = 8,
     };
     VkDescriptorPoolCreateInfo pci = {
         .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .maxSets       = 3,
+        .maxSets       = 4,
         .poolSizeCount = 1,
         .pPoolSizes    = &pool_size,
     };
@@ -249,38 +267,49 @@ static int allocate_descriptors(ap_compute *c)
         return -1;
     }
 
-    VkDescriptorSetLayout layouts[3] = { c->process_dsl, c->tone_dsl, c->encode_dsl };
-    VkDescriptorSet       sets[3]    = { 0 };
+    VkDescriptorSetLayout layouts[4] = {
+        c->demosaic_dsl, c->exposure_dsl, c->tone_dsl, c->encode_dsl,
+    };
+    VkDescriptorSet sets[4] = {0};
     VkDescriptorSetAllocateInfo dai = {
         .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .descriptorPool     = c->descriptor_pool,
-        .descriptorSetCount = 3,
+        .descriptorSetCount = 4,
         .pSetLayouts        = layouts,
     };
     if (vkAllocateDescriptorSets(c->gpu->device, &dai, sets) != VK_SUCCESS) {
         AP_ERROR("compute: descriptor sets alloc failed");
         return -1;
     }
-    c->process_ds = sets[0];
-    c->tone_ds    = sets[1];
-    c->encode_ds  = sets[2];
+    c->demosaic_ds = sets[0];
+    c->exposure_ds = sets[1];
+    c->tone_ds     = sets[2];
+    c->encode_ds   = sets[3];
     return 0;
 }
 
 static void update_descriptors(ap_compute *c, VkImageView input_view)
 {
-    VkDescriptorImageInfo process_in   = { .imageView = input_view,           .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
-    VkDescriptorImageInfo process_out  = { .imageView = c->stage_a_view,      .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
-    VkDescriptorImageInfo tone_in      = { .imageView = c->stage_a_view,      .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
-    VkDescriptorImageInfo tone_out     = { .imageView = c->stage_b_view,      .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
-    VkDescriptorImageInfo encode_in    = { .imageView = c->stage_b_view,      .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
-    VkDescriptorImageInfo encode_out   = { .imageView = c->display_view_unorm,.imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+    // Pipeline: input -> stage_a -> stage_b -> stage_a -> display
+    //          demosaic   exposure  tone       encode
+    VkDescriptorImageInfo demosaic_in  = { .imageView = input_view,            .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+    VkDescriptorImageInfo demosaic_out = { .imageView = c->stage_a_view,       .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+    VkDescriptorImageInfo exposure_in  = { .imageView = c->stage_a_view,       .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+    VkDescriptorImageInfo exposure_out = { .imageView = c->stage_b_view,       .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+    VkDescriptorImageInfo tone_in      = { .imageView = c->stage_b_view,       .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+    VkDescriptorImageInfo tone_out     = { .imageView = c->stage_a_view,       .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+    VkDescriptorImageInfo encode_in    = { .imageView = c->stage_a_view,       .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+    VkDescriptorImageInfo encode_out   = { .imageView = c->display_view_unorm, .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
 
-    VkWriteDescriptorSet writes[6] = {
-        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = c->process_ds, .dstBinding = 0,
-          .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &process_in },
-        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = c->process_ds, .dstBinding = 1,
-          .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &process_out },
+    VkWriteDescriptorSet writes[8] = {
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = c->demosaic_ds, .dstBinding = 0,
+          .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &demosaic_in },
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = c->demosaic_ds, .dstBinding = 1,
+          .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &demosaic_out },
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = c->exposure_ds, .dstBinding = 0,
+          .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &exposure_in },
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = c->exposure_ds, .dstBinding = 1,
+          .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &exposure_out },
         { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = c->tone_ds,    .dstBinding = 0,
           .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &tone_in },
         { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = c->tone_ds,    .dstBinding = 1,
@@ -290,7 +319,7 @@ static void update_descriptors(ap_compute *c, VkImageView input_view)
         { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = c->encode_ds,  .dstBinding = 1,
           .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &encode_out },
     };
-    vkUpdateDescriptorSets(c->gpu->device, 6, writes, 0, NULL);
+    vkUpdateDescriptorSets(c->gpu->device, 8, writes, 0, NULL);
 }
 
 static int initial_layout_transitions(ap_compute *c)
@@ -355,9 +384,31 @@ static int initial_layout_transitions(ap_compute *c)
     return 0;
 }
 
-ap_compute *ap_compute_create(ap_gpu *g, ap_texture *input)
+static void build_demosaic_pc(demosaic_push_t *pc, const ap_raw_metadata *meta)
 {
-    if (!g || !input) {
+    for (int i = 0; i < 4; i++) {
+        pc->channel_map[i]       = (uint32_t)meta->channel_map[i];
+        pc->black_level[i]       = meta->black_level[i];
+        pc->wb_mul[i]            = meta->wb_mul[i];
+        pc->white_minus_black[i] = meta->white_level - meta->black_level[i];
+        if (pc->white_minus_black[i] <= 0.0f) {
+            pc->white_minus_black[i] = 1.0f;
+        }
+    }
+    for (int j = 0; j < 3; j++) {
+        pc->cam_to_srgb_r0[j] = meta->cam_to_srgb[0][j];
+        pc->cam_to_srgb_r1[j] = meta->cam_to_srgb[1][j];
+        pc->cam_to_srgb_r2[j] = meta->cam_to_srgb[2][j];
+    }
+    pc->cam_to_srgb_r0[3] = 0.0f;
+    pc->cam_to_srgb_r1[3] = 0.0f;
+    pc->cam_to_srgb_r2[3] = 0.0f;
+}
+
+ap_compute *ap_compute_create(ap_gpu *g, ap_texture *input,
+                              const ap_raw_metadata *meta)
+{
+    if (!g || !input || !meta) {
         AP_ERROR("ap_compute_create: null arg");
         return NULL;
     }
@@ -370,6 +421,7 @@ ap_compute *ap_compute_create(ap_gpu *g, ap_texture *input)
     c->gpu    = g;
     c->width  = ap_texture_width(input);
     c->height = ap_texture_height(input);
+    build_demosaic_pc(&c->demosaic_pc, meta);
 
     if (create_image(g->device, g->physical, c->width, c->height,
                      VK_FORMAT_R16G16B16A16_SFLOAT,
@@ -414,10 +466,14 @@ ap_compute *ap_compute_create(ap_gpu *g, ap_texture *input)
         goto fail;
     }
 
-    if (create_pipeline_object(c, process_comp_spv, process_comp_spv_size,
-                               sizeof(process_push_t),
-                               &c->process_dsl, &c->process_pl,
-                               &c->process_pipeline) < 0) goto fail;
+    if (create_pipeline_object(c, demosaic_comp_spv, demosaic_comp_spv_size,
+                               sizeof(demosaic_push_t),
+                               &c->demosaic_dsl, &c->demosaic_pl,
+                               &c->demosaic_pipeline) < 0) goto fail;
+    if (create_pipeline_object(c, exposure_comp_spv, exposure_comp_spv_size,
+                               sizeof(exposure_push_t),
+                               &c->exposure_dsl, &c->exposure_pl,
+                               &c->exposure_pipeline) < 0) goto fail;
     if (create_pipeline_object(c, tone_comp_spv, tone_comp_spv_size,
                                sizeof(tone_push_t),
                                &c->tone_dsl, &c->tone_pl,
@@ -467,9 +523,13 @@ void ap_compute_destroy(ap_compute *c)
     if (c->tone_pl)          vkDestroyPipelineLayout(dev, c->tone_pl, NULL);
     if (c->tone_dsl)         vkDestroyDescriptorSetLayout(dev, c->tone_dsl, NULL);
 
-    if (c->process_pipeline) vkDestroyPipeline(dev, c->process_pipeline, NULL);
-    if (c->process_pl)       vkDestroyPipelineLayout(dev, c->process_pl, NULL);
-    if (c->process_dsl)      vkDestroyDescriptorSetLayout(dev, c->process_dsl, NULL);
+    if (c->exposure_pipeline) vkDestroyPipeline(dev, c->exposure_pipeline, NULL);
+    if (c->exposure_pl)       vkDestroyPipelineLayout(dev, c->exposure_pl, NULL);
+    if (c->exposure_dsl)      vkDestroyDescriptorSetLayout(dev, c->exposure_dsl, NULL);
+
+    if (c->demosaic_pipeline) vkDestroyPipeline(dev, c->demosaic_pipeline, NULL);
+    if (c->demosaic_pl)       vkDestroyPipelineLayout(dev, c->demosaic_pl, NULL);
+    if (c->demosaic_dsl)      vkDestroyDescriptorSetLayout(dev, c->demosaic_dsl, NULL);
 
     free(c);
 }
@@ -539,17 +599,26 @@ void ap_compute_record(ap_compute *c, VkCommandBuffer cmd, const ap_edit_state *
     uint32_t gx = (uint32_t)((c->width  + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE);
     uint32_t gy = (uint32_t)((c->height + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE);
 
-    process_push_t process_pc = {
-        .exposure_ev = edit ? edit->exposure_ev : 0.0f,
-    };
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, c->process_pipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, c->process_pl,
-                            0, 1, &c->process_ds, 0, NULL);
-    vkCmdPushConstants(cmd, c->process_pl, VK_SHADER_STAGE_COMPUTE_BIT,
-                       0, sizeof(process_pc), &process_pc);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, c->demosaic_pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, c->demosaic_pl,
+                            0, 1, &c->demosaic_ds, 0, NULL);
+    vkCmdPushConstants(cmd, c->demosaic_pl, VK_SHADER_STAGE_COMPUTE_BIT,
+                       0, sizeof(c->demosaic_pc), &c->demosaic_pc);
     vkCmdDispatch(cmd, gx, gy, 1);
 
     compute_to_compute_barrier(cmd, c->stage_a_image);
+
+    exposure_push_t exposure_pc = {
+        .exposure_ev = edit ? edit->exposure_ev : 0.0f,
+    };
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, c->exposure_pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, c->exposure_pl,
+                            0, 1, &c->exposure_ds, 0, NULL);
+    vkCmdPushConstants(cmd, c->exposure_pl, VK_SHADER_STAGE_COMPUTE_BIT,
+                       0, sizeof(exposure_pc), &exposure_pc);
+    vkCmdDispatch(cmd, gx, gy, 1);
+
+    compute_to_compute_barrier(cmd, c->stage_b_image);
 
     tone_push_t tone_pc = {
         .contrast = edit ? edit->tone_contrast : 1.0f,
@@ -562,7 +631,8 @@ void ap_compute_record(ap_compute *c, VkCommandBuffer cmd, const ap_edit_state *
                        0, sizeof(tone_pc), &tone_pc);
     vkCmdDispatch(cmd, gx, gy, 1);
 
-    compute_to_compute_barrier(cmd, c->stage_b_image);
+    // Tone writes stage_a (ping-pong); encode reads it.
+    compute_to_compute_barrier(cmd, c->stage_a_image);
 
     encode_push_t encode_pc = {
         .transfer_function = TRANSFER_SRGB,

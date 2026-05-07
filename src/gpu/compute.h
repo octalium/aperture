@@ -5,6 +5,7 @@
 
 #include "gpu/gpu.h"
 #include "gpu/texture.h"
+#include "io/raw.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -12,7 +13,8 @@ extern "C" {
 
 typedef struct ap_compute ap_compute;
 
-ap_compute *ap_compute_create(ap_gpu *g, ap_texture *input);
+ap_compute *ap_compute_create(ap_gpu *g, ap_texture *input,
+                              const ap_raw_metadata *meta);
 void        ap_compute_destroy(ap_compute *c);
 
 VkImageView   ap_compute_output_view(const ap_compute *c);
