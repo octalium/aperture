@@ -58,14 +58,20 @@ int main(int argc, char **argv)
         img_h  = ap_compute_output_height(compute);
     }
 
-    ap_edit_state edit = { .exposure_ev = 0.0f };
+    ap_edit_state edit = {
+        .exposure_ev   = 0.0f,
+        .tone_contrast = 1.0f,
+        .tone_pivot    = 0.18f,
+    };
 
     int rc = 0;
     while (ap_gpu_should_run(g)) {
         ap_imgui_new_frame();
         ap_imgui_demo_window("aperture", APERTURE_VERSION);
         if (compute) {
-            ap_imgui_edit_panel(&edit.exposure_ev);
+            ap_imgui_edit_panel(&edit.exposure_ev,
+                                &edit.tone_contrast,
+                                &edit.tone_pivot);
             ap_imgui_viewport_window("image", tex_id, img_w, img_h);
         }
         if (ap_gpu_render_frame(g, &edit) < 0) {

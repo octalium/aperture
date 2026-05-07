@@ -141,13 +141,17 @@ extern "C" void ap_imgui_unregister_texture(uint64_t tex_id)
     ImGui_ImplVulkan_RemoveTexture(ds);
 }
 
-extern "C" void ap_imgui_edit_panel(float *exposure_ev)
+extern "C" void ap_imgui_edit_panel(float *exposure_ev,
+                                    float *tone_contrast,
+                                    float *tone_pivot)
 {
-    if (!exposure_ev) {
+    if (!exposure_ev || !tone_contrast || !tone_pivot) {
         return;
     }
     if (ImGui::Begin("edit")) {
-        ImGui::SliderFloat("Exposure (EV)", exposure_ev, -5.0f, 5.0f, "%.2f");
+        ImGui::SliderFloat("Exposure (EV)", exposure_ev,   -5.0f,  5.0f, "%.2f");
+        ImGui::SliderFloat("Contrast",      tone_contrast,  0.5f,  4.0f, "%.2f");
+        ImGui::SliderFloat("Pivot",         tone_pivot,     0.05f, 0.5f, "%.3f");
     }
     ImGui::End();
 }
