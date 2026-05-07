@@ -4,6 +4,7 @@
 #include "gpu/texture.h"
 #include "io/raw.h"
 #include "modules/module.h"
+#include "sidecar/sidecar.h"
 #include "ui/imgui.h"
 
 #include <stdlib.h>
@@ -57,6 +58,9 @@ ap_photo *ap_photo_open(ap_gpu *g, const char *path)
         .tone_contrast = 1.0f,
         .tone_pivot    = 0.18f,
     };
+    if (ap_sidecar_load_edit(path, &photo->edit) == 0) {
+        AP_INFO("photo: loaded sidecar for %s", path);
+    }
 
     ap_raw_image raw = {0};
     if (ap_raw_load(path, &raw) != 0) {
@@ -97,6 +101,13 @@ fail:
 void ap_photo_close(ap_photo *photo)
 {
     if (!photo) return;
+
+    // Persist current edit state before tearing down.
+    if (photo->path) {
+        if (ap_sidecar_save_edit(photo->path, &photo->edit) != 0) {
+            AP_WARN("photo: failed to save sidecar for %s", photo->path);
+        }
+    }
 
     if (photo->tex_id) {
         ap_imgui_unregister_texture(photo->tex_id);
