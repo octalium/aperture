@@ -17,10 +17,11 @@ add_project_arguments(
   language: ['c', 'cpp'],
 )
 
-vulkan_dep = dependency('vulkan')
-glfw_dep   = dependency('glfw3')
-cimgui_dep = dependency('cimgui')
-libraw_dep = dependency('libraw')
+vulkan_dep  = dependency('vulkan')
+glfw_dep    = dependency('glfw3')
+cimgui_dep  = dependency('cimgui')
+libraw_dep  = dependency('libraw')
+sqlite3_dep = dependency('sqlite3')
 
 aperture_inc = include_directories('src')
 aperture_sources = []
@@ -33,6 +34,7 @@ aperture_deps = [
   glfw_dep,
   cimgui_dep,
   libraw_dep,
+  sqlite3_dep,
   shaders_dep,
 ]
 

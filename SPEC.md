@@ -68,12 +68,28 @@ Three principles drive every dependency, format, and structural decision.
 
 ### Library
 
-A user-chosen root directory containing photos and a single SQLite
-index (`<library>/library.aperture-db`). Subfolder structure inside
-the library is the user's business — aperture treats the filesystem
-as the photographer's organization layer.
+A user-chosen root directory containing photos. Subfolder structure
+inside the library is the user's business — aperture treats the
+filesystem as the photographer's organization layer.
 
-The library db holds:
+**Aperture stores no data inside the user's photo directory.** All
+aperture-owned state lives in the OS user data root:
+
+```
+$XDG_DATA_HOME/aperture/                  # falls back to ~/.local/share/aperture/
+├── aperture.db                           # global registry
+│   └── libraries(id, path, created_at)   # path ↔ uuid mapping
+└── libraries/
+    └── <uuid>.db                         # per-library photo index
+```
+
+When the user opens a library by path, aperture looks up the path in
+the global registry. If found, it reuses the existing UUID; if not,
+it mints a new RFC 4122 v4 UUID, registers `(uuid, path)`, and opens
+`<app_root>/libraries/<uuid>.db`. Re-opening the same path always
+finds the same library.
+
+The per-library db (`<uuid>.db`) holds:
 
 - Photo index: path, content hash, capture timestamp, basic metadata
   cached for fast filtering
@@ -81,9 +97,12 @@ The library db holds:
   application-level state, not per-photo state)
 - Pipeline definitions (named, versioned)
 - Library-level settings: import naming schemas, export presets
+- A `schema` kv table recording the library's UUID, path, schema
+  version, and the aperture version that wrote it (for migrations
+  and self-recovery if the registry is lost)
 
-The db is a **derived index over the filesystem and per-photo
-sidecars** — re-buildable by re-scanning. Sidecars + filesystem are
+The library db is a **derived index over the filesystem and per-photo
+sidecars** — rebuildable by re-scanning. Sidecars + filesystem are
 authoritative for per-photo state. Only group membership and pipeline
 definitions live exclusively in the db.
 
@@ -488,11 +507,20 @@ session.
 - **`.aperture`** — TOML, one per source file. Edit stack +
   per-photo metadata. Schema-versioned.
 
-### Library db
+### Library dbs (in app root)
 
-- **`<library>/library.aperture-db`** — SQLite, single file at the
-  library root. Schema-versioned with explicit migrations after v1
-  ships.
+- **`<app_root>/aperture.db`** — global registry mapping library
+  UUIDs to filesystem paths.
+- **`<app_root>/libraries/<uuid>.db`** — per-library photo index +
+  groups + pipelines + settings.
+
+`<app_root>` is `$XDG_DATA_HOME/aperture` (Linux), falling back to
+`$HOME/.local/share/aperture`. Aperture **never writes inside the
+user's photo directory** — libraries are referenced by path, not
+co-located with the data.
+
+All dbs are SQLite, schema-versioned, with explicit migrations after
+v1 ships.
 
 ## Performance targets
 
@@ -622,9 +650,6 @@ The big one. After v1, aperture has a coherent application shape.
 
 ## Open questions
 
-- **Library db location** — at the library root as
-  `library.aperture-db`, or hidden in `.aperture/library.db`?
-  Affects filesystem cleanliness vs discoverability.
 - **Group nesting** — flat or hierarchical (`parent_id`)?
   Photographers commonly want nested groups.
 - **Pipeline storage** — embedded TOML in the SQLite `pipelines`
