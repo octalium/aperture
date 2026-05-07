@@ -12,6 +12,10 @@ extern "C" {
 
 typedef struct GLFWwindow GLFWwindow;
 
+// Backend lifecycle. The bridge's job narrows to this — anything that
+// touches ImGui's GLFW / Vulkan impl backends, plus texture-handle
+// registration. Higher-level UI lives in src/panels/ via cimgui.
+
 bool ap_imgui_init(GLFWwindow *window,
                    VkInstance instance,
                    VkPhysicalDevice physical,
@@ -25,16 +29,8 @@ void ap_imgui_shutdown(void);
 void ap_imgui_new_frame(void);
 void ap_imgui_render(VkCommandBuffer cmd);
 
-void ap_imgui_demo_window(const char *title, const char *version);
-
 uint64_t ap_imgui_register_texture(VkSampler sampler, VkImageView view, VkImageLayout layout);
 void     ap_imgui_unregister_texture(uint64_t tex_id);
-void     ap_imgui_viewport_window(const char *title, uint64_t tex_id,
-                                  int img_width, int img_height);
-
-void     ap_imgui_edit_panel(float *exposure_ev,
-                             float *tone_contrast,
-                             float *tone_pivot);
 
 #ifdef __cplusplus
 }
