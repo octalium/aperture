@@ -2,6 +2,7 @@
 
 #include "library.h"
 
+#include "app/root.h"
 #include "core/log.h"
 
 #include <sqlite3.h>
@@ -17,7 +18,6 @@
 #include <sys/stat.h>
 #include <time.h>
 
-#define DB_FILENAME       "library.aperture-db"
 #define APERTURE_DB_VERSION "1"
 
 #ifndef APERTURE_VERSION
@@ -31,15 +31,129 @@ static const char *RAW_EXTENSIONS[] = {
 };
 
 struct ap_library {
-    char     *root;        // absolute path to the library root
-    sqlite3  *db;
+    char     *root;        // absolute path to the photo directory
+    char      id[37];      // RFC 4122 v4 UUID, 36 chars + NUL
+    sqlite3  *db;          // <app_root>/libraries/<id>.db
 
     char    **photo_paths; // relative to root
     int       photo_count;
     int       photo_capacity;
 };
 
-static const char *SCHEMA_SQL =
+// ----- registry: <app_root>/aperture.db, libraries(id, path, created_at) -----
+
+static const char *REGISTRY_SCHEMA_SQL =
+    "CREATE TABLE IF NOT EXISTS libraries ("
+    "    id         TEXT PRIMARY KEY,"
+    "    path       TEXT NOT NULL UNIQUE,"
+    "    created_at INTEGER NOT NULL"
+    ");";
+
+static int gen_uuid_v4(char buf[37])
+{
+    uint8_t b[16];
+    FILE *f = fopen("/dev/urandom", "rb");
+    if (!f) {
+        AP_ERROR("gen_uuid_v4: cannot open /dev/urandom: %s", strerror(errno));
+        return -1;
+    }
+    if (fread(b, 1, 16, f) != 16) {
+        AP_ERROR("gen_uuid_v4: short read from /dev/urandom");
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+
+    // RFC 4122 v4: version in bits 12-15 of time_hi (b[6]),
+    //              variant in bits 6-7 of clock_seq_hi (b[8]).
+    b[6] = (b[6] & 0x0Fu) | 0x40u;
+    b[8] = (b[8] & 0x3Fu) | 0x80u;
+
+    snprintf(buf, 37,
+             "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             b[0], b[1], b[2],  b[3],  b[4],  b[5],  b[6],  b[7],
+             b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
+    return 0;
+}
+
+static int registry_resolve_id(const char *abs_path, char id_out[37])
+{
+    if (ap_app_root_ensure() < 0) return -1;
+
+    char reg_path[4096];
+    if (ap_app_root_join("aperture.db", reg_path, sizeof(reg_path)) < 0) {
+        return -1;
+    }
+
+    sqlite3 *reg = NULL;
+    if (sqlite3_open(reg_path, &reg) != SQLITE_OK) {
+        AP_ERROR("registry: sqlite3_open(%s): %s", reg_path, sqlite3_errmsg(reg));
+        if (reg) sqlite3_close(reg);
+        return -1;
+    }
+
+    char *err = NULL;
+    if (sqlite3_exec(reg, REGISTRY_SCHEMA_SQL, NULL, NULL, &err) != SQLITE_OK) {
+        AP_ERROR("registry: schema: %s", err ? err : "(no message)");
+        sqlite3_free(err);
+        sqlite3_close(reg);
+        return -1;
+    }
+
+    sqlite3_stmt *sel = NULL;
+    if (sqlite3_prepare_v2(reg, "SELECT id FROM libraries WHERE path = ?;",
+                           -1, &sel, NULL) != SQLITE_OK) {
+        AP_ERROR("registry: prepare select: %s", sqlite3_errmsg(reg));
+        sqlite3_close(reg);
+        return -1;
+    }
+    sqlite3_bind_text(sel, 1, abs_path, -1, SQLITE_STATIC);
+
+    int rc = sqlite3_step(sel);
+    if (rc == SQLITE_ROW) {
+        const char *existing = (const char *)sqlite3_column_text(sel, 0);
+        snprintf(id_out, 37, "%s", existing ? existing : "");
+        sqlite3_finalize(sel);
+        sqlite3_close(reg);
+        return id_out[0] ? 0 : -1;
+    }
+    sqlite3_finalize(sel);
+    if (rc != SQLITE_DONE) {
+        AP_ERROR("registry: select step: %s", sqlite3_errstr(rc));
+        sqlite3_close(reg);
+        return -1;
+    }
+
+    if (gen_uuid_v4(id_out) < 0) {
+        sqlite3_close(reg);
+        return -1;
+    }
+
+    sqlite3_stmt *ins = NULL;
+    if (sqlite3_prepare_v2(reg,
+            "INSERT INTO libraries(id, path, created_at) VALUES (?, ?, ?);",
+            -1, &ins, NULL) != SQLITE_OK) {
+        AP_ERROR("registry: prepare insert: %s", sqlite3_errmsg(reg));
+        sqlite3_close(reg);
+        return -1;
+    }
+    sqlite3_bind_text(ins, 1, id_out,   -1, SQLITE_STATIC);
+    sqlite3_bind_text(ins, 2, abs_path, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(ins, 3, (int64_t)time(NULL));
+    rc = sqlite3_step(ins);
+    sqlite3_finalize(ins);
+    sqlite3_close(reg);
+    if (rc != SQLITE_DONE) {
+        AP_ERROR("registry: insert step: %s", sqlite3_errstr(rc));
+        return -1;
+    }
+    AP_INFO("library: registered new id %s for %s", id_out, abs_path);
+    return 0;
+}
+
+// ----- per-library db: photos table -----
+
+static const char *LIBRARY_SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS schema ("
     "    key   TEXT PRIMARY KEY,"
     "    value TEXT NOT NULL"
@@ -142,12 +256,12 @@ static int scan_dir(ap_library *lib, sqlite3_stmt *insert_stmt,
     DIR *d = opendir(abs_dir);
     if (!d) {
         AP_WARN("library: opendir(%s): %s", abs_dir, strerror(errno));
-        return 0; // skip, don't fail the whole scan
+        return 0;
     }
 
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
-        if (ent->d_name[0] == '.') continue; // skip dotfiles incl. . and ..
+        if (ent->d_name[0] == '.') continue;
 
         char abs_child[4096];
         if (snprintf(abs_child, sizeof(abs_child), "%s/%s",
@@ -240,9 +354,14 @@ ap_library *ap_library_open(const char *path)
     }
     lib->root = root;
 
+    if (registry_resolve_id(lib->root, lib->id) < 0) {
+        goto fail;
+    }
+
+    char db_filename[64];
+    snprintf(db_filename, sizeof(db_filename), "libraries/%s.db", lib->id);
     char db_path[4096];
-    if (snprintf(db_path, sizeof(db_path), "%s/%s", root, DB_FILENAME)
-        >= (int)sizeof(db_path)) {
+    if (ap_app_root_join(db_filename, db_path, sizeof(db_path)) < 0) {
         AP_ERROR("ap_library_open: db path too long");
         goto fail;
     }
@@ -255,9 +374,11 @@ ap_library *ap_library_open(const char *path)
     sqlite3_exec(lib->db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
     sqlite3_exec(lib->db, "PRAGMA foreign_keys=ON;",  NULL, NULL, NULL);
 
-    if (exec_simple(lib->db, SCHEMA_SQL)                            < 0) goto fail;
+    if (exec_simple(lib->db, LIBRARY_SCHEMA_SQL)                       < 0) goto fail;
     if (set_schema_kv(lib->db, "version",          APERTURE_DB_VERSION) < 0) goto fail;
     if (set_schema_kv(lib->db, "aperture_version", APERTURE_VERSION)    < 0) goto fail;
+    if (set_schema_kv(lib->db, "library_id",       lib->id)             < 0) goto fail;
+    if (set_schema_kv(lib->db, "library_path",     lib->root)           < 0) goto fail;
 
     sqlite3_stmt *insert_stmt = NULL;
     int rc = sqlite3_prepare_v2(lib->db,
@@ -277,7 +398,8 @@ ap_library *ap_library_open(const char *path)
 
     if (load_photo_cache(lib) < 0) goto fail;
 
-    AP_INFO("library: %s (%d photos)", lib->root, lib->photo_count);
+    AP_INFO("library: %s [%s] (%d photos)",
+            lib->root, lib->id, lib->photo_count);
     return lib;
 
 fail:
