@@ -16,8 +16,9 @@ typedef enum {
 // Sentinel for panels that should appear in every mode (info / FPS / etc.).
 #define AP_MODE_ANY  ((ap_mode)-1)
 
-typedef struct ap_app   ap_app;
-typedef struct ap_photo ap_photo;
+typedef struct ap_app     ap_app;
+typedef struct ap_photo   ap_photo;
+typedef struct ap_library ap_library;
 
 // Top-level application: owns the gpu, the current mode, and the
 // currently-open photo (if any).
@@ -39,6 +40,13 @@ void    ap_app_set_mode(ap_app *app, ap_mode mode);
 int       ap_app_open_photo(ap_app *app, const char *path);
 void      ap_app_close_photo(ap_app *app);
 ap_photo *ap_app_photo(ap_app *app);
+
+// Library lifecycle. Opening a library transitions to AP_MODE_LIBRARY
+// and closes any currently-open photo. Opening a different library
+// closes the previous one.
+int         ap_app_open_library(ap_app *app, const char *path);
+void        ap_app_close_library(ap_app *app);
+ap_library *ap_app_library(ap_app *app);
 
 #ifdef __cplusplus
 }

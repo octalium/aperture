@@ -2,6 +2,7 @@
 
 #include "core/log.h"
 #include "gpu/gpu.h"
+#include "library/library.h"
 #include "panels/panels.h"
 #include "photo/photo.h"
 #include "ui/imgui.h"
@@ -9,9 +10,10 @@
 #include <stdlib.h>
 
 struct ap_app {
-    ap_gpu   *gpu;
-    ap_mode   mode;
-    ap_photo *photo;
+    ap_gpu     *gpu;
+    ap_mode     mode;
+    ap_photo   *photo;
+    ap_library *library;
 };
 
 ap_app *ap_app_create(int width, int height, const char *title)
@@ -37,6 +39,7 @@ void ap_app_destroy(ap_app *app)
 
     ap_app_wait_idle(app);
     ap_app_close_photo(app);
+    ap_app_close_library(app);
     if (app->gpu) {
         ap_gpu_destroy(app->gpu);
         app->gpu = NULL;
@@ -99,6 +102,33 @@ void ap_app_close_photo(ap_app *app)
 ap_photo *ap_app_photo(ap_app *app)
 {
     return app ? app->photo : NULL;
+}
+
+int ap_app_open_library(ap_app *app, const char *path)
+{
+    if (!app || !path) return -1;
+
+    ap_app_close_photo(app);
+    ap_app_close_library(app);
+
+    app->library = ap_library_open(path);
+    if (!app->library) {
+        return -1;
+    }
+    app->mode = AP_MODE_LIBRARY;
+    return 0;
+}
+
+void ap_app_close_library(ap_app *app)
+{
+    if (!app || !app->library) return;
+    ap_library_close(app->library);
+    app->library = NULL;
+}
+
+ap_library *ap_app_library(ap_app *app)
+{
+    return app ? app->library : NULL;
 }
 
 int ap_app_run_frame(ap_app *app)

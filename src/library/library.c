@@ -1,0 +1,329 @@
+#define _GNU_SOURCE
+
+#include "library.h"
+
+#include "core/log.h"
+
+#include <sqlite3.h>
+
+#include <dirent.h>
+#include <errno.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include <sys/stat.h>
+#include <time.h>
+
+#define DB_FILENAME       "library.aperture-db"
+#define APERTURE_DB_VERSION "1"
+
+#ifndef APERTURE_VERSION
+#error "APERTURE_VERSION must be defined at compile time (set via meson)"
+#endif
+
+static const char *RAW_EXTENSIONS[] = {
+    ".nef", ".cr2", ".cr3", ".raf", ".arw",
+    ".dng", ".orf", ".rw2", ".pef", ".srw",
+    NULL,
+};
+
+struct ap_library {
+    char     *root;        // absolute path to the library root
+    sqlite3  *db;
+
+    char    **photo_paths; // relative to root
+    int       photo_count;
+    int       photo_capacity;
+};
+
+static const char *SCHEMA_SQL =
+    "CREATE TABLE IF NOT EXISTS schema ("
+    "    key   TEXT PRIMARY KEY,"
+    "    value TEXT NOT NULL"
+    ");"
+    "CREATE TABLE IF NOT EXISTS photos ("
+    "    id           INTEGER PRIMARY KEY,"
+    "    path         TEXT NOT NULL UNIQUE,"
+    "    hash         BLOB,"
+    "    capture_time INTEGER,"
+    "    added_at     INTEGER NOT NULL"
+    ");"
+    "CREATE INDEX IF NOT EXISTS idx_photos_capture_time ON photos(capture_time);";
+
+static int exec_simple(sqlite3 *db, const char *sql)
+{
+    char *err = NULL;
+    int rc = sqlite3_exec(db, sql, NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        AP_ERROR("library: sqlite exec failed: %s", err ? err : "(no message)");
+        sqlite3_free(err);
+        return -1;
+    }
+    return 0;
+}
+
+static int set_schema_kv(sqlite3 *db, const char *key, const char *value)
+{
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(db,
+        "INSERT INTO schema(key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        AP_ERROR("library: prepare schema upsert: %s", sqlite3_errmsg(db));
+        return -1;
+    }
+    sqlite3_bind_text(stmt, 1, key,   -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, value, -1, SQLITE_STATIC);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        AP_ERROR("library: schema upsert step: %s", sqlite3_errstr(rc));
+        return -1;
+    }
+    return 0;
+}
+
+static bool is_raw_file(const char *name)
+{
+    const char *dot = strrchr(name, '.');
+    if (!dot) return false;
+    for (int i = 0; RAW_EXTENSIONS[i]; i++) {
+        if (strcasecmp(dot, RAW_EXTENSIONS[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int append_path(ap_library *lib, const char *rel)
+{
+    if (lib->photo_count == lib->photo_capacity) {
+        int new_cap = lib->photo_capacity ? lib->photo_capacity * 2 : 64;
+        char **np = realloc(lib->photo_paths, (size_t)new_cap * sizeof(*np));
+        if (!np) {
+            AP_ERROR("library: photo list grow failed");
+            return -1;
+        }
+        lib->photo_paths    = np;
+        lib->photo_capacity = new_cap;
+    }
+    char *dup = strdup(rel);
+    if (!dup) {
+        AP_ERROR("library: path dup failed");
+        return -1;
+    }
+    lib->photo_paths[lib->photo_count++] = dup;
+    return 0;
+}
+
+static int insert_photo(sqlite3 *db, sqlite3_stmt *stmt, const char *rel,
+                        int64_t added_at)
+{
+    sqlite3_reset(stmt);
+    sqlite3_clear_bindings(stmt);
+    sqlite3_bind_text(stmt, 1, rel, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 2, added_at);
+    int rc = sqlite3_step(stmt);
+    if (rc != SQLITE_DONE) {
+        AP_ERROR("library: insert photo '%s': %s", rel, sqlite3_errmsg(db));
+        return -1;
+    }
+    return 0;
+}
+
+static int scan_dir(ap_library *lib, sqlite3_stmt *insert_stmt,
+                    const char *abs_dir, const char *rel_prefix,
+                    int64_t added_at)
+{
+    DIR *d = opendir(abs_dir);
+    if (!d) {
+        AP_WARN("library: opendir(%s): %s", abs_dir, strerror(errno));
+        return 0; // skip, don't fail the whole scan
+    }
+
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') continue; // skip dotfiles incl. . and ..
+
+        char abs_child[4096];
+        if (snprintf(abs_child, sizeof(abs_child), "%s/%s",
+                     abs_dir, ent->d_name) >= (int)sizeof(abs_child)) {
+            AP_WARN("library: path too long, skipping %s/%s", abs_dir, ent->d_name);
+            continue;
+        }
+
+        struct stat st;
+        if (stat(abs_child, &st) != 0) continue;
+
+        if (S_ISDIR(st.st_mode)) {
+            char child_rel[2048];
+            if (rel_prefix[0] == '\0') {
+                snprintf(child_rel, sizeof(child_rel), "%s", ent->d_name);
+            } else {
+                snprintf(child_rel, sizeof(child_rel), "%s/%s",
+                         rel_prefix, ent->d_name);
+            }
+            scan_dir(lib, insert_stmt, abs_child, child_rel, added_at);
+            continue;
+        }
+
+        if (!S_ISREG(st.st_mode)) continue;
+        if (!is_raw_file(ent->d_name)) continue;
+
+        char rel[2048];
+        if (rel_prefix[0] == '\0') {
+            snprintf(rel, sizeof(rel), "%s", ent->d_name);
+        } else {
+            snprintf(rel, sizeof(rel), "%s/%s", rel_prefix, ent->d_name);
+        }
+        insert_photo(lib->db, insert_stmt, rel, added_at);
+    }
+
+    closedir(d);
+    return 0;
+}
+
+static int load_photo_cache(ap_library *lib)
+{
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(lib->db,
+        "SELECT path FROM photos ORDER BY path;", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        AP_ERROR("library: prepare photo list: %s", sqlite3_errmsg(lib->db));
+        return -1;
+    }
+
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        const char *path = (const char *)sqlite3_column_text(stmt, 0);
+        if (!path) continue;
+        if (append_path(lib, path) < 0) {
+            sqlite3_finalize(stmt);
+            return -1;
+        }
+    }
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        AP_ERROR("library: photo list iteration: %s", sqlite3_errstr(rc));
+        return -1;
+    }
+    return 0;
+}
+
+ap_library *ap_library_open(const char *path)
+{
+    if (!path) {
+        AP_ERROR("ap_library_open: NULL path");
+        return NULL;
+    }
+
+    char *root = realpath(path, NULL);
+    if (!root) {
+        AP_ERROR("ap_library_open: realpath(%s): %s", path, strerror(errno));
+        return NULL;
+    }
+    struct stat st;
+    if (stat(root, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        AP_ERROR("ap_library_open: %s is not a directory", root);
+        free(root);
+        return NULL;
+    }
+
+    ap_library *lib = calloc(1, sizeof(*lib));
+    if (!lib) {
+        AP_ERROR("ap_library_open: out of memory");
+        free(root);
+        return NULL;
+    }
+    lib->root = root;
+
+    char db_path[4096];
+    if (snprintf(db_path, sizeof(db_path), "%s/%s", root, DB_FILENAME)
+        >= (int)sizeof(db_path)) {
+        AP_ERROR("ap_library_open: db path too long");
+        goto fail;
+    }
+
+    if (sqlite3_open(db_path, &lib->db) != SQLITE_OK) {
+        AP_ERROR("ap_library_open: sqlite3_open(%s): %s",
+                 db_path, sqlite3_errmsg(lib->db));
+        goto fail;
+    }
+    sqlite3_exec(lib->db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
+    sqlite3_exec(lib->db, "PRAGMA foreign_keys=ON;",  NULL, NULL, NULL);
+
+    if (exec_simple(lib->db, SCHEMA_SQL)                            < 0) goto fail;
+    if (set_schema_kv(lib->db, "version",          APERTURE_DB_VERSION) < 0) goto fail;
+    if (set_schema_kv(lib->db, "aperture_version", APERTURE_VERSION)    < 0) goto fail;
+
+    sqlite3_stmt *insert_stmt = NULL;
+    int rc = sqlite3_prepare_v2(lib->db,
+        "INSERT OR IGNORE INTO photos(path, added_at) VALUES (?, ?);",
+        -1, &insert_stmt, NULL);
+    if (rc != SQLITE_OK) {
+        AP_ERROR("ap_library_open: prepare insert: %s", sqlite3_errmsg(lib->db));
+        goto fail;
+    }
+
+    int64_t now = (int64_t)time(NULL);
+
+    sqlite3_exec(lib->db, "BEGIN;", NULL, NULL, NULL);
+    scan_dir(lib, insert_stmt, lib->root, "", now);
+    sqlite3_exec(lib->db, "COMMIT;", NULL, NULL, NULL);
+    sqlite3_finalize(insert_stmt);
+
+    if (load_photo_cache(lib) < 0) goto fail;
+
+    AP_INFO("library: %s (%d photos)", lib->root, lib->photo_count);
+    return lib;
+
+fail:
+    ap_library_close(lib);
+    return NULL;
+}
+
+void ap_library_close(ap_library *lib)
+{
+    if (!lib) return;
+    for (int i = 0; i < lib->photo_count; i++) {
+        free(lib->photo_paths[i]);
+    }
+    free(lib->photo_paths);
+    if (lib->db) {
+        sqlite3_close(lib->db);
+    }
+    free(lib->root);
+    free(lib);
+}
+
+const char *ap_library_root(const ap_library *lib)
+{
+    return lib ? lib->root : NULL;
+}
+
+int ap_library_photo_count(const ap_library *lib)
+{
+    return lib ? lib->photo_count : 0;
+}
+
+const char *ap_library_photo_relative_path(const ap_library *lib, int index)
+{
+    if (!lib || index < 0 || index >= lib->photo_count) return NULL;
+    return lib->photo_paths[index];
+}
+
+int ap_library_photo_absolute_path(const ap_library *lib, int index,
+                                   char *buf, size_t buflen)
+{
+    if (!lib || !buf || index < 0 || index >= lib->photo_count) {
+        return -1;
+    }
+    int n = snprintf(buf, buflen, "%s/%s", lib->root, lib->photo_paths[index]);
+    if (n < 0 || (size_t)n >= buflen) {
+        return -1;
+    }
+    return 0;
+}
