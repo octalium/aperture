@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 #include "app.h"
 
 #include "core/log.h"
@@ -7,6 +9,7 @@
 #include "photo/photo.h"
 #include "ui/imgui.h"
 
+#include <signal.h>
 #include <stdlib.h>
 
 struct ap_app {
@@ -15,6 +18,26 @@ struct ap_app {
     ap_photo   *photo;
     ap_library *library;
 };
+
+// Set by SIGTERM / SIGINT; polled by ap_app_should_run so the main
+// loop exits cleanly (running per-photo save-on-close, library
+// teardown, etc.) instead of dying mid-frame.
+static volatile sig_atomic_t g_quit_requested = 0;
+
+static void on_signal(int sig)
+{
+    (void)sig;
+    g_quit_requested = 1;
+}
+
+static void install_signal_handlers(void)
+{
+    struct sigaction sa = {0};
+    sa.sa_handler = on_signal;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT,  &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+}
 
 ap_app *ap_app_create(int width, int height, const char *title)
 {
@@ -30,6 +53,8 @@ ap_app *ap_app_create(int width, int height, const char *title)
         free(app);
         return NULL;
     }
+
+    install_signal_handlers();
     return app;
 }
 
@@ -49,7 +74,9 @@ void ap_app_destroy(ap_app *app)
 
 bool ap_app_should_run(ap_app *app)
 {
-    return app && ap_gpu_should_run(app->gpu);
+    if (!app) return false;
+    if (g_quit_requested) return false;
+    return ap_gpu_should_run(app->gpu);
 }
 
 void ap_app_wait_idle(ap_app *app)
