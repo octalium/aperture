@@ -85,6 +85,10 @@ int ap_sidecar_load_edit(const char *source_path, ap_edit_state *edit)
         if (read_double(edit_tbl, "exposure_ev",   &d) == 0) edit->exposure_ev   = (float)d;
         if (read_double(edit_tbl, "tone_contrast", &d) == 0) edit->tone_contrast = (float)d;
         if (read_double(edit_tbl, "tone_pivot",    &d) == 0) edit->tone_pivot    = (float)d;
+        int64_t i = 0;
+        if (read_int(edit_tbl, "respect_orientation", &i) == 0) {
+            edit->respect_orientation = (int)(i != 0);
+        }
         rc = 0;
     }
 
@@ -120,13 +124,15 @@ int ap_sidecar_save_edit(const char *source_path, const ap_edit_state *edit)
         "schema_version = %d\n"
         "\n"
         "[edit]\n"
-        "exposure_ev   = %g\n"
-        "tone_contrast = %g\n"
-        "tone_pivot    = %g\n",
+        "exposure_ev         = %g\n"
+        "tone_contrast       = %g\n"
+        "tone_pivot          = %g\n"
+        "respect_orientation = %d\n",
         APERTURE_SIDECAR_SCHEMA,
         (double)edit->exposure_ev,
         (double)edit->tone_contrast,
-        (double)edit->tone_pivot);
+        (double)edit->tone_pivot,
+        edit->respect_orientation ? 1 : 0);
 
     if (written < 0) {
         AP_ERROR("sidecar: fprintf(%s): %s", tmp_path, strerror(errno));

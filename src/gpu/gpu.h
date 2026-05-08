@@ -16,6 +16,7 @@ typedef struct {
     float exposure_ev;
     float tone_contrast;
     float tone_pivot;
+    int   respect_orientation;  // bool — apply EXIF flip in demosaic
 } ap_edit_state;
 
 ap_gpu *ap_gpu_create(int width, int height, const char *title);
