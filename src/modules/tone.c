@@ -9,9 +9,11 @@ typedef struct {
 
 static int tone_pack_push(const ap_module *self,
                           const ap_edit_state *edit,
+                          const ap_raw_metadata *meta,
                           void *push_out)
 {
     (void)self;
+    (void)meta;
     tone_push_t *pc = push_out;
     pc->contrast = edit ? edit->tone_contrast : 1.0f;
     pc->pivot    = edit ? edit->tone_pivot    : 0.18f;

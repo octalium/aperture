@@ -2,12 +2,14 @@
 
 #include <string.h>
 
-extern const ap_module module_process;
+extern const ap_module module_demosaic;
+extern const ap_module module_exposure;
 extern const ap_module module_tone;
 extern const ap_module module_encode;
 
 const ap_module *const ap_module_registry[] = {
-    &module_process,
+    &module_demosaic,
+    &module_exposure,
     &module_tone,
     &module_encode,
     NULL,

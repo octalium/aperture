@@ -15,6 +15,8 @@ typedef struct ap_texture ap_texture;
 
 ap_texture *ap_texture_create_rgba8(ap_gpu *g, const uint8_t *pixels,
                                     int width, int height);
+ap_texture *ap_texture_create_r16(ap_gpu *g, const uint16_t *pixels,
+                                  int width, int height);
 void ap_texture_destroy(ap_texture *t);
 
 VkImageView   ap_texture_view(const ap_texture *t);

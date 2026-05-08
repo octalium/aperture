@@ -5,6 +5,7 @@
 #include "core/log.h"
 #include "modules/module.h"
 
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -24,6 +25,9 @@ struct ap_pipeline_graph {
     struct ap_gpu *gpu;
     int width;
     int height;
+
+    bool            has_meta;
+    ap_raw_metadata meta;
 
     VkDescriptorPool descriptor_pool;
 
@@ -403,7 +407,8 @@ static int initial_layout_transitions(ap_pipeline_graph *graph)
 
 ap_pipeline_graph *ap_pipeline_graph_create(ap_gpu *g, ap_texture *input,
                                             const ap_module *const *modules,
-                                            int module_count)
+                                            int module_count,
+                                            const ap_raw_metadata *meta)
 {
     if (!g || !input || !modules || module_count <= 0) {
         AP_ERROR("ap_pipeline_graph_create: invalid args");
@@ -430,6 +435,10 @@ ap_pipeline_graph *ap_pipeline_graph_create(ap_gpu *g, ap_texture *input,
     graph->width  = ap_texture_width(input);
     graph->height = ap_texture_height(input);
     graph->stage_count = module_count;
+    if (meta) {
+        graph->meta     = *meta;
+        graph->has_meta = true;
+    }
 
     if (create_buffers(graph, graph->width, graph->height)        < 0) goto fail;
     if (create_descriptor_pool(graph, module_count)               < 0) goto fail;
@@ -558,7 +567,8 @@ int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
         }
 
         if (m->pack_push) {
-            int rc = m->pack_push(m, edit, push_buf);
+            const ap_raw_metadata *meta = graph->has_meta ? &graph->meta : NULL;
+            int rc = m->pack_push(m, edit, meta, push_buf);
             if (rc != 0) {
                 continue; // module signaled "skip"
             }
