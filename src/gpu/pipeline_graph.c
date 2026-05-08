@@ -406,11 +406,14 @@ static int initial_layout_transitions(ap_pipeline_graph *graph)
 }
 
 ap_pipeline_graph *ap_pipeline_graph_create(ap_gpu *g, ap_texture *input,
+                                            int output_width,
+                                            int output_height,
                                             const ap_module *const *modules,
                                             int module_count,
                                             const ap_raw_metadata *meta)
 {
-    if (!g || !input || !modules || module_count <= 0) {
+    if (!g || !input || !modules || module_count <= 0
+        || output_width <= 0 || output_height <= 0) {
         AP_ERROR("ap_pipeline_graph_create: invalid args");
         return NULL;
     }
@@ -432,8 +435,8 @@ ap_pipeline_graph *ap_pipeline_graph_create(ap_gpu *g, ap_texture *input,
         return NULL;
     }
     graph->gpu    = g;
-    graph->width  = ap_texture_width(input);
-    graph->height = ap_texture_height(input);
+    graph->width  = output_width;
+    graph->height = output_height;
     graph->stage_count = module_count;
     if (meta) {
         graph->meta     = *meta;

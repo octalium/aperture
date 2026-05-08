@@ -12,6 +12,7 @@ typedef struct {
     float    cam_to_srgb_r0[4];
     float    cam_to_srgb_r1[4];
     float    cam_to_srgb_r2[4];
+    uint32_t sensor_size_flip[4]; // .x = sensor_w, .y = sensor_h, .z = flip, .w = pad
 } demosaic_push_t;
 
 static int demosaic_pack_push(const ap_module *self,
@@ -40,6 +41,11 @@ static int demosaic_pack_push(const ap_module *self,
         pc->cam_to_srgb_r1[j] = meta->cam_to_srgb[1][j];
         pc->cam_to_srgb_r2[j] = meta->cam_to_srgb[2][j];
     }
+
+    pc->sensor_size_flip[0] = (uint32_t)meta->sensor_width;
+    pc->sensor_size_flip[1] = (uint32_t)meta->sensor_height;
+    pc->sensor_size_flip[2] = (uint32_t)meta->flip;
+    pc->sensor_size_flip[3] = 0;
     return 0;
 }
 
