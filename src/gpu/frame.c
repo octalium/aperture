@@ -2,6 +2,7 @@
 
 #include "core/log.h"
 #include "gpu/canvas.h"
+#include "gpu/grid.h"
 #include "gpu/pipeline_graph.h"
 #include "ui/imgui.h"
 
@@ -120,7 +121,11 @@ static int record_frame(struct ap_gpu *g, VkCommandBuffer cmd,
     };
 
     vkCmdBeginRendering(cmd, &rendering);
-    if (g->current_canvas) {
+    if (g->current_grid) {
+        ap_grid_record(g->current_grid, cmd,
+                       (int)g->swapchain_extent.width,
+                       (int)g->swapchain_extent.height);
+    } else if (g->current_canvas) {
         ap_canvas_record(g->current_canvas, cmd,
                          (int)g->swapchain_extent.width,
                          (int)g->swapchain_extent.height);

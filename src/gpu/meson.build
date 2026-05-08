@@ -3,6 +3,7 @@ aperture_sources += files(
   'device.c',
   'frame.c',
   'gpu.c',
+  'grid.c',
   'instance.c',
   'pipeline_graph.c',
   'swapchain.c',

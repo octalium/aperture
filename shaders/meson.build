@@ -8,6 +8,8 @@ shader_sources = [
   'encode.comp',
   'canvas.vert',
   'canvas.frag',
+  'grid.vert',
+  'grid.frag',
 ]
 
 shader_headers = []

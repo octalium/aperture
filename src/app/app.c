@@ -5,6 +5,7 @@
 #include "core/log.h"
 #include "gpu/canvas.h"
 #include "gpu/gpu.h"
+#include "gpu/grid.h"
 #include "gpu/pipeline_graph.h"
 #include "library/library.h"
 #include "panels/panels.h"
@@ -19,6 +20,7 @@
 struct ap_app {
     ap_gpu     *gpu;
     ap_canvas  *canvas;
+    ap_grid    *grid;
     ap_mode     mode;
     ap_photo   *photo;
     ap_library *library;
@@ -65,7 +67,14 @@ ap_app *ap_app_create(int width, int height, const char *title)
         free(app);
         return NULL;
     }
-    ap_gpu_set_canvas(app->gpu, app->canvas);
+
+    app->grid = ap_grid_create(app->gpu);
+    if (!app->grid) {
+        ap_canvas_destroy(app->canvas);
+        ap_gpu_destroy(app->gpu);
+        free(app);
+        return NULL;
+    }
 
     install_signal_handlers();
     return app;
@@ -78,8 +87,13 @@ void ap_app_destroy(ap_app *app)
     ap_app_wait_idle(app);
     ap_app_close_photo(app);
     ap_app_close_library(app);
+    ap_gpu_set_canvas(app->gpu, NULL);
+    ap_gpu_set_grid(app->gpu, NULL);
+    if (app->grid) {
+        ap_grid_destroy(app->grid);
+        app->grid = NULL;
+    }
     if (app->canvas) {
-        ap_gpu_set_canvas(app->gpu, NULL);
         ap_canvas_destroy(app->canvas);
         app->canvas = NULL;
     }
@@ -109,11 +123,23 @@ ap_mode ap_app_mode(const ap_app *app)
     return app ? app->mode : AP_MODE_LIBRARY;
 }
 
+static void bind_mode_view(ap_app *app)
+{
+    if (!app || !app->gpu) return;
+    if (app->mode == AP_MODE_PHOTO && app->photo) {
+        ap_gpu_set_grid(app->gpu, NULL);
+        ap_gpu_set_canvas(app->gpu, app->canvas);
+    } else {
+        ap_gpu_set_canvas(app->gpu, NULL);
+        ap_gpu_set_grid(app->gpu, app->library ? app->grid : NULL);
+    }
+}
+
 void ap_app_set_mode(ap_app *app, ap_mode mode)
 {
-    if (app) {
-        app->mode = mode;
-    }
+    if (!app) return;
+    app->mode = mode;
+    bind_mode_view(app);
 }
 
 int ap_app_open_photo(ap_app *app, const char *path)
@@ -136,6 +162,7 @@ int ap_app_open_photo(ap_app *app, const char *path)
                         ap_pipeline_graph_output_width(graph),
                         ap_pipeline_graph_output_height(graph));
     app->mode = AP_MODE_PHOTO;
+    bind_mode_view(app);
     return 0;
 }
 
@@ -149,6 +176,7 @@ void ap_app_close_photo(ap_app *app)
     ap_photo_close(app->photo);
     app->photo = NULL;
     app->mode  = AP_MODE_LIBRARY;
+    bind_mode_view(app);
 }
 
 ap_photo *ap_app_photo(ap_app *app)
@@ -167,7 +195,10 @@ int ap_app_open_library(ap_app *app, const char *path)
     if (!app->library) {
         return -1;
     }
+    ap_grid_set_photo_count(app->grid, ap_library_photo_count(app->library));
+    ap_grid_set_selected(app->grid, 0);
     app->mode = AP_MODE_LIBRARY;
+    bind_mode_view(app);
     return 0;
 }
 
@@ -176,6 +207,8 @@ void ap_app_close_library(ap_app *app)
     if (!app || !app->library) return;
     ap_library_close(app->library);
     app->library = NULL;
+    ap_grid_set_photo_count(app->grid, 0);
+    bind_mode_view(app);
 }
 
 ap_library *ap_app_library(ap_app *app)
@@ -188,7 +221,14 @@ static void drive_canvas_input(ap_app *app)
     if (!app->canvas || !app->photo) return;
 
     ImGuiIO *io = igGetIO_Nil();
-    if (!io || io->WantCaptureMouse) return;
+    if (!io) return;
+
+    if (igIsKeyPressed_Bool(ImGuiKey_Escape, false)) {
+        ap_app_close_photo(app);
+        return;
+    }
+
+    if (io->WantCaptureMouse) return;
 
     int win_w = (int)io->DisplaySize.x;
     int win_h = (int)io->DisplaySize.y;
@@ -213,6 +253,85 @@ static void drive_canvas_input(ap_app *app)
     }
 }
 
+static void open_selected_photo(ap_app *app)
+{
+    if (!app->library || !app->grid) return;
+    int idx = ap_grid_selected(app->grid);
+    if (idx < 0 || idx >= ap_library_photo_count(app->library)) return;
+
+    char abs[4096];
+    if (ap_library_photo_absolute_path(app->library, idx, abs, sizeof(abs)) != 0) {
+        AP_ERROR("library: photo path overflow at idx %d", idx);
+        return;
+    }
+    if (ap_app_open_photo(app, abs) != 0) {
+        AP_ERROR("library: failed to open %s", abs);
+    }
+}
+
+static void drive_grid_input(ap_app *app)
+{
+    if (!app->library || !app->grid) return;
+    int n = ap_library_photo_count(app->library);
+    if (n <= 0) return;
+
+    ImGuiIO *io = igGetIO_Nil();
+    if (!io) return;
+
+    int win_w = (int)io->DisplaySize.x;
+    int win_h = (int)io->DisplaySize.y;
+
+    if (!io->WantCaptureMouse && igIsMouseClicked_Bool(ImGuiMouseButton_Left, false)) {
+        int hit = ap_grid_hit_test(app->grid,
+                                   io->MousePos.x, io->MousePos.y,
+                                   win_w, win_h);
+        if (hit >= 0) {
+            ap_grid_set_selected(app->grid, hit);
+            open_selected_photo(app);
+            return;
+        }
+    }
+
+    int sel = ap_grid_selected(app->grid);
+    int new_sel = sel;
+    if (igIsKeyPressed_Bool(ImGuiKey_RightArrow, true))      new_sel = sel + 1;
+    else if (igIsKeyPressed_Bool(ImGuiKey_LeftArrow,  true)) new_sel = sel - 1;
+    if (new_sel != sel) {
+        ap_grid_set_selected(app->grid, new_sel);
+    }
+
+    if (igIsKeyPressed_Bool(ImGuiKey_Enter, false) ||
+        igIsKeyPressed_Bool(ImGuiKey_Space, false)) {
+        open_selected_photo(app);
+    }
+}
+
+static void draw_grid_labels(ap_app *app)
+{
+    if (!app->library || !app->grid) return;
+    int n = ap_library_photo_count(app->library);
+    if (n <= 0) return;
+
+    ImGuiIO *io = igGetIO_Nil();
+    if (!io) return;
+    int win_w = (int)io->DisplaySize.x;
+    int win_h = (int)io->DisplaySize.y;
+
+    ImDrawList *dl = igGetForegroundDrawList_ViewportPtr(NULL);
+    if (!dl) return;
+
+    for (int i = 0; i < n; i++) {
+        const char *rel = ap_library_photo_relative_path(app->library, i);
+        if (!rel) continue;
+        float cx, cy, cw, ch;
+        if (ap_grid_cell_rect(app->grid, i, win_w, win_h, &cx, &cy, &cw, &ch) != 0) {
+            continue;
+        }
+        ImVec2_c pos = { cx + 6.0f, cy + ch - 18.0f };
+        ImDrawList_AddText_Vec2(dl, pos, 0xFFEEEEEE, rel, NULL);
+    }
+}
+
 int ap_app_run_frame(ap_app *app)
 {
     if (!app) return -1;
@@ -228,7 +347,12 @@ int ap_app_run_frame(ap_app *app)
         }
     }
 
-    drive_canvas_input(app);
+    if (app->mode == AP_MODE_PHOTO) {
+        drive_canvas_input(app);
+    } else if (app->mode == AP_MODE_LIBRARY) {
+        drive_grid_input(app);
+        draw_grid_labels(app);
+    }
 
     const ap_edit_state *edit = NULL;
     if (app->photo) {
