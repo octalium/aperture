@@ -23,6 +23,7 @@ cimgui_dep  = dependency('cimgui')
 libraw_dep  = dependency('libraw')
 sqlite3_dep = dependency('sqlite3')
 tomlc99_dep = dependency('tomlc99')
+libjpeg_dep = dependency('libjpeg')
 
 aperture_inc = include_directories('src')
 aperture_sources = []
@@ -37,6 +38,7 @@ aperture_deps = [
   libraw_dep,
   sqlite3_dep,
   tomlc99_dep,
+  libjpeg_dep,
   shaders_dep,
 ]
 

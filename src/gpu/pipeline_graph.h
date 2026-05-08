@@ -47,6 +47,14 @@ void ap_pipeline_graph_destroy(ap_pipeline_graph *graph);
 int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
                              const ap_edit_state *edit);
 
+// Copy the current display image (final stage's output) into a CPU
+// buffer. `out_pixels` must hold at least `output_width * output_height
+// * 4` bytes; data is written as 8-bit RGBA, sRGB-encoded (the bytes
+// the encode shader produced). Returns 0 on success. Synchronous —
+// waits on the device before reading.
+int ap_pipeline_graph_readback(ap_pipeline_graph *graph,
+                               void *out_pixels, size_t out_size);
+
 // The display image (final output) — for sampling via ImGui or canvas.
 VkImageView   ap_pipeline_graph_output_view(const ap_pipeline_graph *graph);
 VkSampler     ap_pipeline_graph_output_sampler(const ap_pipeline_graph *graph);
