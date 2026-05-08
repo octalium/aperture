@@ -10,15 +10,6 @@ static void framebuffer_resize_cb(GLFWwindow *win, int w, int h)
     g->framebuffer_resized = true;
 }
 
-static void key_cb(GLFWwindow *win, int key, int scancode, int action, int mods)
-{
-    (void)scancode;
-    (void)mods;
-    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
-        glfwSetWindowShouldClose(win, GLFW_TRUE);
-    }
-}
-
 static void glfw_error_cb(int code, const char *desc)
 {
     AP_ERROR("glfw[%d]: %s", code, desc);
@@ -51,7 +42,6 @@ int gpu_window_create(struct ap_gpu *g, int width, int height, const char *title
 
     glfwSetWindowUserPointer(g->window, g);
     glfwSetFramebufferSizeCallback(g->window, framebuffer_resize_cb);
-    glfwSetKeyCallback(g->window, key_cb);
 
     return 0;
 }
