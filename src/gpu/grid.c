@@ -14,12 +14,12 @@
 #define GRID_DEFAULT_CELL_GAP   12
 #define GRID_DEFAULT_BORDER     4
 #define GRID_MARGIN             24
+#define GRID_MAX_THUMBS         4096   // matches MAX_THUMBS in grid.frag
 
 typedef struct {
     float window_size_px[2];
     float origin_px[2];
     float bg_color[4];
-    float cell_color[4];
     float selected_color[4];
     int   photo_count;
     int   selected_idx;
@@ -36,6 +36,16 @@ struct ap_grid {
 
     VkPipelineLayout pl;
     VkPipeline       pipeline;
+
+    VkDescriptorSetLayout dsl;
+    VkDescriptorPool      pool;
+    VkDescriptorSet       ds;
+
+    // 1x1 fallback bound into every empty slot.
+    VkImage        placeholder_image;
+    VkDeviceMemory placeholder_memory;
+    VkImageView    placeholder_view;
+    VkSampler      placeholder_sampler;
 
     int photo_count;
     int selected_idx;
@@ -68,6 +78,239 @@ static grid_layout layout_for(const ap_grid *g, int win_w, int win_h)
     return L;
 }
 
+static int find_memory_type(VkPhysicalDevice phys, uint32_t type_bits,
+                            VkMemoryPropertyFlags props)
+{
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(phys, &mp);
+    for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
+        if ((type_bits & (1u << i)) &&
+            (mp.memoryTypes[i].propertyFlags & props) == props) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+static int create_placeholder(ap_grid *grid)
+{
+    VkDevice dev = grid->gpu->device;
+
+    VkImageCreateInfo ici = {
+        .sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType     = VK_IMAGE_TYPE_2D,
+        .format        = VK_FORMAT_R8G8B8A8_UNORM,
+        .extent        = { 1, 1, 1 },
+        .mipLevels     = 1,
+        .arrayLayers   = 1,
+        .samples       = VK_SAMPLE_COUNT_1_BIT,
+        .tiling        = VK_IMAGE_TILING_OPTIMAL,
+        .usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                       | VK_IMAGE_USAGE_SAMPLED_BIT,
+        .sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    if (vkCreateImage(dev, &ici, NULL, &grid->placeholder_image) != VK_SUCCESS) {
+        AP_ERROR("grid: placeholder image create failed");
+        return -1;
+    }
+
+    VkMemoryRequirements mreq;
+    vkGetImageMemoryRequirements(dev, grid->placeholder_image, &mreq);
+    int mt = find_memory_type(grid->gpu->physical, mreq.memoryTypeBits,
+                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (mt < 0) {
+        AP_ERROR("grid: no device-local memory for placeholder");
+        return -1;
+    }
+    VkMemoryAllocateInfo mai = {
+        .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize  = mreq.size,
+        .memoryTypeIndex = (uint32_t)mt,
+    };
+    if (vkAllocateMemory(dev, &mai, NULL, &grid->placeholder_memory) != VK_SUCCESS) {
+        AP_ERROR("grid: placeholder memory alloc failed");
+        return -1;
+    }
+    vkBindImageMemory(dev, grid->placeholder_image, grid->placeholder_memory, 0);
+
+    // Clear once to the cell placeholder color, transition to
+    // SHADER_READ_ONLY_OPTIMAL, and leave it there for the lifetime.
+    VkCommandBufferAllocateInfo cba = {
+        .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool        = grid->gpu->command_pool,
+        .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    vkAllocateCommandBuffers(dev, &cba, &cmd);
+    VkCommandBufferBeginInfo bi = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    vkBeginCommandBuffer(cmd, &bi);
+
+    VkImageMemoryBarrier2 to_dst = {
+        .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask  = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+        .dstStageMask  = VK_PIPELINE_STAGE_2_CLEAR_BIT,
+        .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = grid->placeholder_image,
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+    };
+    VkDependencyInfo dep_a = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &to_dst,
+    };
+    vkCmdPipelineBarrier2(cmd, &dep_a);
+
+    VkClearColorValue color = { .float32 = { 0.22f, 0.24f, 0.27f, 1.0f } };
+    VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    vkCmdClearColorImage(cmd, grid->placeholder_image,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                         &color, 1, &range);
+
+    VkImageMemoryBarrier2 to_read = to_dst;
+    to_read.srcStageMask  = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+    to_read.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    to_read.dstStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    to_read.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    to_read.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_read.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkDependencyInfo dep_b = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &to_read,
+    };
+    vkCmdPipelineBarrier2(cmd, &dep_b);
+
+    vkEndCommandBuffer(cmd);
+
+    VkCommandBufferSubmitInfo cmd_si = {
+        .sType         = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+        .commandBuffer = cmd,
+    };
+    VkSubmitInfo2 submit = {
+        .sType                  = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+        .commandBufferInfoCount = 1,
+        .pCommandBufferInfos    = &cmd_si,
+    };
+    vkQueueSubmit2(grid->gpu->graphics_queue, 1, &submit, VK_NULL_HANDLE);
+    vkQueueWaitIdle(grid->gpu->graphics_queue);
+    vkFreeCommandBuffers(dev, grid->gpu->command_pool, 1, &cmd);
+
+    VkImageViewCreateInfo vci = {
+        .sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image    = grid->placeholder_image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format   = VK_FORMAT_R8G8B8A8_UNORM,
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+    };
+    if (vkCreateImageView(dev, &vci, NULL, &grid->placeholder_view) != VK_SUCCESS) {
+        AP_ERROR("grid: placeholder view create failed");
+        return -1;
+    }
+
+    VkSamplerCreateInfo sci = {
+        .sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter    = VK_FILTER_LINEAR,
+        .minFilter    = VK_FILTER_LINEAR,
+        .mipmapMode   = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+    };
+    if (vkCreateSampler(dev, &sci, NULL, &grid->placeholder_sampler) != VK_SUCCESS) {
+        AP_ERROR("grid: placeholder sampler create failed");
+        return -1;
+    }
+    return 0;
+}
+
+static int create_descriptors(ap_grid *grid)
+{
+    VkDescriptorSetLayoutBinding binding = {
+        .binding         = 0,
+        .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = GRID_MAX_THUMBS,
+        .stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT,
+    };
+    VkDescriptorBindingFlags binding_flag = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+    VkDescriptorSetLayoutBindingFlagsCreateInfo bf = {
+        .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+        .bindingCount  = 1,
+        .pBindingFlags = &binding_flag,
+    };
+    VkDescriptorSetLayoutCreateInfo dslci = {
+        .sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .pNext        = &bf,
+        .flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+        .bindingCount = 1,
+        .pBindings    = &binding,
+    };
+    if (vkCreateDescriptorSetLayout(grid->gpu->device, &dslci, NULL,
+                                    &grid->dsl) != VK_SUCCESS) {
+        AP_ERROR("grid: descriptor set layout failed");
+        return -1;
+    }
+
+    VkDescriptorPoolSize pool_size = {
+        .type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = GRID_MAX_THUMBS,
+    };
+    VkDescriptorPoolCreateInfo pci = {
+        .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .flags         = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+        .maxSets       = 1,
+        .poolSizeCount = 1,
+        .pPoolSizes    = &pool_size,
+    };
+    if (vkCreateDescriptorPool(grid->gpu->device, &pci, NULL,
+                               &grid->pool) != VK_SUCCESS) {
+        AP_ERROR("grid: descriptor pool failed");
+        return -1;
+    }
+
+    VkDescriptorSetAllocateInfo dai = {
+        .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool     = grid->pool,
+        .descriptorSetCount = 1,
+        .pSetLayouts        = &grid->dsl,
+    };
+    if (vkAllocateDescriptorSets(grid->gpu->device, &dai, &grid->ds) != VK_SUCCESS) {
+        AP_ERROR("grid: descriptor set alloc failed");
+        return -1;
+    }
+
+    // Bind the placeholder into every slot up-front so unloaded cells
+    // sample a defined texel.
+    VkDescriptorImageInfo *infos = calloc(GRID_MAX_THUMBS, sizeof(*infos));
+    if (!infos) {
+        AP_ERROR("grid: placeholder bind alloc failed");
+        return -1;
+    }
+    for (int i = 0; i < GRID_MAX_THUMBS; i++) {
+        infos[i].sampler     = grid->placeholder_sampler;
+        infos[i].imageView   = grid->placeholder_view;
+        infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+    VkWriteDescriptorSet write = {
+        .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet          = grid->ds,
+        .dstBinding      = 0,
+        .dstArrayElement = 0,
+        .descriptorCount = GRID_MAX_THUMBS,
+        .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .pImageInfo      = infos,
+    };
+    vkUpdateDescriptorSets(grid->gpu->device, 1, &write, 0, NULL);
+    free(infos);
+    return 0;
+}
+
 static int create_pipeline(ap_grid *grid)
 {
     VkPushConstantRange push = {
@@ -77,6 +320,8 @@ static int create_pipeline(ap_grid *grid)
     };
     VkPipelineLayoutCreateInfo plci = {
         .sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount         = 1,
+        .pSetLayouts            = &grid->dsl,
         .pushConstantRangeCount = 1,
         .pPushConstantRanges    = &push,
     };
@@ -208,7 +453,9 @@ ap_grid *ap_grid_create(ap_gpu *g)
     grid->border_px    = GRID_DEFAULT_BORDER;
     grid->selected_idx = 0;
 
-    if (create_pipeline(grid) < 0) goto fail;
+    if (create_placeholder(grid)  < 0) goto fail;
+    if (create_descriptors(grid)  < 0) goto fail;
+    if (create_pipeline(grid)     < 0) goto fail;
     return grid;
 
 fail:
@@ -222,7 +469,35 @@ void ap_grid_destroy(ap_grid *grid)
     VkDevice dev = grid->gpu->device;
     if (grid->pipeline) vkDestroyPipeline(dev, grid->pipeline, NULL);
     if (grid->pl)       vkDestroyPipelineLayout(dev, grid->pl, NULL);
+    if (grid->pool)     vkDestroyDescriptorPool(dev, grid->pool, NULL);
+    if (grid->dsl)      vkDestroyDescriptorSetLayout(dev, grid->dsl, NULL);
+    if (grid->placeholder_sampler) vkDestroySampler(dev, grid->placeholder_sampler, NULL);
+    if (grid->placeholder_view)    vkDestroyImageView(dev, grid->placeholder_view, NULL);
+    if (grid->placeholder_image)   vkDestroyImage(dev, grid->placeholder_image, NULL);
+    if (grid->placeholder_memory)  vkFreeMemory(dev, grid->placeholder_memory, NULL);
     free(grid);
+}
+
+void ap_grid_set_thumbnail(ap_grid *grid, int idx,
+                           VkImageView view, VkSampler sampler)
+{
+    if (!grid || idx < 0 || idx >= GRID_MAX_THUMBS) return;
+
+    VkDescriptorImageInfo info = {
+        .sampler     = (view && sampler) ? sampler : grid->placeholder_sampler,
+        .imageView   = (view && sampler) ? view    : grid->placeholder_view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    VkWriteDescriptorSet write = {
+        .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet          = grid->ds,
+        .dstBinding      = 0,
+        .dstArrayElement = (uint32_t)idx,
+        .descriptorCount = 1,
+        .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .pImageInfo      = &info,
+    };
+    vkUpdateDescriptorSets(grid->gpu->device, 1, &write, 0, NULL);
 }
 
 void ap_grid_set_photo_count(ap_grid *grid, int count)
@@ -233,6 +508,28 @@ void ap_grid_set_photo_count(ap_grid *grid, int count)
     if (grid->selected_idx >= count) {
         grid->selected_idx = count > 0 ? count - 1 : 0;
     }
+
+    // Reset the entire descriptor array back to the placeholder. The
+    // previous library's ap_thumbnail textures are about to be (or
+    // have just been) destroyed; their views can't stay bound.
+    VkDescriptorImageInfo *infos = calloc(GRID_MAX_THUMBS, sizeof(*infos));
+    if (!infos) return;
+    for (int i = 0; i < GRID_MAX_THUMBS; i++) {
+        infos[i].sampler     = grid->placeholder_sampler;
+        infos[i].imageView   = grid->placeholder_view;
+        infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+    VkWriteDescriptorSet write = {
+        .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet          = grid->ds,
+        .dstBinding      = 0,
+        .dstArrayElement = 0,
+        .descriptorCount = GRID_MAX_THUMBS,
+        .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .pImageInfo      = infos,
+    };
+    vkUpdateDescriptorSets(grid->gpu->device, 1, &write, 0, NULL);
+    free(infos);
 }
 
 void ap_grid_set_selected(ap_grid *grid, int idx)
@@ -323,7 +620,6 @@ void ap_grid_record(ap_grid *grid, VkCommandBuffer cmd,
         .window_size_px  = { (float)win_width, (float)win_height },
         .origin_px       = { (float)L.origin_x, (float)L.origin_y },
         .bg_color        = { 0.10f, 0.10f, 0.10f, 1.0f },
-        .cell_color      = { 0.22f, 0.24f, 0.27f, 1.0f },
         .selected_color  = { 0.95f, 0.78f, 0.25f, 1.0f },
         .photo_count     = grid->photo_count,
         .selected_idx    = grid->selected_idx,
@@ -334,6 +630,8 @@ void ap_grid_record(ap_grid *grid, VkCommandBuffer cmd,
     };
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, grid->pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, grid->pl,
+                            0, 1, &grid->ds, 0, NULL);
     vkCmdPushConstants(cmd, grid->pl, VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(pc), &pc);
     vkCmdDraw(cmd, 3, 1, 0, 0);

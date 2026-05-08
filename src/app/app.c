@@ -10,6 +10,7 @@
 #include "library/library.h"
 #include "panels/panels.h"
 #include "photo/photo.h"
+#include "photo/thumbnail.h"
 #include "ui/imgui.h"
 
 #include "cimgui.h"
@@ -205,9 +206,14 @@ int ap_app_open_library(ap_app *app, const char *path)
 void ap_app_close_library(ap_app *app)
 {
     if (!app || !app->library) return;
+
+    // Drop the grid's references to the library's thumbnails BEFORE
+    // they're destroyed, and wait for any in-flight frame still
+    // sampling them to finish.
+    ap_app_wait_idle(app);
+    ap_grid_set_photo_count(app->grid, 0);
     ap_library_close(app->library);
     app->library = NULL;
-    ap_grid_set_photo_count(app->grid, 0);
     bind_mode_view(app);
 }
 
@@ -332,6 +338,30 @@ static void draw_grid_labels(ap_app *app)
     }
 }
 
+static void pump_thumbnail(ap_app *app)
+{
+    if (!app->library || !app->grid) return;
+
+    int idx = ap_library_pending_thumbnail_idx(app->library);
+    if (idx < 0) return;
+
+    char abs[4096];
+    if (ap_library_photo_absolute_path(app->library, idx, abs, sizeof(abs)) != 0) {
+        return;
+    }
+    ap_thumbnail *t = ap_thumbnail_create(app->gpu, abs);
+    if (!t) {
+        // Decode failed — bind a sentinel "tried" so we don't retry
+        // forever. We just leave the cache slot empty, the cursor on
+        // the library has moved past it. The placeholder texel stays.
+        return;
+    }
+    ap_library_set_thumbnail(app->library, idx, t);
+    ap_grid_set_thumbnail(app->grid, idx,
+                          ap_thumbnail_view(t),
+                          ap_thumbnail_sampler(t));
+}
+
 int ap_app_run_frame(ap_app *app)
 {
     if (!app) return -1;
@@ -352,6 +382,7 @@ int ap_app_run_frame(ap_app *app)
     } else if (app->mode == AP_MODE_LIBRARY) {
         drive_grid_input(app);
         draw_grid_labels(app);
+        pump_thumbnail(app);
     }
 
     const ap_edit_state *edit = NULL;

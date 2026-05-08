@@ -50,6 +50,24 @@ const char *ap_library_photo_relative_path(const ap_library *lib, int index);
 int ap_library_photo_absolute_path(const ap_library *lib, int index,
                                    char *buf, size_t buflen);
 
+// ----- thumbnail cache (lifetime-bound to the library) -----
+
+typedef struct ap_thumbnail ap_thumbnail;
+
+// Returns the cached thumbnail for the n-th photo, or NULL if not
+// yet decoded.
+ap_thumbnail *ap_library_thumbnail(const ap_library *lib, int index);
+
+// Hand a freshly-decoded thumbnail to the library. The library takes
+// ownership and will destroy it on close. No-op if `index` is out
+// of range.
+void ap_library_set_thumbnail(ap_library *lib, int index, ap_thumbnail *t);
+
+// Index of the next photo whose thumbnail hasn't been decoded yet,
+// or -1 if every slot is filled. The library does not decide when
+// or how decoding happens — callers drive a per-frame pump.
+int  ap_library_pending_thumbnail_idx(const ap_library *lib);
+
 #ifdef __cplusplus
 }
 #endif

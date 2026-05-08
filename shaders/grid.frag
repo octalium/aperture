@@ -1,13 +1,17 @@
 #version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+#define MAX_THUMBS 4096
 
 layout(location = 0) in  vec2 v_screen_uv;
 layout(location = 0) out vec4 f_color;
+
+layout(set = 0, binding = 0) uniform sampler2D u_thumbs[MAX_THUMBS];
 
 layout(push_constant) uniform PushConstants {
     vec2  window_size_px;
     vec2  origin_px;          // top-left of the grid in window space
     vec4  bg_color;
-    vec4  cell_color;
     vec4  selected_color;
     int   photo_count;
     int   selected_idx;
@@ -17,6 +21,26 @@ layout(push_constant) uniform PushConstants {
     int   border_px;
     int   _pad0, _pad1;
 } pc;
+
+// Aspect-correct UV inside a square cell. Letterbox bands fall back
+// to the bg_color so portrait/landscape thumbnails don't get
+// stretched to the cell square.
+vec4 sample_cell(int idx, vec2 in_cell) {
+    vec2 cell = vec2(float(pc.cell_size_px));
+    vec2 thumb_size = vec2(textureSize(u_thumbs[nonuniformEXT(idx)], 0));
+    if (thumb_size.x <= 0.0 || thumb_size.y <= 0.0) return pc.bg_color;
+
+    float scale = min(cell.x / thumb_size.x, cell.y / thumb_size.y);
+    vec2  fit   = thumb_size * scale;
+    vec2  pad   = (cell - fit) * 0.5;
+
+    if (in_cell.x < pad.x || in_cell.y < pad.y ||
+        in_cell.x >= cell.x - pad.x || in_cell.y >= cell.y - pad.y) {
+        return pc.bg_color;
+    }
+    vec2 uv = (in_cell - pad) / fit;
+    return texture(u_thumbs[nonuniformEXT(idx)], uv);
+}
 
 void main() {
     vec2 px = v_screen_uv * pc.window_size_px - pc.origin_px;
@@ -50,5 +74,5 @@ void main() {
         }
     }
 
-    f_color = pc.cell_color;
+    f_color = sample_cell(idx, in_cell);
 }

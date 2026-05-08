@@ -27,6 +27,13 @@ void ap_grid_set_selected(ap_grid *grid, int idx);
 int  ap_grid_selected(const ap_grid *grid);
 int  ap_grid_photo_count(const ap_grid *grid);
 
+// Bind a thumbnail texture into the grid's descriptor array at the
+// given slot. Pass view = VK_NULL_HANDLE to revert the slot to the
+// shared placeholder. Safe to call mid-frame thanks to
+// UPDATE_AFTER_BIND.
+void ap_grid_set_thumbnail(ap_grid *grid, int idx,
+                           VkImageView view, VkSampler sampler);
+
 // Hit-test a screen-space point against the grid. Returns the cell
 // index, or -1 if the point misses any cell. Layout is recomputed
 // each call from the supplied window dims so callers don't have to

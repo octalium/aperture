@@ -103,17 +103,25 @@ static bool meets_api_version(VkPhysicalDevice dev)
     return props.apiVersion >= VK_API_VERSION_1_3;
 }
 
-static bool supports_required_v13_features(VkPhysicalDevice dev)
+static bool supports_required_features(VkPhysicalDevice dev)
 {
+    VkPhysicalDeviceVulkan12Features v12 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+    };
     VkPhysicalDeviceVulkan13Features v13 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+        .pNext = &v12,
     };
     VkPhysicalDeviceFeatures2 f = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
         .pNext = &v13,
     };
     vkGetPhysicalDeviceFeatures2(dev, &f);
-    return v13.synchronization2 == VK_TRUE && v13.dynamicRendering == VK_TRUE;
+    return v13.synchronization2 == VK_TRUE
+        && v13.dynamicRendering == VK_TRUE
+        && v12.runtimeDescriptorArray == VK_TRUE
+        && v12.shaderSampledImageArrayNonUniformIndexing == VK_TRUE
+        && v12.descriptorBindingSampledImageUpdateAfterBind == VK_TRUE;
 }
 
 static int score_device(VkPhysicalDevice dev)
@@ -151,7 +159,7 @@ static int pick_physical_device(struct ap_gpu *g)
         if (!find_queue_families(devs[i], g->surface, &graphics, &present)) continue;
         if (!extensions_supported(devs[i])) continue;
         if (!surface_has_formats_and_modes(devs[i], g->surface)) continue;
-        if (!supports_required_v13_features(devs[i])) continue;
+        if (!supports_required_features(devs[i])) continue;
 
         int s = score_device(devs[i]);
         if (s > best_score) {
@@ -210,8 +218,15 @@ int gpu_device_create(struct ap_gpu *g)
         queue_count = 2;
     }
 
+    VkPhysicalDeviceVulkan12Features v12 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+        .runtimeDescriptorArray = VK_TRUE,
+        .shaderSampledImageArrayNonUniformIndexing = VK_TRUE,
+        .descriptorBindingSampledImageUpdateAfterBind = VK_TRUE,
+    };
     VkPhysicalDeviceVulkan13Features v13 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+        .pNext = &v12,
         .synchronization2 = VK_TRUE,
         .dynamicRendering = VK_TRUE,
     };
