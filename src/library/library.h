@@ -2,12 +2,26 @@
 #define APERTURE_LIBRARY_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 typedef struct ap_library ap_library;
+
+// One row from the app-wide library registry.
+typedef struct {
+    char    id[37];      // RFC 4122 v4 UUID + NUL
+    char    path[4096];  // absolute filesystem path
+    int64_t created_at;  // unix seconds
+} ap_registry_entry;
+
+// Read up to `max` rows from the registry, ordered by most-recent
+// created_at. Returns the number written, or -1 on error. Safe to
+// call before any library has been opened (creates the registry db
+// + schema if needed).
+int ap_registry_list(ap_registry_entry *out, int max);
 
 // Open a directory as a library:
 //   - Resolves `path` to an absolute root.

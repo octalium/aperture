@@ -76,7 +76,7 @@ static int gen_uuid_v4(char buf[37])
     return 0;
 }
 
-static int registry_resolve_id(const char *abs_path, char id_out[37])
+static int registry_open(sqlite3 **out_db)
 {
     if (ap_app_root_ensure() < 0) return -1;
 
@@ -99,6 +99,15 @@ static int registry_resolve_id(const char *abs_path, char id_out[37])
         sqlite3_close(reg);
         return -1;
     }
+
+    *out_db = reg;
+    return 0;
+}
+
+static int registry_resolve_id(const char *abs_path, char id_out[37])
+{
+    sqlite3 *reg = NULL;
+    if (registry_open(&reg) < 0) return -1;
 
     sqlite3_stmt *sel = NULL;
     if (sqlite3_prepare_v2(reg, "SELECT id FROM libraries WHERE path = ?;",
@@ -149,6 +158,47 @@ static int registry_resolve_id(const char *abs_path, char id_out[37])
     }
     AP_INFO("library: registered new id %s for %s", id_out, abs_path);
     return 0;
+}
+
+int ap_registry_list(ap_registry_entry *out, int max)
+{
+    if (!out || max <= 0) return 0;
+
+    sqlite3 *reg = NULL;
+    if (registry_open(&reg) < 0) return -1;
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(reg,
+            "SELECT id, path, created_at FROM libraries "
+            "ORDER BY created_at DESC;",
+            -1, &stmt, NULL) != SQLITE_OK) {
+        AP_ERROR("registry: prepare list: %s", sqlite3_errmsg(reg));
+        sqlite3_close(reg);
+        return -1;
+    }
+
+    int n = 0;
+    while (n < max) {
+        int rc = sqlite3_step(stmt);
+        if (rc == SQLITE_DONE) break;
+        if (rc != SQLITE_ROW) {
+            AP_ERROR("registry: list step: %s", sqlite3_errstr(rc));
+            sqlite3_finalize(stmt);
+            sqlite3_close(reg);
+            return -1;
+        }
+        const char *id   = (const char *)sqlite3_column_text(stmt, 0);
+        const char *path = (const char *)sqlite3_column_text(stmt, 1);
+        int64_t   ctime  = sqlite3_column_int64(stmt, 2);
+        if (!id || !path) continue;
+        snprintf(out[n].id,   sizeof(out[n].id),   "%s", id);
+        snprintf(out[n].path, sizeof(out[n].path), "%s", path);
+        out[n].created_at = ctime;
+        n++;
+    }
+    sqlite3_finalize(stmt);
+    sqlite3_close(reg);
+    return n;
 }
 
 // ----- per-library db: photos table -----
