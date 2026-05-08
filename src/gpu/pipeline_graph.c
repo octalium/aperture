@@ -109,8 +109,11 @@ static int create_image(VkDevice device, VkPhysicalDevice physical,
         .allocationSize  = mreq.size,
         .memoryTypeIndex = (uint32_t)mt,
     };
-    if (vkAllocateMemory(device, &mai, NULL, out_memory) != VK_SUCCESS) {
-        AP_ERROR("graph: image memory alloc failed");
+    VkResult ar = vkAllocateMemory(device, &mai, NULL, out_memory);
+    if (ar != VK_SUCCESS) {
+        AP_ERROR("graph: image memory alloc failed (%s, size=%llu, fmt=%d, %dx%d)",
+                 gpu_vk_result_str(ar), (unsigned long long)mreq.size,
+                 (int)format, width, height);
         return -1;
     }
     vkBindImageMemory(device, *out_image, *out_memory, 0);

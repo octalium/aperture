@@ -3,6 +3,7 @@
 #include "app.h"
 
 #include "core/log.h"
+#include "core/worker.h"
 #include "gpu/canvas.h"
 #include "gpu/gpu.h"
 #include "gpu/grid.h"
@@ -17,15 +18,32 @@
 
 #include <signal.h>
 #include <stdlib.h>
+#include <string.h>
+
+// Decode-on-worker job for one thumbnail. Submitter (main thread)
+// allocates and fills `path` + `idx`; worker fills `rgba` / `w` / `h`
+// / `ok`; main thread polls completed jobs, uploads to GPU, frees.
+typedef struct {
+    ap_work_item base;
+    char         path[4096];
+    int          idx;
+    uint8_t     *rgba;
+    int          w, h;
+    int          ok;
+} thumb_job;
 
 struct ap_app {
-    ap_gpu     *gpu;
-    ap_canvas  *canvas;
-    ap_grid    *grid;
-    ap_mode     mode;
-    ap_photo   *photo;
-    ap_library *library;
+    ap_gpu          *gpu;
+    ap_canvas       *canvas;
+    ap_grid         *grid;
+    ap_mode          mode;
+    ap_photo        *photo;
+    ap_library      *library;
+    ap_worker_pool  *workers;
+    int              thumb_inflight;
 };
+
+#define THUMB_MAX_INFLIGHT 8
 
 // Set by SIGTERM / SIGINT; polled by ap_app_should_run so the main
 // loop exits cleanly (running per-photo save-on-close, library
@@ -77,8 +95,34 @@ ap_app *ap_app_create(int width, int height, const char *title)
         return NULL;
     }
 
+    app->workers = ap_worker_pool_create(0);
+    if (!app->workers) {
+        ap_grid_destroy(app->grid);
+        ap_canvas_destroy(app->canvas);
+        ap_gpu_destroy(app->gpu);
+        free(app);
+        return NULL;
+    }
+
     install_signal_handlers();
     return app;
+}
+
+// Drain completed thumbnail jobs without GPU-uploading them. Used
+// when the library these jobs belong to is going away. Caller is
+// expected to have first waited for in-flight jobs to drop into the
+// completed queue (ap_worker_pool_wait_idle).
+static void discard_completed_thumb_jobs(ap_app *app)
+{
+    if (!app->workers) return;
+    for (;;) {
+        ap_work_item *it = ap_worker_pool_poll(app->workers);
+        if (!it) break;
+        thumb_job *j = (thumb_job *)it;
+        free(j->rgba);
+        free(j);
+        if (app->thumb_inflight > 0) app->thumb_inflight--;
+    }
 }
 
 void ap_app_destroy(ap_app *app)
@@ -90,6 +134,11 @@ void ap_app_destroy(ap_app *app)
     ap_app_close_library(app);
     ap_gpu_set_canvas(app->gpu, NULL);
     ap_gpu_set_grid(app->gpu, NULL);
+    if (app->workers) {
+        ap_worker_pool_destroy(app->workers);
+        app->workers = NULL;
+        // Pool destroy waits for in-flight workers; nothing left to drain.
+    }
     if (app->grid) {
         ap_grid_destroy(app->grid);
         app->grid = NULL;
@@ -207,9 +256,11 @@ void ap_app_close_library(ap_app *app)
 {
     if (!app || !app->library) return;
 
-    // Drop the grid's references to the library's thumbnails BEFORE
-    // they're destroyed, and wait for any in-flight frame still
-    // sampling them to finish.
+    // Wait for outstanding decode work to land in the completed queue
+    // and toss the buffers — they belong to the library that's going
+    // away. Then drop GPU references before the textures vanish.
+    ap_worker_pool_wait_idle(app->workers);
+    discard_completed_thumb_jobs(app);
     ap_app_wait_idle(app);
     ap_grid_set_photo_count(app->grid, 0);
     ap_library_close(app->library);
@@ -338,28 +389,60 @@ static void draw_grid_labels(ap_app *app)
     }
 }
 
-static void pump_thumbnail(ap_app *app)
+static void thumb_job_run(ap_work_item *self)
 {
-    if (!app->library || !app->grid) return;
+    thumb_job *j = (thumb_job *)self;
+    j->ok = (ap_thumbnail_decode_cpu(j->path, &j->rgba, &j->w, &j->h) == 0);
+}
 
-    int idx = ap_library_pending_thumbnail_idx(app->library);
-    if (idx < 0) return;
+// Submit decode jobs while the pool has headroom and the library
+// still has un-decoded photos. Each submission heap-allocates a
+// thumb_job that the worker fills in.
+static void submit_pending_thumbs(ap_app *app)
+{
+    if (!app->library || !app->workers) return;
+    while (app->thumb_inflight < THUMB_MAX_INFLIGHT) {
+        int idx = ap_library_pending_thumbnail_idx(app->library);
+        if (idx < 0) return;
 
-    char abs[4096];
-    if (ap_library_photo_absolute_path(app->library, idx, abs, sizeof(abs)) != 0) {
-        return;
+        thumb_job *j = calloc(1, sizeof(*j));
+        if (!j) return;
+        j->base.run = thumb_job_run;
+        j->idx = idx;
+        if (ap_library_photo_absolute_path(app->library, idx,
+                                           j->path, sizeof(j->path)) != 0) {
+            free(j);
+            continue;
+        }
+        ap_worker_pool_submit(app->workers, &j->base);
+        app->thumb_inflight++;
     }
-    ap_thumbnail *t = ap_thumbnail_create(app->gpu, abs);
-    if (!t) {
-        // Decode failed — bind a sentinel "tried" so we don't retry
-        // forever. We just leave the cache slot empty, the cursor on
-        // the library has moved past it. The placeholder texel stays.
-        return;
+}
+
+// Drain one completed decode job per frame: GPU-upload + bind to the
+// grid. One per frame keeps GPU upload latency bounded; the worker
+// keeps producing while we're idle here.
+static void drain_one_completed_thumb(ap_app *app)
+{
+    if (!app->workers || !app->library || !app->grid) return;
+    ap_work_item *it = ap_worker_pool_poll(app->workers);
+    if (!it) return;
+    thumb_job *j = (thumb_job *)it;
+    if (app->thumb_inflight > 0) app->thumb_inflight--;
+
+    if (j->ok && j->rgba && j->idx >= 0
+        && j->idx < ap_library_photo_count(app->library))
+    {
+        ap_thumbnail *t = ap_thumbnail_upload(app->gpu, j->rgba, j->w, j->h);
+        if (t) {
+            ap_library_set_thumbnail(app->library, j->idx, t);
+            ap_grid_set_thumbnail(app->grid, j->idx,
+                                  ap_thumbnail_view(t),
+                                  ap_thumbnail_sampler(t));
+        }
     }
-    ap_library_set_thumbnail(app->library, idx, t);
-    ap_grid_set_thumbnail(app->grid, idx,
-                          ap_thumbnail_view(t),
-                          ap_thumbnail_sampler(t));
+    free(j->rgba);
+    free(j);
 }
 
 int ap_app_run_frame(ap_app *app)
@@ -382,7 +465,8 @@ int ap_app_run_frame(ap_app *app)
     } else if (app->mode == AP_MODE_LIBRARY) {
         drive_grid_input(app);
         draw_grid_labels(app);
-        pump_thumbnail(app);
+        submit_pending_thumbs(app);
+        drain_one_completed_thumb(app);
     }
 
     const ap_edit_state *edit = NULL;
