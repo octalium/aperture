@@ -9,6 +9,7 @@
 #include "gpu/grid.h"
 #include "gpu/pipeline_graph.h"
 #include "library/library.h"
+#include "output/jpeg.h"
 #include "panels/panels.h"
 #include "photo/photo.h"
 #include "photo/thumbnail.h"
@@ -32,6 +33,33 @@ typedef struct {
     int          ok;
 } thumb_job;
 
+// Raw-load-on-worker job for an interactive photo open. Submitter
+// fills `path` + `gen`; worker fills `raw` + `ok`; main thread polls,
+// builds the photo around the raw if generations still match.
+typedef struct {
+    ap_work_item base;
+    char         path[4096];
+    ap_raw_image raw;
+    uint64_t     gen;
+    int          ok;
+} photo_open_job;
+
+// JPEG-encode-on-worker job for an interactive export. Main thread
+// does the GPU readback (fast), then submits this job with the RGBA
+// buffer + output path + quality. Worker writes the file.
+typedef struct {
+    ap_work_item base;
+    uint8_t     *rgba;
+    int          width, height;
+    int          quality;
+    char         out_path[4096];
+} export_job;
+
+// Forward decls of run-fn pointers (used to dispatch on completion).
+static void thumb_job_run(ap_work_item *self);
+static void photo_open_job_run(ap_work_item *self);
+static void export_job_run(ap_work_item *self);
+
 struct ap_app {
     ap_gpu          *gpu;
     ap_canvas       *canvas;
@@ -41,6 +69,10 @@ struct ap_app {
     ap_library      *library;
     ap_worker_pool  *workers;
     int              thumb_inflight;
+    bool             photo_loading;
+    char             loading_path[4096];
+    uint64_t         photo_load_gen;
+    int              export_inflight;
 };
 
 #define THUMB_MAX_INFLIGHT 8
@@ -108,27 +140,54 @@ ap_app *ap_app_create(int width, int height, const char *title)
     return app;
 }
 
-// Drain completed thumbnail jobs without GPU-uploading them. Used
-// when the library these jobs belong to is going away. Caller is
-// expected to have first waited for in-flight jobs to drop into the
-// completed queue (ap_worker_pool_wait_idle).
-static void discard_completed_thumb_jobs(ap_app *app)
+// Free a completed work item without acting on its result. Used at
+// teardown and when the result's target (library, photo) is gone.
+static void discard_completed_item(ap_app *app, ap_work_item *it)
+{
+    if (it->run == thumb_job_run) {
+        thumb_job *j = (thumb_job *)it;
+        if (app->thumb_inflight > 0) app->thumb_inflight--;
+        free(j->rgba);
+        free(j);
+    } else if (it->run == photo_open_job_run) {
+        photo_open_job *j = (photo_open_job *)it;
+        ap_raw_image_free(&j->raw);
+        free(j);
+    } else if (it->run == export_job_run) {
+        export_job *j = (export_job *)it;
+        if (app->export_inflight > 0) app->export_inflight--;
+        free(j->rgba);
+        free(j);
+    } else {
+        AP_WARN("worker: unknown completed run-fn at discard, leaking item");
+    }
+}
+
+// Wait for all submitted work to land, then drain (without acting).
+static void drain_all_workers(ap_app *app)
 {
     if (!app->workers) return;
+    ap_worker_pool_wait_idle(app->workers);
     for (;;) {
         ap_work_item *it = ap_worker_pool_poll(app->workers);
         if (!it) break;
-        thumb_job *j = (thumb_job *)it;
-        free(j->rgba);
-        free(j);
-        if (app->thumb_inflight > 0) app->thumb_inflight--;
+        discard_completed_item(app, it);
     }
+}
+
+// Wait + drain only the thumbnail jobs (and discard any other
+// stragglers). Used when the library these jobs were decoded for is
+// about to be torn down.
+static void discard_completed_thumb_jobs(ap_app *app)
+{
+    drain_all_workers(app);
 }
 
 void ap_app_destroy(ap_app *app)
 {
     if (!app) return;
 
+    drain_all_workers(app);
     ap_app_wait_idle(app);
     ap_app_close_photo(app);
     ap_app_close_library(app);
@@ -137,7 +196,6 @@ void ap_app_destroy(ap_app *app)
     if (app->workers) {
         ap_worker_pool_destroy(app->workers);
         app->workers = NULL;
-        // Pool destroy waits for in-flight workers; nothing left to drain.
     }
     if (app->grid) {
         ap_grid_destroy(app->grid);
@@ -192,17 +250,19 @@ void ap_app_set_mode(ap_app *app, ap_mode mode)
     bind_mode_view(app);
 }
 
-int ap_app_open_photo(ap_app *app, const char *path)
+static void photo_open_job_run(ap_work_item *self)
 {
-    if (!app || !path) {
-        return -1;
-    }
+    photo_open_job *j = (photo_open_job *)self;
+    j->ok = (ap_raw_load(j->path, &j->raw) == 0);
+}
 
+static void install_loaded_photo(ap_app *app, photo_open_job *j)
+{
     ap_app_close_photo(app);
-
-    app->photo = ap_photo_open(app->gpu, path);
+    app->photo = ap_photo_open_with_raw(app->gpu, j->path, &j->raw);
     if (!app->photo) {
-        return -1;
+        AP_ERROR("photo: build from raw failed for %s", j->path);
+        return;
     }
     ap_pipeline_graph *graph = ap_photo_graph(app->photo);
     ap_gpu_set_graph(app->gpu, graph);
@@ -213,12 +273,48 @@ int ap_app_open_photo(ap_app *app, const char *path)
                         ap_pipeline_graph_output_height(graph));
     app->mode = AP_MODE_PHOTO;
     bind_mode_view(app);
+}
+
+int ap_app_open_photo(ap_app *app, const char *path)
+{
+    if (!app || !path) {
+        return -1;
+    }
+
+    photo_open_job *j = calloc(1, sizeof(*j));
+    if (!j) {
+        AP_ERROR("ap_app_open_photo: oom");
+        return -1;
+    }
+    j->base.run = photo_open_job_run;
+    snprintf(j->path, sizeof(j->path), "%s", path);
+
+    app->photo_load_gen++;
+    j->gen = app->photo_load_gen;
+    snprintf(app->loading_path, sizeof(app->loading_path), "%s", path);
+    app->photo_loading = true;
+
+    ap_worker_pool_submit(app->workers, &j->base);
     return 0;
 }
 
 void ap_app_close_photo(ap_app *app)
 {
-    if (!app || !app->photo) return;
+    if (!app) return;
+
+    // Invalidate any in-flight async open so its result is discarded
+    // when it lands.
+    if (app->photo_loading) {
+        app->photo_load_gen++;
+        app->photo_loading = false;
+        app->loading_path[0] = '\0';
+    }
+
+    if (!app->photo) {
+        if (app->mode == AP_MODE_PHOTO) app->mode = AP_MODE_LIBRARY;
+        bind_mode_view(app);
+        return;
+    }
 
     ap_app_wait_idle(app);
     ap_canvas_set_input(app->canvas, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
@@ -232,6 +328,49 @@ void ap_app_close_photo(ap_app *app)
 ap_photo *ap_app_photo(ap_app *app)
 {
     return app ? app->photo : NULL;
+}
+
+bool ap_app_photo_loading(const ap_app *app)
+{
+    return app ? app->photo_loading : false;
+}
+
+int ap_app_request_jpeg_export(ap_app *app, ap_photo *photo,
+                               const char *out_path, int quality)
+{
+    if (!app || !photo || !out_path) return -1;
+    int w = ap_photo_width(photo);
+    int h = ap_photo_height(photo);
+    if (w <= 0 || h <= 0) return -1;
+
+    size_t bytes = (size_t)w * (size_t)h * 4u;
+    uint8_t *rgba = malloc(bytes);
+    if (!rgba) {
+        AP_ERROR("export: out of memory (%zu bytes)", bytes);
+        return -1;
+    }
+    if (ap_pipeline_graph_readback(ap_photo_graph(photo), rgba, bytes) != 0) {
+        free(rgba);
+        return -1;
+    }
+
+    export_job *j = calloc(1, sizeof(*j));
+    if (!j) {
+        AP_ERROR("export: job alloc failed");
+        free(rgba);
+        return -1;
+    }
+    j->base.run = export_job_run;
+    j->rgba    = rgba;
+    j->width   = w;
+    j->height  = h;
+    j->quality = quality;
+    snprintf(j->out_path, sizeof(j->out_path), "%s", out_path);
+
+    app->export_inflight++;
+    AP_INFO("export: queued %s (%dx%d, q=%d)", j->out_path, w, h, quality);
+    ap_worker_pool_submit(app->workers, &j->base);
+    return 0;
 }
 
 int ap_app_open_library(ap_app *app, const char *path)
@@ -431,19 +570,11 @@ static void submit_pending_thumbs(ap_app *app)
     }
 }
 
-// Drain one completed decode job per frame: GPU-upload + bind to the
-// grid. One per frame keeps GPU upload latency bounded; the worker
-// keeps producing while we're idle here.
-static void drain_one_completed_thumb(ap_app *app)
+static void handle_thumb_complete(ap_app *app, thumb_job *j)
 {
-    if (!app->workers || !app->library || !app->grid) return;
-    ap_work_item *it = ap_worker_pool_poll(app->workers);
-    if (!it) return;
-    thumb_job *j = (thumb_job *)it;
     if (app->thumb_inflight > 0) app->thumb_inflight--;
-
-    if (j->ok && j->rgba && j->idx >= 0
-        && j->idx < ap_library_photo_count(app->library))
+    if (app->library && app->grid && j->ok && j->rgba
+        && j->idx >= 0 && j->idx < ap_library_photo_count(app->library))
     {
         ap_thumbnail *t = ap_thumbnail_upload(app->gpu, j->rgba, j->w, j->h);
         if (t) {
@@ -455,6 +586,73 @@ static void drain_one_completed_thumb(ap_app *app)
     }
     free(j->rgba);
     free(j);
+}
+
+static void handle_photo_open_complete(ap_app *app, photo_open_job *j)
+{
+    bool stale = (j->gen != app->photo_load_gen);
+    if (stale) {
+        ap_raw_image_free(&j->raw);
+    } else {
+        app->photo_loading = false;
+        app->loading_path[0] = '\0';
+        if (j->ok) {
+            install_loaded_photo(app, j);
+        } else {
+            AP_ERROR("photo: failed to open %s", j->path);
+            ap_raw_image_free(&j->raw);
+        }
+    }
+    free(j);
+}
+
+static void export_job_run(ap_work_item *self)
+{
+    export_job *j = (export_job *)self;
+    if (ap_export_jpeg(j->rgba, j->width, j->height,
+                       j->out_path, j->quality) != 0) {
+        AP_ERROR("export: failed to write %s", j->out_path);
+    }
+}
+
+static void handle_export_complete(ap_app *app, export_job *j)
+{
+    if (app->export_inflight > 0) app->export_inflight--;
+    free(j->rgba);
+    free(j);
+}
+
+// Pop one completed work item per frame and dispatch on its run-fn.
+// Pool poll is non-blocking — when nothing's ready, this is a no-op.
+static void drain_one_completed_job(ap_app *app)
+{
+    if (!app->workers) return;
+    ap_work_item *it = ap_worker_pool_poll(app->workers);
+    if (!it) return;
+    if (it->run == thumb_job_run) {
+        handle_thumb_complete(app, (thumb_job *)it);
+    } else if (it->run == photo_open_job_run) {
+        handle_photo_open_complete(app, (photo_open_job *)it);
+    } else if (it->run == export_job_run) {
+        handle_export_complete(app, (export_job *)it);
+    } else {
+        AP_WARN("worker: unknown completed run-fn, leaking item");
+    }
+}
+
+static void draw_loading_overlay(ap_app *app)
+{
+    if (!app->photo_loading) return;
+    ImGuiIO *io = igGetIO_Nil();
+    if (!io) return;
+    ImDrawList *dl = igGetForegroundDrawList_ViewportPtr(NULL);
+    if (!dl) return;
+
+    ImVec2_c center = { io->DisplaySize.x * 0.5f, io->DisplaySize.y * 0.5f };
+    char msg[5120];
+    snprintf(msg, sizeof(msg), "loading %s", app->loading_path);
+    ImVec2_c pos = { center.x - 200.0f, center.y - 8.0f };
+    ImDrawList_AddText_Vec2(dl, pos, 0xFFEEEEEE, msg, NULL);
 }
 
 int ap_app_run_frame(ap_app *app)
@@ -472,14 +670,15 @@ int ap_app_run_frame(ap_app *app)
         }
     }
 
-    if (app->mode == AP_MODE_PHOTO) {
+    if (app->mode == AP_MODE_PHOTO && !app->photo_loading) {
         drive_canvas_input(app);
-    } else if (app->mode == AP_MODE_LIBRARY) {
+    } else if (app->mode == AP_MODE_LIBRARY && !app->photo_loading) {
         drive_grid_input(app);
         draw_grid_labels(app);
         submit_pending_thumbs(app);
-        drain_one_completed_thumb(app);
     }
+    drain_one_completed_job(app);
+    draw_loading_overlay(app);
 
     const ap_edit_state *edit = NULL;
     if (app->photo) {
