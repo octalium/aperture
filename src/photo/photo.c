@@ -53,9 +53,10 @@ ap_photo *ap_photo_open(ap_gpu *g, const char *path)
         return NULL;
     }
     photo->edit = (ap_edit_state){
-        .exposure_ev   = 0.0f,
-        .tone_contrast = 1.0f,
-        .tone_pivot    = 0.18f,
+        .exposure_ev         = 0.0f,
+        .tone_contrast       = 1.0f,
+        .tone_pivot          = 0.18f,
+        .respect_orientation = 1,
     };
     if (ap_sidecar_load_edit(path, &photo->edit) == 0) {
         AP_INFO("photo: loaded sidecar for %s", path);
@@ -72,11 +73,21 @@ ap_photo *ap_photo_open(ap_gpu *g, const char *path)
         ap_raw_image_free(&raw);
         goto fail;
     }
-    // Display dims (post-orientation) — what the rest of the app and the
-    // ImGui viewport report. The input texture stays at sensor dims;
-    // demosaic maps display coords back to sensor coords internally.
-    photo->width  = raw.width;
-    photo->height = raw.height;
+
+    // Display dims default to the post-orientation size. When the
+    // user has turned EXIF orientation off for this photo, the
+    // pipeline graph runs at sensor dims with the demosaic flip
+    // forced to 0. The input texture is always at sensor dims.
+    int output_w = raw.width;
+    int output_h = raw.height;
+    ap_raw_metadata graph_meta = raw.meta;
+    if (!photo->edit.respect_orientation) {
+        output_w = raw.bayer_width;
+        output_h = raw.bayer_height;
+        graph_meta.flip = 0;
+    }
+    photo->width  = output_w;
+    photo->height = output_h;
 
     const ap_module *chain[] = {
         ap_module_find("demosaic"),
@@ -85,10 +96,10 @@ ap_photo *ap_photo_open(ap_gpu *g, const char *path)
         ap_module_find("encode"),
     };
     photo->graph = ap_pipeline_graph_create(g, photo->texture,
-                                            raw.width, raw.height,
+                                            output_w, output_h,
                                             chain,
                                             (int)(sizeof(chain) / sizeof(chain[0])),
-                                            &raw.meta);
+                                            &graph_meta);
     ap_raw_image_free(&raw);
     if (!photo->graph) {
         goto fail;

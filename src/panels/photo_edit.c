@@ -25,6 +25,20 @@ static void photo_edit_draw(ap_app *app)
         igSliderFloat("Pivot",         &edit->tone_pivot,
                        0.05f, 0.5f, "%.3f", 0);
 
+        bool respect = edit->respect_orientation != 0;
+        if (igCheckbox("Respect EXIF orientation", &respect)) {
+            edit->respect_orientation = respect ? 1 : 0;
+            // Pipeline graph dims and demosaic flip are baked at
+            // photo-open time, so apply by reopening on the same path.
+            // The current `photo` pointer becomes stale once we open
+            // — bail out of the rest of the panel for this frame.
+            char path_copy[4096];
+            snprintf(path_copy, sizeof(path_copy), "%s", ap_photo_path(photo));
+            ap_app_open_photo(app, path_copy);
+            igEnd();
+            return;
+        }
+
         igSeparator();
 
         if (igButton("Export to JPEG", (ImVec2_c){ 0.0f, 0.0f })) {
