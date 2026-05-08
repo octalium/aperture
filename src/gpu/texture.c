@@ -13,6 +13,7 @@ struct ap_texture {
     VkDeviceMemory memory;
     VkImageView    view;
     VkSampler      sampler;
+    VkImageLayout  layout;
     int            width;
     int            height;
 };
@@ -63,7 +64,11 @@ static void transition(VkCommandBuffer cmd, VkImage image,
 
 static ap_texture *create_from_cpu_buffer(ap_gpu *g, const void *pixels,
                                           int width, int height,
-                                          VkFormat format, int bytes_per_pixel)
+                                          VkFormat format, int bytes_per_pixel,
+                                          VkImageUsageFlags usage,
+                                          VkImageLayout final_layout,
+                                          VkPipelineStageFlags2 final_stage,
+                                          VkAccessFlags2 final_access)
 {
     if (width <= 0 || height <= 0 || !pixels) {
         AP_ERROR("ap_texture: invalid args (%dx%d, pixels=%p)",
@@ -129,9 +134,7 @@ static ap_texture *create_from_cpu_buffer(ap_gpu *g, const void *pixels,
         .arrayLayers   = 1,
         .samples       = VK_SAMPLE_COUNT_1_BIT,
         .tiling        = VK_IMAGE_TILING_OPTIMAL,
-        .usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT
-                       | VK_IMAGE_USAGE_SAMPLED_BIT
-                       | VK_IMAGE_USAGE_STORAGE_BIT,
+        .usage         = usage,
         .sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
@@ -192,9 +195,10 @@ static ap_texture *create_from_cpu_buffer(ap_gpu *g, const void *pixels,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
     transition(cmd, t->image,
-               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, final_layout,
                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-               VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+               final_stage, final_access);
+    t->layout = final_layout;
 
     vkEndCommandBuffer(cmd);
 
@@ -267,14 +271,38 @@ ap_texture *ap_texture_create_rgba8(ap_gpu *g, const uint8_t *pixels,
                                     int width, int height)
 {
     return create_from_cpu_buffer(g, pixels, width, height,
-                                  VK_FORMAT_R8G8B8A8_UNORM, 4);
+                                  VK_FORMAT_R8G8B8A8_UNORM, 4,
+                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                                  | VK_IMAGE_USAGE_SAMPLED_BIT
+                                  | VK_IMAGE_USAGE_STORAGE_BIT,
+                                  VK_IMAGE_LAYOUT_GENERAL,
+                                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                  VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+}
+
+ap_texture *ap_texture_create_rgba8_srgb(ap_gpu *g, const uint8_t *pixels,
+                                         int width, int height)
+{
+    return create_from_cpu_buffer(g, pixels, width, height,
+                                  VK_FORMAT_R8G8B8A8_SRGB, 4,
+                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                                  | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 }
 
 ap_texture *ap_texture_create_r16(ap_gpu *g, const uint16_t *pixels,
                                   int width, int height)
 {
     return create_from_cpu_buffer(g, pixels, width, height,
-                                  VK_FORMAT_R16_UNORM, 2);
+                                  VK_FORMAT_R16_UNORM, 2,
+                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                                  | VK_IMAGE_USAGE_SAMPLED_BIT
+                                  | VK_IMAGE_USAGE_STORAGE_BIT,
+                                  VK_IMAGE_LAYOUT_GENERAL,
+                                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                  VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
 }
 
 void ap_texture_destroy(ap_texture *t)
@@ -290,6 +318,6 @@ void ap_texture_destroy(ap_texture *t)
 
 VkImageView   ap_texture_view(const ap_texture *t)    { return t->view; }
 VkSampler     ap_texture_sampler(const ap_texture *t) { return t->sampler; }
-VkImageLayout ap_texture_layout(const ap_texture *t)  { (void)t; return VK_IMAGE_LAYOUT_GENERAL; }
+VkImageLayout ap_texture_layout(const ap_texture *t)  { return t->layout; }
 int           ap_texture_width(const ap_texture *t)   { return t->width; }
 int           ap_texture_height(const ap_texture *t)  { return t->height; }

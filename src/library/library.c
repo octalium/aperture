@@ -4,6 +4,7 @@
 
 #include "app/root.h"
 #include "core/log.h"
+#include "photo/thumbnail.h"
 
 #include <sqlite3.h>
 
@@ -38,6 +39,9 @@ struct ap_library {
     char    **photo_paths; // relative to root
     int       photo_count;
     int       photo_capacity;
+
+    ap_thumbnail **thumbs; // photo_count entries, NULL = not loaded
+    int            thumb_cursor; // next idx to try; rolled forward
 };
 
 // ----- registry: <app_root>/aperture.db, libraries(id, path, created_at) -----
@@ -448,6 +452,14 @@ ap_library *ap_library_open(const char *path)
 
     if (load_photo_cache(lib) < 0) goto fail;
 
+    if (lib->photo_count > 0) {
+        lib->thumbs = calloc((size_t)lib->photo_count, sizeof(*lib->thumbs));
+        if (!lib->thumbs) {
+            AP_ERROR("library: thumbnail cache alloc failed");
+            goto fail;
+        }
+    }
+
     AP_INFO("library: %s [%s] (%d photos)",
             lib->root, lib->id, lib->photo_count);
     return lib;
@@ -460,6 +472,12 @@ fail:
 void ap_library_close(ap_library *lib)
 {
     if (!lib) return;
+    if (lib->thumbs) {
+        for (int i = 0; i < lib->photo_count; i++) {
+            ap_thumbnail_destroy(lib->thumbs[i]);
+        }
+        free(lib->thumbs);
+    }
     for (int i = 0; i < lib->photo_count; i++) {
         free(lib->photo_paths[i]);
     }
@@ -498,4 +516,35 @@ int ap_library_photo_absolute_path(const ap_library *lib, int index,
         return -1;
     }
     return 0;
+}
+
+ap_thumbnail *ap_library_thumbnail(const ap_library *lib, int index)
+{
+    if (!lib || !lib->thumbs || index < 0 || index >= lib->photo_count) {
+        return NULL;
+    }
+    return lib->thumbs[index];
+}
+
+void ap_library_set_thumbnail(ap_library *lib, int index, ap_thumbnail *t)
+{
+    if (!lib || !lib->thumbs || index < 0 || index >= lib->photo_count) {
+        if (t) ap_thumbnail_destroy(t);
+        return;
+    }
+    if (lib->thumbs[index]) {
+        ap_thumbnail_destroy(lib->thumbs[index]);
+    }
+    lib->thumbs[index] = t;
+}
+
+int ap_library_pending_thumbnail_idx(const ap_library *lib)
+{
+    if (!lib || !lib->thumbs || lib->photo_count <= 0) return -1;
+    ap_library *m = (ap_library *)lib;
+    while (m->thumb_cursor < m->photo_count) {
+        int idx = m->thumb_cursor++;
+        if (!m->thumbs[idx]) return idx;
+    }
+    return -1;
 }
