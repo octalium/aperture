@@ -53,6 +53,8 @@ struct ap_grid {
     int cell_size;
     int cell_gap;
     int border_px;
+
+    float scroll_y;
 };
 
 typedef struct {
@@ -65,8 +67,8 @@ typedef struct {
 static grid_layout layout_for(const ap_grid *g, int win_w, int win_h)
 {
     grid_layout L = {
-        .origin_x = GRID_MARGIN,
-        .origin_y = GRID_MARGIN,
+        .origin_x  = GRID_MARGIN,
+        .origin_y  = GRID_MARGIN - (int)g->scroll_y,
         .cell_size = g->cell_size,
         .cell_gap  = g->cell_gap,
     };
@@ -76,6 +78,22 @@ static grid_layout layout_for(const ap_grid *g, int win_w, int win_h)
     if (L.cells_per_row < 1) L.cells_per_row = 1;
     (void)win_h;
     return L;
+}
+
+static int total_rows(const ap_grid *g, int cells_per_row)
+{
+    if (g->photo_count <= 0 || cells_per_row <= 0) return 0;
+    return (g->photo_count + cells_per_row - 1) / cells_per_row;
+}
+
+static float max_scroll_for(const ap_grid *g, int win_w, int win_h)
+{
+    grid_layout L = layout_for(g, win_w, win_h);
+    int rows = total_rows(g, L.cells_per_row);
+    int pitch = L.cell_size + L.cell_gap;
+    int content_h = rows * pitch + GRID_MARGIN;
+    if (content_h <= win_h) return 0.0f;
+    return (float)(content_h - win_h);
 }
 
 static int find_memory_type(VkPhysicalDevice phys, uint32_t type_bits,
@@ -508,6 +526,7 @@ void ap_grid_set_photo_count(ap_grid *grid, int count)
     if (grid->selected_idx >= count) {
         grid->selected_idx = count > 0 ? count - 1 : 0;
     }
+    grid->scroll_y = 0.0f;
 
     // Reset the entire descriptor array back to the placeholder. The
     // previous library's ap_thumbnail textures are about to be (or
@@ -548,6 +567,46 @@ int ap_grid_selected(const ap_grid *grid)
 int ap_grid_photo_count(const ap_grid *grid)
 {
     return grid ? grid->photo_count : 0;
+}
+
+int ap_grid_cells_per_row(const ap_grid *grid, int win_width, int win_height)
+{
+    if (!grid) return 1;
+    grid_layout L = layout_for(grid, win_width, win_height);
+    return L.cells_per_row;
+}
+
+void ap_grid_scroll(ap_grid *grid, float dy, int win_width, int win_height)
+{
+    if (!grid) return;
+    float ms = max_scroll_for(grid, win_width, win_height);
+    grid->scroll_y += dy;
+    if (grid->scroll_y < 0.0f) grid->scroll_y = 0.0f;
+    if (grid->scroll_y > ms)   grid->scroll_y = ms;
+}
+
+void ap_grid_ensure_visible(ap_grid *grid, int idx,
+                            int win_width, int win_height)
+{
+    if (!grid || idx < 0 || idx >= grid->photo_count) return;
+
+    grid_layout L = layout_for(grid, win_width, win_height);
+    if (L.cells_per_row <= 0) return;
+    int pitch = L.cell_size + L.cell_gap;
+    int row   = idx / L.cells_per_row;
+
+    // Where the cell *would* sit on screen at the current scroll.
+    float cell_top    = (float)GRID_MARGIN + (float)(row * pitch) - grid->scroll_y;
+    float cell_bottom = cell_top + (float)L.cell_size;
+
+    if (cell_top < (float)GRID_MARGIN) {
+        grid->scroll_y -= (float)GRID_MARGIN - cell_top;
+    } else if (cell_bottom > (float)(win_height - GRID_MARGIN)) {
+        grid->scroll_y += cell_bottom - (float)(win_height - GRID_MARGIN);
+    }
+    float ms = max_scroll_for(grid, win_width, win_height);
+    if (grid->scroll_y < 0.0f) grid->scroll_y = 0.0f;
+    if (grid->scroll_y > ms)   grid->scroll_y = ms;
 }
 
 int ap_grid_hit_test(const ap_grid *grid,

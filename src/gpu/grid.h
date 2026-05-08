@@ -27,6 +27,20 @@ void ap_grid_set_selected(ap_grid *grid, int idx);
 int  ap_grid_selected(const ap_grid *grid);
 int  ap_grid_photo_count(const ap_grid *grid);
 
+// Number of cells per row at the supplied window dims, derived from
+// the grid's own layout knobs.
+int  ap_grid_cells_per_row(const ap_grid *grid, int win_width, int win_height);
+
+// Vertical scroll. `dy` is in window pixels — positive scrolls
+// content up (reveals content below). Clamps to [0, max_scroll]
+// based on the supplied window dims and current photo count.
+void ap_grid_scroll(ap_grid *grid, float dy, int win_width, int win_height);
+
+// Adjust scroll so the cell at `idx` is fully visible. No-op if
+// already visible or if idx is out of range.
+void ap_grid_ensure_visible(ap_grid *grid, int idx,
+                            int win_width, int win_height);
+
 // Bind a thumbnail texture into the grid's descriptor array at the
 // given slot. Pass view = VK_NULL_HANDLE to revert the slot to the
 // shared placeholder. Safe to call mid-frame thanks to
