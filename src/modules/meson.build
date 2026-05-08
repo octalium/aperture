@@ -1,6 +1,7 @@
 aperture_sources += files(
+  'demosaic.c',
   'encode.c',
-  'process.c',
+  'exposure.c',
   'registry.c',
   'tone.c',
 )

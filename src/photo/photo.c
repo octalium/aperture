@@ -67,21 +67,24 @@ ap_photo *ap_photo_open(ap_gpu *g, const char *path)
         goto fail;
     }
 
-    photo->texture = ap_texture_create_rgba8(g, raw.pixels, raw.width, raw.height);
-    ap_raw_image_free(&raw);
+    photo->texture = ap_texture_create_r16(g, raw.bayer, raw.width, raw.height);
     if (!photo->texture) {
+        ap_raw_image_free(&raw);
         goto fail;
     }
     photo->width  = ap_texture_width(photo->texture);
     photo->height = ap_texture_height(photo->texture);
 
     const ap_module *chain[] = {
-        ap_module_find("process"),
+        ap_module_find("demosaic"),
+        ap_module_find("exposure"),
         ap_module_find("tone"),
         ap_module_find("encode"),
     };
     photo->graph = ap_pipeline_graph_create(g, photo->texture, chain,
-                                            (int)(sizeof(chain) / sizeof(chain[0])));
+                                            (int)(sizeof(chain) / sizeof(chain[0])),
+                                            &raw.meta);
+    ap_raw_image_free(&raw);
     if (!photo->graph) {
         goto fail;
     }

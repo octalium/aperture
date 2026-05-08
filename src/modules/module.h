@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "gpu/gpu.h"
+#include "io/raw.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,11 +28,14 @@ typedef enum {
 
 typedef struct ap_module ap_module;
 
-// Fill a per-dispatch push-constant blob (size == module->push_size) from
-// the current edit state. Return 0 to dispatch normally; nonzero to skip
-// this module this frame (disabled / identity / no-op).
+// Fill a per-dispatch push-constant blob (size == module->push_size).
+// Modules read `edit` for user-controlled state and `meta` for static
+// per-image data (raw camera matrix, black levels, etc.). `meta` may be
+// NULL for modules that don't need it. Return 0 to dispatch normally;
+// nonzero to skip this module this frame.
 typedef int (*ap_module_pack_push_fn)(const ap_module *self,
                                       const ap_edit_state *edit,
+                                      const ap_raw_metadata *meta,
                                       void *push_out);
 
 struct ap_module {

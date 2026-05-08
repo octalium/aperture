@@ -7,6 +7,7 @@
 
 #include "gpu/gpu.h"
 #include "gpu/texture.h"
+#include "io/raw.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,10 +25,15 @@ typedef struct ap_module ap_module;
 // each module's descriptor set so the chain reads/writes by ping-pong
 // position: first reads input, last writes display, middle modules
 // alternate between the two working buffers.
+//
+// `meta` is per-image static metadata (camera color matrix, black
+// levels, etc.) — copied into the graph at create time and passed to
+// each module's pack_push. May be NULL for chains that don't need it.
 ap_pipeline_graph *ap_pipeline_graph_create(ap_gpu *g,
                                             ap_texture *input,
                                             const ap_module *const *modules,
-                                            int module_count);
+                                            int module_count,
+                                            const ap_raw_metadata *meta);
 void ap_pipeline_graph_destroy(ap_pipeline_graph *graph);
 
 // Records the full chain for one frame. Each module's pack_push runs
