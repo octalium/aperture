@@ -170,7 +170,9 @@ static int create_buffers(ap_pipeline_graph *graph, int width, int height)
     };
     if (create_image(graph->gpu->device, graph->gpu->physical, width, height,
                      VK_FORMAT_R8G8B8A8_UNORM,
-                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                     VK_IMAGE_USAGE_STORAGE_BIT
+                       | VK_IMAGE_USAGE_SAMPLED_BIT
+                       | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                      VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT,
                      display_view_formats, 2,
                      &graph->display_image, &graph->display_memory) < 0) return -1;
@@ -601,3 +603,150 @@ VkSampler     ap_pipeline_graph_output_sampler(const ap_pipeline_graph *g) { ret
 VkImageLayout ap_pipeline_graph_output_layout(const ap_pipeline_graph *g)  { (void)g; return VK_IMAGE_LAYOUT_GENERAL; }
 int           ap_pipeline_graph_output_width(const ap_pipeline_graph *g)   { return g->width; }
 int           ap_pipeline_graph_output_height(const ap_pipeline_graph *g)  { return g->height; }
+
+int ap_pipeline_graph_readback(ap_pipeline_graph *graph,
+                               void *out_pixels, size_t out_size)
+{
+    if (!graph || !out_pixels) {
+        AP_ERROR("readback: invalid args");
+        return -1;
+    }
+    size_t needed = (size_t)graph->width * (size_t)graph->height * 4u;
+    if (out_size < needed) {
+        AP_ERROR("readback: out_size %zu < required %zu", out_size, needed);
+        return -1;
+    }
+
+    vkDeviceWaitIdle(graph->gpu->device);
+
+    VkBufferCreateInfo bci = {
+        .sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size        = needed,
+        .usage       = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    VkBuffer       staging  = VK_NULL_HANDLE;
+    VkDeviceMemory staging_mem = VK_NULL_HANDLE;
+    int rc = -1;
+
+    if (vkCreateBuffer(graph->gpu->device, &bci, NULL, &staging) != VK_SUCCESS) {
+        AP_ERROR("readback: vkCreateBuffer failed");
+        goto out;
+    }
+
+    VkMemoryRequirements mreq;
+    vkGetBufferMemoryRequirements(graph->gpu->device, staging, &mreq);
+    int mt = find_memory_type(graph->gpu->physical, mreq.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (mt < 0) {
+        AP_ERROR("readback: no host-visible memory type");
+        goto out;
+    }
+    VkMemoryAllocateInfo mai = {
+        .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize  = mreq.size,
+        .memoryTypeIndex = (uint32_t)mt,
+    };
+    if (vkAllocateMemory(graph->gpu->device, &mai, NULL, &staging_mem) != VK_SUCCESS) {
+        AP_ERROR("readback: vkAllocateMemory failed");
+        goto out;
+    }
+    vkBindBufferMemory(graph->gpu->device, staging, staging_mem, 0);
+
+    VkCommandBufferAllocateInfo cba = {
+        .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool        = graph->gpu->command_pool,
+        .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    vkAllocateCommandBuffers(graph->gpu->device, &cba, &cmd);
+
+    VkCommandBufferBeginInfo bi = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    vkBeginCommandBuffer(cmd, &bi);
+
+    VkImageMemoryBarrier2 to_src = {
+        .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+                       | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        .dstStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+        .oldLayout     = VK_IMAGE_LAYOUT_GENERAL,
+        .newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = graph->display_image,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0, .levelCount = 1,
+            .baseArrayLayer = 0, .layerCount = 1,
+        },
+    };
+    VkDependencyInfo dep_to_src = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers    = &to_src,
+    };
+    vkCmdPipelineBarrier2(cmd, &dep_to_src);
+
+    VkBufferImageCopy region = {
+        .imageSubresource = {
+            .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+            .mipLevel       = 0,
+            .baseArrayLayer = 0,
+            .layerCount     = 1,
+        },
+        .imageExtent = { (uint32_t)graph->width, (uint32_t)graph->height, 1 },
+    };
+    vkCmdCopyImageToBuffer(cmd, graph->display_image,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           staging, 1, &region);
+
+    VkImageMemoryBarrier2 back = to_src;
+    back.srcStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT;
+    back.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    back.dstStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    back.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+                       | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    back.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    back.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
+    VkDependencyInfo dep_back = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers    = &back,
+    };
+    vkCmdPipelineBarrier2(cmd, &dep_back);
+
+    vkEndCommandBuffer(cmd);
+
+    VkCommandBufferSubmitInfo cmd_si = {
+        .sType         = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+        .commandBuffer = cmd,
+    };
+    VkSubmitInfo2 submit = {
+        .sType                  = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+        .commandBufferInfoCount = 1,
+        .pCommandBufferInfos    = &cmd_si,
+    };
+    vkQueueSubmit2(graph->gpu->graphics_queue, 1, &submit, VK_NULL_HANDLE);
+    vkQueueWaitIdle(graph->gpu->graphics_queue);
+    vkFreeCommandBuffers(graph->gpu->device, graph->gpu->command_pool, 1, &cmd);
+
+    void *map = NULL;
+    if (vkMapMemory(graph->gpu->device, staging_mem, 0, needed, 0, &map) != VK_SUCCESS) {
+        AP_ERROR("readback: vkMapMemory failed");
+        goto out;
+    }
+    memcpy(out_pixels, map, needed);
+    vkUnmapMemory(graph->gpu->device, staging_mem);
+    rc = 0;
+
+out:
+    if (staging_mem) vkFreeMemory(graph->gpu->device, staging_mem, NULL);
+    if (staging)    vkDestroyBuffer(graph->gpu->device, staging, NULL);
+    return rc;
+}

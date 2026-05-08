@@ -36,6 +36,12 @@ int         ap_photo_width(const ap_photo *photo);
 int         ap_photo_height(const ap_photo *photo);
 const char *ap_photo_path(const ap_photo *photo);
 
+// Render the photo's processed output to a JPEG file at `out_path`.
+// Reads back the GPU display image, drops alpha, encodes baseline
+// JPEG. Synchronous. Returns 0 on success.
+int ap_photo_export_jpeg(ap_photo *photo, const char *out_path,
+                         int quality);
+
 #ifdef __cplusplus
 }
 #endif

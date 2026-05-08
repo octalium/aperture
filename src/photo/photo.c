@@ -4,6 +4,7 @@
 #include "gpu/texture.h"
 #include "io/raw.h"
 #include "modules/module.h"
+#include "output/jpeg.h"
 #include "sidecar/sidecar.h"
 #include "ui/imgui.h"
 
@@ -140,3 +141,25 @@ uint64_t           ap_photo_tex_id(const ap_photo *photo)  { return photo->tex_i
 int                ap_photo_width(const ap_photo *photo)   { return photo->width; }
 int                ap_photo_height(const ap_photo *photo)  { return photo->height; }
 const char        *ap_photo_path(const ap_photo *photo)    { return photo->path; }
+
+int ap_photo_export_jpeg(ap_photo *photo, const char *out_path, int quality)
+{
+    if (!photo || !out_path) {
+        return -1;
+    }
+
+    size_t bytes = (size_t)photo->width * (size_t)photo->height * 4u;
+    uint8_t *rgba = malloc(bytes);
+    if (!rgba) {
+        AP_ERROR("ap_photo_export_jpeg: out of memory (%zu bytes)", bytes);
+        return -1;
+    }
+
+    int rc = ap_pipeline_graph_readback(photo->graph, rgba, bytes);
+    if (rc == 0) {
+        rc = ap_export_jpeg(rgba, photo->width, photo->height,
+                            out_path, quality);
+    }
+    free(rgba);
+    return rc;
+}
