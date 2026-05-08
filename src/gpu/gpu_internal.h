@@ -58,6 +58,7 @@ struct ap_gpu {
 
     struct ap_pipeline_graph *current_graph;
     struct ap_canvas         *current_canvas;
+    struct ap_grid           *current_grid;
 };
 
 const char *gpu_vk_result_str(VkResult r);

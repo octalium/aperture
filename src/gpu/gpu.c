@@ -119,6 +119,11 @@ void ap_gpu_set_canvas(ap_gpu *g, ap_canvas *canvas)
     g->current_canvas = canvas;
 }
 
+void ap_gpu_set_grid(ap_gpu *g, ap_grid *grid)
+{
+    g->current_grid = grid;
+}
+
 void ap_gpu_wait_idle(ap_gpu *g)
 {
     if (g && g->device) {
