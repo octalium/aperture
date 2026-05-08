@@ -36,10 +36,20 @@ void ap_app_wait_idle(ap_app *app);
 ap_mode ap_app_mode(const ap_app *app);
 void    ap_app_set_mode(ap_app *app, ap_mode mode);
 
-// Photo lifecycle. open_photo replaces any currently-open photo.
+// Photo lifecycle. open_photo is asynchronous — the worker pool
+// decodes the raw on a background thread; the photo binds to the
+// canvas on a later frame once decode + GPU upload finish. Closing
+// or opening another photo while one is loading invalidates the
+// in-flight load.
 int       ap_app_open_photo(ap_app *app, const char *path);
 void      ap_app_close_photo(ap_app *app);
 ap_photo *ap_app_photo(ap_app *app);
+bool      ap_app_photo_loading(const ap_app *app);
+
+// Synchronous GPU readback + asynchronous JPEG encode+write. Returns
+// 0 if the readback succeeded and the encode job was queued.
+int       ap_app_request_jpeg_export(ap_app *app, ap_photo *photo,
+                                     const char *out_path, int quality);
 
 // Library lifecycle. Opening a library transitions to AP_MODE_LIBRARY
 // and closes any currently-open photo. Opening a different library

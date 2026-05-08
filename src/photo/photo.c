@@ -4,7 +4,6 @@
 #include "gpu/texture.h"
 #include "io/raw.h"
 #include "modules/module.h"
-#include "output/jpeg.h"
 #include "sidecar/sidecar.h"
 
 #include <stdlib.h>
@@ -33,22 +32,26 @@ static char *strdup_or_null(const char *s)
     return out;
 }
 
-ap_photo *ap_photo_open(ap_gpu *g, const char *path)
+ap_photo *ap_photo_open_with_raw(ap_gpu *g, const char *path,
+                                 ap_raw_image *raw)
 {
-    if (!g || !path) {
-        AP_ERROR("ap_photo_open: invalid args");
+    if (!g || !path || !raw) {
+        AP_ERROR("ap_photo_open_with_raw: invalid args");
+        if (raw) ap_raw_image_free(raw);
         return NULL;
     }
 
     ap_photo *photo = calloc(1, sizeof(*photo));
     if (!photo) {
-        AP_ERROR("ap_photo_open: out of memory");
+        AP_ERROR("ap_photo_open_with_raw: out of memory");
+        ap_raw_image_free(raw);
         return NULL;
     }
     photo->gpu  = g;
     photo->path = strdup_or_null(path);
     if (!photo->path) {
-        AP_ERROR("ap_photo_open: path duplication failed");
+        AP_ERROR("ap_photo_open_with_raw: path duplication failed");
+        ap_raw_image_free(raw);
         free(photo);
         return NULL;
     }
@@ -62,15 +65,10 @@ ap_photo *ap_photo_open(ap_gpu *g, const char *path)
         AP_INFO("photo: loaded sidecar for %s", path);
     }
 
-    ap_raw_image raw = {0};
-    if (ap_raw_load(path, &raw) != 0) {
-        goto fail;
-    }
-
-    photo->texture = ap_texture_create_r16(g, raw.bayer,
-                                           raw.bayer_width, raw.bayer_height);
+    photo->texture = ap_texture_create_r16(g, raw->bayer,
+                                           raw->bayer_width, raw->bayer_height);
     if (!photo->texture) {
-        ap_raw_image_free(&raw);
+        ap_raw_image_free(raw);
         goto fail;
     }
 
@@ -78,12 +76,12 @@ ap_photo *ap_photo_open(ap_gpu *g, const char *path)
     // user has turned EXIF orientation off for this photo, the
     // pipeline graph runs at sensor dims with the demosaic flip
     // forced to 0. The input texture is always at sensor dims.
-    int output_w = raw.width;
-    int output_h = raw.height;
-    ap_raw_metadata graph_meta = raw.meta;
+    int output_w = raw->width;
+    int output_h = raw->height;
+    ap_raw_metadata graph_meta = raw->meta;
     if (!photo->edit.respect_orientation) {
-        output_w = raw.bayer_width;
-        output_h = raw.bayer_height;
+        output_w = raw->bayer_width;
+        output_h = raw->bayer_height;
         graph_meta.flip = 0;
     }
     photo->width  = output_w;
@@ -100,7 +98,7 @@ ap_photo *ap_photo_open(ap_gpu *g, const char *path)
                                             chain,
                                             (int)(sizeof(chain) / sizeof(chain[0])),
                                             &graph_meta);
-    ap_raw_image_free(&raw);
+    ap_raw_image_free(raw);
     if (!photo->graph) {
         goto fail;
     }
@@ -110,6 +108,19 @@ ap_photo *ap_photo_open(ap_gpu *g, const char *path)
 fail:
     ap_photo_close(photo);
     return NULL;
+}
+
+ap_photo *ap_photo_open(ap_gpu *g, const char *path)
+{
+    if (!g || !path) {
+        AP_ERROR("ap_photo_open: invalid args");
+        return NULL;
+    }
+    ap_raw_image raw = {0};
+    if (ap_raw_load(path, &raw) != 0) {
+        return NULL;
+    }
+    return ap_photo_open_with_raw(g, path, &raw);
 }
 
 void ap_photo_close(ap_photo *photo)
@@ -141,24 +152,3 @@ int                ap_photo_width(const ap_photo *photo)   { return photo->width
 int                ap_photo_height(const ap_photo *photo)  { return photo->height; }
 const char        *ap_photo_path(const ap_photo *photo)    { return photo->path; }
 
-int ap_photo_export_jpeg(ap_photo *photo, const char *out_path, int quality)
-{
-    if (!photo || !out_path) {
-        return -1;
-    }
-
-    size_t bytes = (size_t)photo->width * (size_t)photo->height * 4u;
-    uint8_t *rgba = malloc(bytes);
-    if (!rgba) {
-        AP_ERROR("ap_photo_export_jpeg: out of memory (%zu bytes)", bytes);
-        return -1;
-    }
-
-    int rc = ap_pipeline_graph_readback(photo->graph, rgba, bytes);
-    if (rc == 0) {
-        rc = ap_export_jpeg(rgba, photo->width, photo->height,
-                            out_path, quality);
-    }
-    free(rgba);
-    return rc;
-}

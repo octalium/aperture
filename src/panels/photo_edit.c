@@ -43,13 +43,10 @@ static void photo_edit_draw(ap_app *app)
 
         if (igButton("Export to JPEG", (ImVec2_c){ 0.0f, 0.0f })) {
             const char *src = ap_photo_path(photo);
-            AP_INFO("export: starting JPEG for %s", src);
             char out[4096];
             int n = snprintf(out, sizeof(out), "%s.jpg", src);
             if (n > 0 && (size_t)n < sizeof(out)) {
-                if (ap_photo_export_jpeg(photo, out, JPEG_DEFAULT_QUALITY) != 0) {
-                    AP_ERROR("export: failed to write %s", out);
-                }
+                ap_app_request_jpeg_export(app, photo, out, JPEG_DEFAULT_QUALITY);
             } else {
                 AP_ERROR("export: path too long for %s", src);
             }
