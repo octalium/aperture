@@ -18,6 +18,14 @@ static void photo_edit_draw(ap_app *app)
     ap_edit_state *edit = ap_photo_edit(photo);
 
     if (igBegin("edit", NULL, 0)) {
+        if (igButton("Back to library  (Esc)", (ImVec2_c){ 0.0f, 0.0f })) {
+            ap_app_close_photo(app);
+            igEnd();
+            return;
+        }
+
+        igSeparator();
+
         igSliderFloat("Exposure (EV)", &edit->exposure_ev,
                       -5.0f,  5.0f, "%.2f", 0);
         igSliderFloat("Contrast",      &edit->tone_contrast,
