@@ -3,17 +3,22 @@
 #include "app.h"
 
 #include "core/log.h"
+#include "gpu/canvas.h"
 #include "gpu/gpu.h"
+#include "gpu/pipeline_graph.h"
 #include "library/library.h"
 #include "panels/panels.h"
 #include "photo/photo.h"
 #include "ui/imgui.h"
+
+#include "cimgui.h"
 
 #include <signal.h>
 #include <stdlib.h>
 
 struct ap_app {
     ap_gpu     *gpu;
+    ap_canvas  *canvas;
     ap_mode     mode;
     ap_photo   *photo;
     ap_library *library;
@@ -54,6 +59,14 @@ ap_app *ap_app_create(int width, int height, const char *title)
         return NULL;
     }
 
+    app->canvas = ap_canvas_create(app->gpu);
+    if (!app->canvas) {
+        ap_gpu_destroy(app->gpu);
+        free(app);
+        return NULL;
+    }
+    ap_gpu_set_canvas(app->gpu, app->canvas);
+
     install_signal_handlers();
     return app;
 }
@@ -65,6 +78,11 @@ void ap_app_destroy(ap_app *app)
     ap_app_wait_idle(app);
     ap_app_close_photo(app);
     ap_app_close_library(app);
+    if (app->canvas) {
+        ap_gpu_set_canvas(app->gpu, NULL);
+        ap_canvas_destroy(app->canvas);
+        app->canvas = NULL;
+    }
     if (app->gpu) {
         ap_gpu_destroy(app->gpu);
         app->gpu = NULL;
@@ -110,7 +128,13 @@ int ap_app_open_photo(ap_app *app, const char *path)
     if (!app->photo) {
         return -1;
     }
-    ap_gpu_set_graph(app->gpu, ap_photo_graph(app->photo));
+    ap_pipeline_graph *graph = ap_photo_graph(app->photo);
+    ap_gpu_set_graph(app->gpu, graph);
+    ap_canvas_set_input(app->canvas,
+                        ap_pipeline_graph_output_view(graph),
+                        ap_pipeline_graph_output_sampler(graph),
+                        ap_pipeline_graph_output_width(graph),
+                        ap_pipeline_graph_output_height(graph));
     app->mode = AP_MODE_PHOTO;
     return 0;
 }
@@ -120,6 +144,7 @@ void ap_app_close_photo(ap_app *app)
     if (!app || !app->photo) return;
 
     ap_app_wait_idle(app);
+    ap_canvas_set_input(app->canvas, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
     ap_gpu_set_graph(app->gpu, NULL);
     ap_photo_close(app->photo);
     app->photo = NULL;
@@ -158,6 +183,36 @@ ap_library *ap_app_library(ap_app *app)
     return app ? app->library : NULL;
 }
 
+static void drive_canvas_input(ap_app *app)
+{
+    if (!app->canvas || !app->photo) return;
+
+    ImGuiIO *io = igGetIO_Nil();
+    if (!io || io->WantCaptureMouse) return;
+
+    int win_w = (int)io->DisplaySize.x;
+    int win_h = (int)io->DisplaySize.y;
+
+    if (io->MouseDown[0] && (io->MouseDelta.x != 0.0f || io->MouseDelta.y != 0.0f)) {
+        ap_canvas_pan(app->canvas, io->MouseDelta.x, io->MouseDelta.y);
+    }
+    if (io->MouseWheel != 0.0f) {
+        float factor = io->MouseWheel > 0.0f
+            ? 1.0f + 0.10f * io->MouseWheel
+            : 1.0f / (1.0f - 0.10f * io->MouseWheel);
+        ap_canvas_zoom_at(app->canvas, factor,
+                          io->MousePos.x, io->MousePos.y,
+                          win_w, win_h);
+    }
+
+    if (igIsKeyPressed_Bool(ImGuiKey_F, false) ||
+        igIsKeyPressed_Bool(ImGuiKey_0, false)) {
+        ap_canvas_reset_view(app->canvas);
+    } else if (igIsKeyPressed_Bool(ImGuiKey_1, false)) {
+        ap_canvas_set_zoom(app->canvas, 1.0f, win_w, win_h);
+    }
+}
+
 int ap_app_run_frame(ap_app *app)
 {
     if (!app) return -1;
@@ -172,6 +227,8 @@ int ap_app_run_frame(ap_app *app)
             }
         }
     }
+
+    drive_canvas_input(app);
 
     const ap_edit_state *edit = NULL;
     if (app->photo) {

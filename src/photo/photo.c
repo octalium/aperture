@@ -6,7 +6,6 @@
 #include "modules/module.h"
 #include "output/jpeg.h"
 #include "sidecar/sidecar.h"
-#include "ui/imgui.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -20,7 +19,6 @@ struct ap_photo {
 
     ap_texture        *texture;
     ap_pipeline_graph *graph;
-    uint64_t           tex_id;
 
     ap_edit_state edit;
 };
@@ -96,11 +94,6 @@ ap_photo *ap_photo_open(ap_gpu *g, const char *path)
         goto fail;
     }
 
-    photo->tex_id = ap_imgui_register_texture(
-        ap_pipeline_graph_output_sampler(photo->graph),
-        ap_pipeline_graph_output_view(photo->graph),
-        ap_pipeline_graph_output_layout(photo->graph));
-
     return photo;
 
 fail:
@@ -119,10 +112,6 @@ void ap_photo_close(ap_photo *photo)
         }
     }
 
-    if (photo->tex_id) {
-        ap_imgui_unregister_texture(photo->tex_id);
-        photo->tex_id = 0;
-    }
     if (photo->graph) {
         ap_pipeline_graph_destroy(photo->graph);
         photo->graph = NULL;
@@ -137,7 +126,6 @@ void ap_photo_close(ap_photo *photo)
 
 ap_pipeline_graph *ap_photo_graph(ap_photo *photo) { return photo->graph; }
 ap_edit_state     *ap_photo_edit(ap_photo *photo)  { return &photo->edit; }
-uint64_t           ap_photo_tex_id(const ap_photo *photo)  { return photo->tex_id; }
 int                ap_photo_width(const ap_photo *photo)   { return photo->width; }
 int                ap_photo_height(const ap_photo *photo)  { return photo->height; }
 const char        *ap_photo_path(const ap_photo *photo)    { return photo->path; }

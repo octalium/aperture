@@ -6,6 +6,8 @@ shader_sources = [
   'exposure.comp',
   'tone.comp',
   'encode.comp',
+  'canvas.vert',
+  'canvas.frag',
 ]
 
 shader_headers = []

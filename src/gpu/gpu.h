@@ -9,6 +9,7 @@ extern "C" {
 
 typedef struct ap_gpu             ap_gpu;
 typedef struct ap_pipeline_graph  ap_pipeline_graph;
+typedef struct ap_canvas          ap_canvas;
 
 typedef struct {
     float exposure_ev;
@@ -24,6 +25,7 @@ int  ap_gpu_render_frame(ap_gpu *g, const ap_edit_state *edit);
 void ap_gpu_wait_idle(ap_gpu *g);
 
 void ap_gpu_set_graph(ap_gpu *g, ap_pipeline_graph *graph);
+void ap_gpu_set_canvas(ap_gpu *g, ap_canvas *canvas);
 
 #ifdef __cplusplus
 }
