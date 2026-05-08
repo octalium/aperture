@@ -67,13 +67,17 @@ ap_photo *ap_photo_open(ap_gpu *g, const char *path)
         goto fail;
     }
 
-    photo->texture = ap_texture_create_r16(g, raw.bayer, raw.width, raw.height);
+    photo->texture = ap_texture_create_r16(g, raw.bayer,
+                                           raw.bayer_width, raw.bayer_height);
     if (!photo->texture) {
         ap_raw_image_free(&raw);
         goto fail;
     }
-    photo->width  = ap_texture_width(photo->texture);
-    photo->height = ap_texture_height(photo->texture);
+    // Display dims (post-orientation) — what the rest of the app and the
+    // ImGui viewport report. The input texture stays at sensor dims;
+    // demosaic maps display coords back to sensor coords internally.
+    photo->width  = raw.width;
+    photo->height = raw.height;
 
     const ap_module *chain[] = {
         ap_module_find("demosaic"),
@@ -81,7 +85,9 @@ ap_photo *ap_photo_open(ap_gpu *g, const char *path)
         ap_module_find("tone"),
         ap_module_find("encode"),
     };
-    photo->graph = ap_pipeline_graph_create(g, photo->texture, chain,
+    photo->graph = ap_pipeline_graph_create(g, photo->texture,
+                                            raw.width, raw.height,
+                                            chain,
                                             (int)(sizeof(chain) / sizeof(chain[0])),
                                             &raw.meta);
     ap_raw_image_free(&raw);

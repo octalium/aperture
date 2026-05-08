@@ -63,9 +63,30 @@ int ap_raw_load(const char *path, ap_raw_image *out)
         memcpy(bayer + (size_t)y * vis_w, src, (size_t)vis_w * sizeof(*src));
     }
 
-    out->bayer  = bayer;
-    out->width  = vis_w;
-    out->height = vis_h;
+    out->bayer        = bayer;
+    out->bayer_width  = vis_w;
+    out->bayer_height = vis_h;
+
+    int flip = raw->sizes.flip;
+    // Clamp non-rotation EXIF orientations (mirror+rotate) to the
+    // closest pure rotation. Rare in practice; surface and refine if
+    // someone hits one.
+    if (flip != 0 && flip != 3 && flip != 5 && flip != 6) {
+        AP_WARN("ap_raw_load: %s has unsupported flip=%d, treating as 0",
+                path, flip);
+        flip = 0;
+    }
+    out->meta.flip          = flip;
+    out->meta.sensor_width  = vis_w;
+    out->meta.sensor_height = vis_h;
+
+    if (flip == 5 || flip == 6) {
+        out->width  = vis_h;
+        out->height = vis_w;
+    } else {
+        out->width  = vis_w;
+        out->height = vis_h;
+    }
 
     // Channel map at the visible top-left.
     for (int dy = 0; dy < 2; dy++) {
@@ -127,7 +148,9 @@ void ap_raw_image_free(ap_raw_image *img)
 {
     if (!img) return;
     free(img->bayer);
-    img->bayer  = NULL;
-    img->width  = 0;
-    img->height = 0;
+    img->bayer        = NULL;
+    img->bayer_width  = 0;
+    img->bayer_height = 0;
+    img->width        = 0;
+    img->height       = 0;
 }
