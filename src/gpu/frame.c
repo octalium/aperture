@@ -1,6 +1,7 @@
 #include "gpu_internal.h"
 
 #include "core/log.h"
+#include "gpu/canvas.h"
 #include "gpu/pipeline_graph.h"
 #include "ui/imgui.h"
 
@@ -119,6 +120,11 @@ static int record_frame(struct ap_gpu *g, VkCommandBuffer cmd,
     };
 
     vkCmdBeginRendering(cmd, &rendering);
+    if (g->current_canvas) {
+        ap_canvas_record(g->current_canvas, cmd,
+                         (int)g->swapchain_extent.width,
+                         (int)g->swapchain_extent.height);
+    }
     ap_imgui_render(cmd);
     vkCmdEndRendering(cmd);
 

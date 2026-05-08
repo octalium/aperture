@@ -114,6 +114,11 @@ void ap_gpu_set_graph(ap_gpu *g, ap_pipeline_graph *graph)
     g->current_graph = graph;
 }
 
+void ap_gpu_set_canvas(ap_gpu *g, ap_canvas *canvas)
+{
+    g->current_canvas = canvas;
+}
+
 void ap_gpu_wait_idle(ap_gpu *g)
 {
     if (g && g->device) {
