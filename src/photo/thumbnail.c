@@ -53,6 +53,56 @@ static void target_dims_for(int src_w, int src_h, int *out_w, int *out_h)
     *out_h = dh;
 }
 
+// Rotate an RGBA8 buffer to honor a LibRaw flip code.
+//   0 = identity (no allocation, ownership transferred via pass-through)
+//   3 = 180 degrees
+//   5 = 90 CCW (dims swap)
+//   6 = 90 CW (dims swap)
+// On non-identity flips, allocates a fresh `*out_pixels` and frees the
+// caller's `src` (so the caller can pass ownership in and forget).
+// Returns 0 on success.
+static int rotate_rgba(uint8_t *src, int src_w, int src_h, int flip,
+                       uint8_t **out_pixels, int *out_w, int *out_h)
+{
+    if (flip == 0) {
+        *out_pixels = src;
+        *out_w = src_w;
+        *out_h = src_h;
+        return 0;
+    }
+
+    int dst_w, dst_h;
+    if (flip == 5 || flip == 6) { dst_w = src_h; dst_h = src_w; }
+    else                        { dst_w = src_w; dst_h = src_h; }
+
+    uint8_t *dst = malloc((size_t)dst_w * (size_t)dst_h * 4u);
+    if (!dst) {
+        AP_ERROR("thumb: rotate alloc failed");
+        return -1;
+    }
+
+    for (int dy = 0; dy < dst_h; dy++) {
+        for (int dx = 0; dx < dst_w; dx++) {
+            int sx, sy;
+            switch (flip) {
+                case 3: sx = src_w - 1 - dx;     sy = src_h - 1 - dy;     break;
+                case 5: sx = src_w - 1 - dy;     sy = dx;                 break;
+                case 6: sx = dy;                 sy = src_h - 1 - dx;     break;
+                default: sx = dx;                sy = dy;                 break;
+            }
+            const uint8_t *s = src + ((size_t)sy * src_w + sx) * 4u;
+            uint8_t       *d = dst + ((size_t)dy * dst_w + dx) * 4u;
+            d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = s[3];
+        }
+    }
+
+    free(src);
+    *out_pixels = dst;
+    *out_w = dst_w;
+    *out_h = dst_h;
+    return 0;
+}
+
 // Box-filter downsample of an RGBA8 buffer. Allocates a fresh
 // `*out_pixels`; caller frees. Returns 0 on success.
 static int downsample_rgba(const uint8_t *src, int src_w, int src_h,
@@ -255,6 +305,8 @@ int ap_thumbnail_decode_cpu(const char *path,
         libraw_close(raw);
         return -1;
     }
+    int flip = raw->sizes.flip;
+    if (flip != 0 && flip != 3 && flip != 5 && flip != 6) flip = 0;
     err = libraw_unpack_thumb(raw);
     if (err != LIBRAW_SUCCESS) {
         AP_ERROR("thumb: libraw_unpack_thumb(%s) -> %s", path, libraw_strerror(err));
@@ -293,9 +345,19 @@ int ap_thumbnail_decode_cpu(const char *path,
     free(rgba);
     if (rc != 0) return -1;
 
-    *out_pixels = small;
-    *out_w = sw;
-    *out_h = sh;
+    // Apply EXIF orientation last (cheapest after downsampling). On
+    // identity the buffer is passed through; otherwise rotate_rgba
+    // owns and frees `small`.
+    uint8_t *oriented = NULL;
+    int     ow = 0, oh = 0;
+    if (rotate_rgba(small, sw, sh, flip, &oriented, &ow, &oh) != 0) {
+        free(small);
+        return -1;
+    }
+
+    *out_pixels = oriented;
+    *out_w = ow;
+    *out_h = oh;
     return 0;
 }
 
