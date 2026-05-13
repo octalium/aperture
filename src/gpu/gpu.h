@@ -32,9 +32,19 @@ void ap_gpu_set_grid(ap_gpu *g, ap_grid *grid);
 
 void ap_gpu_set_window_title(ap_gpu *g, const char *title);
 
-// Toggle borderless fullscreen on the monitor the window currently
-// sits on. Windowed geometry is remembered across the toggle.
+// Toggle fullscreen on the configured target monitor (see
+// ap_gpu_set_fullscreen_monitor). Windowed geometry is remembered
+// across the toggle.
 void ap_gpu_toggle_fullscreen(ap_gpu *g);
+
+// Available monitors (re-queried per call — GLFW handles hotplug).
+int          ap_gpu_monitor_count(ap_gpu *g);
+const char  *ap_gpu_monitor_name(ap_gpu *g, int idx);
+
+// Target monitor for the next fullscreen entry. Index is into the
+// list returned by ap_gpu_monitor_name. Defaults to 0 (primary).
+int  ap_gpu_fullscreen_monitor(const ap_gpu *g);
+void ap_gpu_set_fullscreen_monitor(ap_gpu *g, int idx);
 
 #ifdef __cplusplus
 }

@@ -765,6 +765,23 @@ static void draw_menubar(ap_app *app)
         if (igMenuItem_Bool("Fullscreen", "F11", false, true)) {
             ap_gpu_toggle_fullscreen(app->gpu);
         }
+        // Wayland can't tell us which monitor the window is on, so
+        // the user picks the target here. The choice sticks for the
+        // session.
+        if (igBeginMenu("Fullscreen Monitor", true)) {
+            int n = ap_gpu_monitor_count(app->gpu);
+            int cur = ap_gpu_fullscreen_monitor(app->gpu);
+            for (int i = 0; i < n; i++) {
+                const char *name = ap_gpu_monitor_name(app->gpu, i);
+                char label[96];
+                snprintf(label, sizeof(label), "%d: %s", i,
+                         name ? name : "(unnamed)");
+                if (igMenuItem_Bool(label, NULL, i == cur, true)) {
+                    ap_gpu_set_fullscreen_monitor(app->gpu, i);
+                }
+            }
+            igEndMenu();
+        }
         igEndMenu();
     }
 

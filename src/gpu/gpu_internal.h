@@ -37,6 +37,7 @@ struct ap_gpu {
     bool window_fullscreen;
     int  windowed_x, windowed_y;
     int  windowed_w, windowed_h;
+    int  fullscreen_monitor_idx;     // user-selected target; default 0
 
     VkInstance instance;
     VkDebugUtilsMessengerEXT debug_messenger;

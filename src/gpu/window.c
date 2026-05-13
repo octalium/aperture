@@ -56,62 +56,46 @@ void gpu_window_destroy(struct ap_gpu *g)
     glfwTerminate();
 }
 
-static const char *platform_name(void)
+static GLFWmonitor *pick_target_monitor(ap_gpu *g)
 {
-    switch (glfwGetPlatform()) {
-        case GLFW_PLATFORM_WIN32:   return "win32";
-        case GLFW_PLATFORM_COCOA:   return "cocoa";
-        case GLFW_PLATFORM_WAYLAND: return "wayland";
-        case GLFW_PLATFORM_X11:     return "x11";
-        default:                    return "unknown";
-    }
-}
-
-// Pick the monitor whose work-area contains the window's center.
-// Falls back to the primary monitor when nothing matches (window
-// off-screen, position unreliable on the current backend, no
-// monitors). Verbose-logs the decision so multi-monitor / Wayland
-// surprises are easy to diagnose.
-static GLFWmonitor *monitor_for_window(GLFWwindow *win)
-{
-    GLFWmonitor *primary = glfwGetPrimaryMonitor();
-    if (!win) return primary;
-
-    int wx = 0, wy = 0, ww = 0, wh = 0;
-    glfwGetWindowPos(win,  &wx, &wy);
-    glfwGetWindowSize(win, &ww, &wh);
-    int cx = wx + ww / 2;
-    int cy = wy + wh / 2;
-
-    AP_INFO("monitor pick: platform=%s window pos=(%d,%d) size=(%dx%d) center=(%d,%d)",
-            platform_name(), wx, wy, ww, wh, cx, cy);
-
     int mcount = 0;
     GLFWmonitor **mons = glfwGetMonitors(&mcount);
-    GLFWmonitor *picked = NULL;
-    int picked_idx = -1;
-    for (int i = 0; i < mcount; i++) {
-        int mx = 0, my = 0, mw = 0, mh = 0;
-        glfwGetMonitorWorkarea(mons[i], &mx, &my, &mw, &mh);
-        const char *name = glfwGetMonitorName(mons[i]);
-        bool hit = (cx >= mx && cx < mx + mw && cy >= my && cy < my + mh);
-        AP_INFO("monitor[%d] %s workarea=(%d,%d %dx%d)%s",
-                i, name ? name : "(unnamed)",
-                mx, my, mw, mh,
-                hit ? "  HIT" : "");
-        if (hit && !picked) {
-            picked = mons[i];
-            picked_idx = i;
-        }
-    }
+    if (mcount == 0) return glfwGetPrimaryMonitor();
 
-    if (!picked) {
-        AP_INFO("monitor pick: no work-area contained the window center; "
-                "falling back to primary monitor");
-        return primary;
-    }
-    AP_INFO("monitor pick: chose monitor[%d]", picked_idx);
-    return picked;
+    int idx = g->fullscreen_monitor_idx;
+    if (idx < 0 || idx >= mcount) idx = 0;
+    return mons[idx];
+}
+
+int ap_gpu_monitor_count(ap_gpu *g)
+{
+    (void)g;
+    int n = 0;
+    glfwGetMonitors(&n);
+    return n;
+}
+
+const char *ap_gpu_monitor_name(ap_gpu *g, int idx)
+{
+    (void)g;
+    int n = 0;
+    GLFWmonitor **mons = glfwGetMonitors(&n);
+    if (idx < 0 || idx >= n) return NULL;
+    return glfwGetMonitorName(mons[idx]);
+}
+
+int ap_gpu_fullscreen_monitor(const ap_gpu *g)
+{
+    return g ? g->fullscreen_monitor_idx : 0;
+}
+
+void ap_gpu_set_fullscreen_monitor(ap_gpu *g, int idx)
+{
+    if (!g) return;
+    int n = ap_gpu_monitor_count(g);
+    if (idx < 0)      idx = 0;
+    if (n > 0 && idx >= n) idx = n - 1;
+    g->fullscreen_monitor_idx = idx;
 }
 
 void ap_gpu_toggle_fullscreen(ap_gpu *g)
@@ -119,9 +103,7 @@ void ap_gpu_toggle_fullscreen(ap_gpu *g)
     if (!g || !g->window) return;
 
     if (g->window_fullscreen) {
-        AP_INFO("fullscreen: restoring windowed pos=(%d,%d) size=(%dx%d)",
-                g->windowed_x, g->windowed_y,
-                g->windowed_w, g->windowed_h);
+        AP_INFO("fullscreen: restoring windowed");
         glfwSetWindowMonitor(g->window, NULL,
                              g->windowed_x, g->windowed_y,
                              g->windowed_w, g->windowed_h,
@@ -130,10 +112,13 @@ void ap_gpu_toggle_fullscreen(ap_gpu *g)
         return;
     }
 
+    // Wayland doesn't expose window position to clients, so we can't
+    // detect which monitor the window is on. Fall back to the user's
+    // configured target (default: monitor 0). See gpu.h.
     glfwGetWindowPos(g->window,  &g->windowed_x, &g->windowed_y);
     glfwGetWindowSize(g->window, &g->windowed_w, &g->windowed_h);
 
-    GLFWmonitor *mon = monitor_for_window(g->window);
+    GLFWmonitor *mon = pick_target_monitor(g);
     if (!mon) {
         AP_WARN("fullscreen: no monitor available, staying windowed");
         return;
