@@ -124,6 +124,13 @@ void ap_gpu_set_grid(ap_gpu *g, ap_grid *grid)
     g->current_grid = grid;
 }
 
+void ap_gpu_set_window_title(ap_gpu *g, const char *title)
+{
+    if (g && g->window && title) {
+        glfwSetWindowTitle(g->window, title);
+    }
+}
+
 void ap_gpu_wait_idle(ap_gpu *g)
 {
     if (g && g->device) {

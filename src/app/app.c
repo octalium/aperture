@@ -60,6 +60,9 @@ static void thumb_job_run(ap_work_item *self);
 static void photo_open_job_run(ap_work_item *self);
 static void export_job_run(ap_work_item *self);
 
+// Forward decl — used by open/close before its definition.
+static void refresh_window_title(ap_app *app);
+
 struct ap_app {
     ap_gpu          *gpu;
     ap_canvas       *canvas;
@@ -76,8 +79,10 @@ struct ap_app {
 
     // Workspace chrome
     bool             show_panels;          // Tab to toggle
-    bool             open_library_modal;   // File → Open Library… requested
+    bool             open_library_modal;   // File -> Open Library
     char             open_library_input[4096];
+    bool             rename_library_modal; // Library indicator -> Rename
+    char             rename_library_input[128];
     bool             quit_requested;
 };
 
@@ -396,6 +401,7 @@ int ap_app_open_library(ap_app *app, const char *path)
     ap_grid_set_selected(app->grid, 0);
     app->mode = AP_MODE_LIBRARY;
     bind_mode_view(app);
+    refresh_window_title(app);
     return 0;
 }
 
@@ -413,6 +419,7 @@ void ap_app_close_library(ap_app *app)
     ap_library_close(app->library);
     app->library = NULL;
     bind_mode_view(app);
+    refresh_window_title(app);
 }
 
 ap_library *ap_app_library(ap_app *app)
@@ -691,11 +698,25 @@ static void trigger_quick_export(ap_app *app)
     }
 }
 
-static const char *basename_of(const char *path)
+static const char *library_display_label(ap_library *lib)
 {
-    if (!path || !*path) return path;
-    const char *slash = strrchr(path, '/');
-    return slash ? slash + 1 : path;
+    if (!lib) return "(no library)";
+    const char *name = ap_library_name(lib);
+    if (name && *name) return name;
+    return ap_library_root(lib);
+}
+
+static void refresh_window_title(ap_app *app)
+{
+    if (!app || !app->gpu) return;
+    if (!app->library) {
+        ap_gpu_set_window_title(app->gpu, "aperture");
+        return;
+    }
+    char title[5120];
+    snprintf(title, sizeof(title), "aperture — %s",
+             library_display_label(app->library));
+    ap_gpu_set_window_title(app->gpu, title);
 }
 
 static void draw_menubar(ap_app *app)
@@ -703,7 +724,7 @@ static void draw_menubar(ap_app *app)
     if (!igBeginMainMenuBar()) return;
 
     if (igBeginMenu("File", true)) {
-        if (igMenuItem_Bool("Open Library...", NULL, false, true)) {
+        if (igMenuItem_Bool("Open Library", NULL, false, true)) {
             const char *root = app->library ? ap_library_root(app->library) : "";
             snprintf(app->open_library_input,
                      sizeof(app->open_library_input), "%s", root ? root : "");
@@ -744,16 +765,20 @@ static void draw_menubar(ap_app *app)
         igEndMenu();
     }
 
-    // Library indicator + quick switcher. The menu label IS the
-    // current library's basename — clicking opens a dropdown of
-    // recent libraries to switch to.
-    const char *lib_label = app->library
-        ? basename_of(ap_library_root(app->library))
-        : "(no library)";
+    // Library indicator + quick switcher. The menu label is the
+    // library's user-set name when set, the full path otherwise, or
+    // "(no library)" when none is open.
+    const char *lib_label = library_display_label(app->library);
     if (igBeginMenu(lib_label, true)) {
         if (app->library) {
             igText("%s", ap_library_root(app->library));
             igText("%d photos", ap_library_photo_count(app->library));
+            if (igMenuItem_Bool("Rename", NULL, false, true)) {
+                snprintf(app->rename_library_input,
+                         sizeof(app->rename_library_input), "%s",
+                         ap_library_name(app->library));
+                app->rename_library_modal = true;
+            }
             igSeparator();
         }
         ap_registry_entry rows[16];
@@ -764,9 +789,11 @@ static void draw_menubar(ap_app *app)
             for (int i = 0; i < n; i++) {
                 bool current = app->library
                     && strcmp(rows[i].path, ap_library_root(app->library)) == 0;
-                char label[5120];
+                const char *label_name = rows[i].name[0] ? rows[i].name
+                                                         : rows[i].path;
+                char label[8192];
                 snprintf(label, sizeof(label), "%s    %s",
-                         basename_of(rows[i].path), rows[i].path);
+                         label_name, rows[i].path);
                 if (igMenuItem_Bool(label, NULL, current, true) && !current) {
                     ap_app_open_library(app, rows[i].path);
                 }
@@ -799,6 +826,39 @@ static void draw_open_library_modal(ap_app *app)
             app->open_library_input[0] = '\0';
             igCloseCurrentPopup();
         }
+    } else if (cancel) {
+        igCloseCurrentPopup();
+    }
+    igEndPopup();
+}
+
+static void draw_rename_library_modal(ap_app *app)
+{
+    if (app->rename_library_modal) {
+        igOpenPopup_Str("Rename Library", 0);
+        app->rename_library_modal = false;
+    }
+    if (!igBeginPopupModal("Rename Library", NULL, 0)) return;
+
+    if (!app->library) {
+        igCloseCurrentPopup();
+        igEndPopup();
+        return;
+    }
+
+    igText("Display name for this library:");
+    igText("(leave blank to clear and show the path)");
+    igInputText("##name", app->rename_library_input,
+                sizeof(app->rename_library_input), 0, NULL, NULL);
+
+    bool submit = igButton("Save", (ImVec2_c){ 120.0f, 0.0f });
+    igSameLine(0.0f, -1.0f);
+    bool cancel = igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f });
+
+    if (submit) {
+        ap_library_set_name(app->library, app->rename_library_input);
+        refresh_window_title(app);
+        igCloseCurrentPopup();
     } else if (cancel) {
         igCloseCurrentPopup();
     }
@@ -846,6 +906,7 @@ int ap_app_run_frame(ap_app *app)
 
     draw_menubar(app);
     draw_open_library_modal(app);
+    draw_rename_library_modal(app);
     drive_global_hotkeys(app);
 
     if (app->show_panels) {

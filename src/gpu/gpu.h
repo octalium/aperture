@@ -30,6 +30,8 @@ void ap_gpu_set_graph(ap_gpu *g, ap_pipeline_graph *graph);
 void ap_gpu_set_canvas(ap_gpu *g, ap_canvas *canvas);
 void ap_gpu_set_grid(ap_gpu *g, ap_grid *grid);
 
+void ap_gpu_set_window_title(ap_gpu *g, const char *title);
+
 #ifdef __cplusplus
 }
 #endif
