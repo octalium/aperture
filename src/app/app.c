@@ -60,7 +60,7 @@ static void thumb_job_run(ap_work_item *self);
 static void photo_open_job_run(ap_work_item *self);
 static void export_job_run(ap_work_item *self);
 
-// Forward decl — used by open/close before its definition.
+// Forward decl - used by open/close before its definition.
 static void refresh_window_title(ap_app *app);
 
 struct ap_app {
@@ -410,7 +410,7 @@ void ap_app_close_library(ap_app *app)
     if (!app || !app->library) return;
 
     // Wait for outstanding decode work to land in the completed queue
-    // and toss the buffers — they belong to the library that's going
+    // and toss the buffers - they belong to the library that's going
     // away. Then drop GPU references before the textures vanish.
     ap_worker_pool_wait_idle(app->workers);
     discard_completed_thumb_jobs(app);
@@ -666,7 +666,7 @@ static void handle_export_complete(ap_app *app, export_job *j)
 }
 
 // Pop one completed work item per frame and dispatch on its run-fn.
-// Pool poll is non-blocking — when nothing's ready, this is a no-op.
+// Pool poll is non-blocking - when nothing's ready, this is a no-op.
 static void drain_one_completed_job(ap_app *app)
 {
     if (!app->workers) return;
@@ -710,11 +710,11 @@ static void refresh_window_title(ap_app *app)
 {
     if (!app || !app->gpu) return;
     if (!app->library) {
-        ap_gpu_set_window_title(app->gpu, "aperture");
+        ap_gpu_set_window_title(app->gpu, "Aperture");
         return;
     }
     char title[5120];
-    snprintf(title, sizeof(title), "aperture — %s",
+    snprintf(title, sizeof(title), "Aperture: %s",
              library_display_label(app->library));
     ap_gpu_set_window_title(app->gpu, title);
 }
@@ -767,8 +767,19 @@ static void draw_menubar(ap_app *app)
 
     // Library indicator + quick switcher. The menu label is the
     // library's user-set name when set, the full path otherwise, or
-    // "(no library)" when none is open.
+    // "(no library)" when none is open. Centered in the menubar so
+    // it reads as a status indicator independent of the File/View
+    // dropdowns on the left.
     const char *lib_label = library_display_label(app->library);
+    {
+        ImVec2_c label_size = igCalcTextSize(lib_label, NULL, false, -1.0f);
+        ImGuiStyle *style = igGetStyle();
+        float item_w   = label_size.x + style->FramePadding.x * 2.0f;
+        float center_x = (igGetWindowWidth() - item_w) * 0.5f;
+        // Don't backtrack - leave a gap after View if the label is
+        // somehow huge.
+        igSetCursorPosX(center_x);
+    }
     if (igBeginMenu(lib_label, true)) {
         if (app->library) {
             igText("%s", ap_library_root(app->library));

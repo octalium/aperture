@@ -104,7 +104,7 @@ int ap_raw_load(const char *path, ap_raw_image *out)
 
     // Use LibRaw's pre-computed rgb_cam (post-WB camera → sRGB-linear)
     // and pre_mul (the WB that pairs with it). These are derived inside
-    // LibRaw from cam_xyz the same way dcraw does — using LibRaw's
+    // LibRaw from cam_xyz the same way dcraw does - using LibRaw's
     // values directly is the reliable path. rgb_cam is [3][4]; for
     // Bayer we use the leading [3][3].
     for (int i = 0; i < 3; i++) {

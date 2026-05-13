@@ -51,7 +51,7 @@ int ap_sidecar_load_edit(const char *source_path, ap_edit_state *edit)
 
     FILE *f = fopen(path, "r");
     if (!f) {
-        // Treat missing as "no sidecar yet" — defaults apply.
+        // Treat missing as "no sidecar yet" - defaults apply.
         if (errno == ENOENT) return -1;
         AP_WARN("sidecar: fopen(%s): %s", path, strerror(errno));
         return -1;

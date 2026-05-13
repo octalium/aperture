@@ -51,7 +51,7 @@ struct ap_module {
     ap_module_pack_push_fn pack_push;
 };
 
-// Built-in module registry — NULL-terminated array of pointers. Defined
+// Built-in module registry - NULL-terminated array of pointers. Defined
 // in src/modules/registry.c. Adding a new module is "create file +
 // add one entry here + add to meson.build".
 extern const ap_module *const ap_module_registry[];

@@ -48,7 +48,7 @@ int ap_export_jpeg(const uint8_t *rgba, int width, int height,
     int rc = -1;
 
     if (setjmp(err.jump) != 0) {
-        // Error path — libjpeg long-jumped here.
+        // Error path - libjpeg long-jumped here.
         goto done;
     }
 

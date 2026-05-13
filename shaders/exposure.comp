@@ -1,7 +1,7 @@
 #version 450
 
 // Exposure: linear-light EV multiply on the working buffer.
-// Input is already linear (sRGB primaries) — the demosaic stage handled
+// Input is already linear (sRGB primaries) - the demosaic stage handled
 // black-level subtraction, white-balance, and the camera-RGB → sRGB
 // linear matrix. There's nothing to decode here.
 

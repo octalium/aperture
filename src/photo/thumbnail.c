@@ -136,7 +136,7 @@ static int decode_jpeg_to_rgba(const uint8_t *jpeg, size_t jpeg_size,
     }
     cinfo.out_color_space = JCS_RGB;
     // Pick a DCT scale denominator (1, 2, 4, 8 for libjpeg-turbo) that
-    // brings the longest side under THUMB_TARGET_MAX_DIM*2 — we'll
+    // brings the longest side under THUMB_TARGET_MAX_DIM*2 - we'll
     // box-resample the rest of the way after decoding.
     cinfo.scale_num   = 1;
     cinfo.scale_denom = 1;

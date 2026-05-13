@@ -31,7 +31,7 @@ int main(int argc, char **argv)
 {
     AP_INFO("aperture %s", APERTURE_VERSION);
 
-    ap_app *app = ap_app_create(1280, 720, "aperture");
+    ap_app *app = ap_app_create(1280, 720, "Aperture");
     if (!app) {
         return 1;
     }
@@ -42,11 +42,11 @@ int main(int argc, char **argv)
             return 1;
         }
     } else {
-        // No CLI arg — resume the most-recent library if one exists.
+        // No CLI arg - resume the most-recent library if one exists.
         ap_registry_entry rows[1];
         if (ap_registry_list(rows, 1) > 0) {
             AP_INFO("resuming most-recent library: %s", rows[0].path);
-            // Failure here is non-fatal — start with no library open.
+            // Failure here is non-fatal - start with no library open.
             ap_app_open_library(app, rows[0].path);
         }
     }

@@ -12,13 +12,13 @@ typedef struct ap_work_item   ap_work_item;
 // cast back inside `run`. Heap-allocated by the submitter; ownership
 // transfers to the pool until ap_worker_pool_poll returns it.
 //
-// `run` executes on a worker thread — must NOT touch the GPU, the
+// `run` executes on a worker thread - must NOT touch the GPU, the
 // main-thread state of any subsystem, or other shared state without
 // its own synchronization. Output goes into fields on the embedding
 // subtype, which the main thread reads after polling.
 struct ap_work_item {
     void          (*run)(ap_work_item *self);
-    ap_work_item   *next;  // internal — pool's linked-list link
+    ap_work_item   *next;  // internal - pool's linked-list link
 };
 
 // Create a pool of `n_threads` worker threads. If n_threads <= 0 the
@@ -26,7 +26,7 @@ struct ap_work_item {
 ap_worker_pool *ap_worker_pool_create(int n_threads);
 
 // Wait for in-flight items to finish, drain queues (any items
-// remaining are leaked — caller must drain via poll first), and join
+// remaining are leaked - caller must drain via poll first), and join
 // threads.
 void            ap_worker_pool_destroy(ap_worker_pool *pool);
 
@@ -39,7 +39,7 @@ void            ap_worker_pool_submit(ap_worker_pool *pool, ap_work_item *item);
 ap_work_item   *ap_worker_pool_poll(ap_worker_pool *pool);
 
 // Block until every submitted item has finished running. Items stay
-// on the completed queue — the caller still needs to drain them via
+// on the completed queue - the caller still needs to drain them via
 // poll. Use this before tearing down state any in-flight items might
 // observe (even though `run` itself shouldn't touch shared state, the
 // caller may have other invariants to preserve).

@@ -27,7 +27,7 @@ static void photo_edit_draw(ap_app *app)
             edit->respect_orientation = respect ? 1 : 0;
             // Pipeline graph dims and demosaic flip are baked at
             // photo-open time, so apply by reopening on the same path.
-            // The current `photo` pointer becomes stale once we open —
+            // The current `photo` pointer becomes stale once we open -
             // bail out of the rest of the panel for this frame.
             char path_copy[4096];
             snprintf(path_copy, sizeof(path_copy), "%s", ap_photo_path(photo));

@@ -62,7 +62,7 @@ static const char *REGISTRY_SCHEMA_SQL =
 
 // Backfill the `name` column on registry dbs created before it was
 // added. ALTER returns SQLITE_ERROR with "duplicate column name" when
-// it already exists — we treat that as success.
+// it already exists - we treat that as success.
 static void backfill_name_column(sqlite3 *reg)
 {
     char *err = NULL;
@@ -74,7 +74,7 @@ static void backfill_name_column(sqlite3 *reg)
     sqlite3_free(err);
 }
 
-// Comma-separated module names — order matters; resolved via
+// Comma-separated module names - order matters; resolved via
 // ap_module_find when a photo opens. Kept as a single TEXT column
 // rather than a join table for v1 simplicity.
 static const char *DEFAULT_PIPELINE_NAME    = "default";

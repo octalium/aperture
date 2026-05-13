@@ -36,7 +36,7 @@ void ap_app_wait_idle(ap_app *app);
 ap_mode ap_app_mode(const ap_app *app);
 void    ap_app_set_mode(ap_app *app, ap_mode mode);
 
-// Photo lifecycle. open_photo is asynchronous — the worker pool
+// Photo lifecycle. open_photo is asynchronous - the worker pool
 // decodes the raw on a background thread; the photo binds to the
 // canvas on a later frame once decode + GPU upload finish. Closing
 // or opening another photo while one is loading invalidates the

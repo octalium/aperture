@@ -12,7 +12,7 @@ extern "C" {
 
 typedef struct GLFWwindow GLFWwindow;
 
-// Backend lifecycle. The bridge's job narrows to this — anything that
+// Backend lifecycle. The bridge's job narrows to this - anything that
 // touches ImGui's GLFW / Vulkan impl backends, plus texture-handle
 // registration. Higher-level UI lives in src/panels/ via cimgui.
 

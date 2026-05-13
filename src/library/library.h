@@ -91,7 +91,7 @@ void ap_library_set_thumbnail(ap_library *lib, int index, ap_thumbnail *t);
 
 // Index of the next photo whose thumbnail hasn't been decoded yet,
 // or -1 if every slot is filled. The library does not decide when
-// or how decoding happens — callers drive a per-frame pump.
+// or how decoding happens - callers drive a per-frame pump.
 int  ap_library_pending_thumbnail_idx(const ap_library *lib);
 
 #ifdef __cplusplus

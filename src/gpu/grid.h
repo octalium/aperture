@@ -10,7 +10,7 @@ extern "C" {
 #endif
 
 // Long-lived graphics pipeline that paints a contact-sheet grid into
-// the swapchain attachment. Cells are placeholder-colored — real
+// the swapchain attachment. Cells are placeholder-colored - real
 // thumbnail textures arrive in a follow-up.
 //
 // Owns layout (cells per row, cell size, gap) and selection state.
@@ -31,7 +31,7 @@ int  ap_grid_photo_count(const ap_grid *grid);
 // the grid's own layout knobs.
 int  ap_grid_cells_per_row(const ap_grid *grid, int win_width, int win_height);
 
-// Vertical scroll. `dy` is in window pixels — positive scrolls
+// Vertical scroll. `dy` is in window pixels - positive scrolls
 // content up (reveals content below). Clamps to [0, max_scroll]
 // based on the supplied window dims and current photo count.
 void ap_grid_scroll(ap_grid *grid, float dy, int win_width, int win_height);
