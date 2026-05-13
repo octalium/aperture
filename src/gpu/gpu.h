@@ -32,19 +32,12 @@ void ap_gpu_set_grid(ap_gpu *g, ap_grid *grid);
 
 void ap_gpu_set_window_title(ap_gpu *g, const char *title);
 
-// Toggle fullscreen on the configured target monitor (see
-// ap_gpu_set_fullscreen_monitor). Windowed geometry is remembered
-// across the toggle.
+// "Fullscreen" here means decorations off + maximized. The
+// compositor places the maximized surface on whichever monitor the
+// window already lives on, which is the only portable way to do
+// this on Wayland (where clients can't query window position).
 void ap_gpu_toggle_fullscreen(ap_gpu *g);
-
-// Available monitors (re-queried per call — GLFW handles hotplug).
-int          ap_gpu_monitor_count(ap_gpu *g);
-const char  *ap_gpu_monitor_name(ap_gpu *g, int idx);
-
-// Target monitor for the next fullscreen entry. Index is into the
-// list returned by ap_gpu_monitor_name. Defaults to 0 (primary).
-int  ap_gpu_fullscreen_monitor(const ap_gpu *g);
-void ap_gpu_set_fullscreen_monitor(ap_gpu *g, int idx);
+bool ap_gpu_is_fullscreen(const ap_gpu *g);
 
 #ifdef __cplusplus
 }
