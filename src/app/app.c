@@ -987,7 +987,36 @@ static void drive_global_hotkeys(ap_app *app)
         trigger_quick_export(app);
     }
     if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_0, false)) {
-        ap_grid_reset_cell_size(app->grid);
+        if (app->mode == AP_MODE_PHOTO) {
+            ap_canvas_reset_view(app->canvas);
+        } else {
+            ap_grid_reset_cell_size(app->grid);
+        }
+    }
+
+    if (io->KeyCtrl && (igIsKeyPressed_Bool(ImGuiKey_Equal, true) ||
+                        igIsKeyPressed_Bool(ImGuiKey_KeypadAdd, true))) {
+        if (app->mode == AP_MODE_PHOTO) {
+            int win_w = (int)io->DisplaySize.x;
+            int win_h = (int)io->DisplaySize.y;
+            ap_canvas_zoom_at(app->canvas, 1.15f,
+                              win_w * 0.5f, win_h * 0.5f, win_w, win_h);
+        } else {
+            ap_grid_set_cell_size(app->grid,
+                                  ap_grid_cell_size(app->grid) + 16);
+        }
+    }
+    if (io->KeyCtrl && (igIsKeyPressed_Bool(ImGuiKey_Minus, true) ||
+                        igIsKeyPressed_Bool(ImGuiKey_KeypadSubtract, true))) {
+        if (app->mode == AP_MODE_PHOTO) {
+            int win_w = (int)io->DisplaySize.x;
+            int win_h = (int)io->DisplaySize.y;
+            ap_canvas_zoom_at(app->canvas, 1.0f / 1.15f,
+                              win_w * 0.5f, win_h * 0.5f, win_w, win_h);
+        } else {
+            ap_grid_set_cell_size(app->grid,
+                                  ap_grid_cell_size(app->grid) - 16);
+        }
     }
 }
 
