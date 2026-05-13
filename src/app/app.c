@@ -148,8 +148,23 @@ ap_app *ap_app_create(int width, int height, const char *title)
         return NULL;
     }
 
+    // Restore persisted preferences.
+    {
+        char buf[32];
+        if (ap_settings_get("fullscreen", buf, sizeof(buf)) == 0
+            && atoi(buf) != 0) {
+            ap_gpu_toggle_fullscreen(app->gpu);
+        }
+    }
+
     install_signal_handlers();
     return app;
+}
+
+static void toggle_and_persist_fullscreen(ap_app *app)
+{
+    ap_gpu_toggle_fullscreen(app->gpu);
+    ap_settings_set("fullscreen", ap_gpu_is_fullscreen(app->gpu) ? "1" : "0");
 }
 
 // Free a completed work item without acting on its result. Used at
@@ -846,7 +861,7 @@ static void draw_menubar(ap_app *app)
         }
         if (igMenuItem_Bool("Fullscreen", "F11",
                             ap_gpu_is_fullscreen(app->gpu), true)) {
-            ap_gpu_toggle_fullscreen(app->gpu);
+            toggle_and_persist_fullscreen(app);
         }
         igSeparator();
         if (igMenuItem_Bool("Reset Cell Zoom", "Ctrl+0", false, true)) {
@@ -978,7 +993,7 @@ static void drive_global_hotkeys(ap_app *app)
         app->show_panels = !app->show_panels;
     }
     if (igIsKeyPressed_Bool(ImGuiKey_F11, false)) {
-        ap_gpu_toggle_fullscreen(app->gpu);
+        toggle_and_persist_fullscreen(app);
     }
     if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_Q, false)) {
         app->quit_requested = true;

@@ -58,6 +58,10 @@ static const char *REGISTRY_SCHEMA_SQL =
     "    id      INTEGER PRIMARY KEY,"
     "    name    TEXT NOT NULL UNIQUE,"
     "    modules TEXT NOT NULL"
+    ");"
+    "CREATE TABLE IF NOT EXISTS settings ("
+    "    key   TEXT PRIMARY KEY,"
+    "    value TEXT NOT NULL"
     ");";
 
 // Backfill the `name` column on registry dbs created before it was
@@ -284,6 +288,71 @@ int ap_pipeline_get_default(ap_pipeline_def *out)
     sqlite3_finalize(stmt);
     sqlite3_close(reg);
     return parse_rc;
+}
+
+int ap_settings_get(const char *key, char *out, size_t out_len)
+{
+    if (!key || !out || out_len == 0) return -1;
+    sqlite3 *reg = NULL;
+    if (registry_open(&reg) < 0) return -1;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(reg, "SELECT value FROM settings WHERE key = ?;",
+                           -1, &st, NULL) != SQLITE_OK) {
+        AP_ERROR("settings: prepare get: %s", sqlite3_errmsg(reg));
+        sqlite3_close(reg);
+        return -1;
+    }
+    sqlite3_bind_text(st, 1, key, -1, SQLITE_STATIC);
+    int rc = sqlite3_step(st);
+    int result = -1;
+    if (rc == SQLITE_ROW) {
+        const char *v = (const char *)sqlite3_column_text(st, 0);
+        if (v) {
+            snprintf(out, out_len, "%s", v);
+            result = 0;
+        }
+    }
+    sqlite3_finalize(st);
+    sqlite3_close(reg);
+    return result;
+}
+
+int ap_settings_set(const char *key, const char *value)
+{
+    if (!key) return -1;
+    sqlite3 *reg = NULL;
+    if (registry_open(&reg) < 0) return -1;
+
+    sqlite3_stmt *st = NULL;
+    if (!value || !*value) {
+        if (sqlite3_prepare_v2(reg, "DELETE FROM settings WHERE key = ?;",
+                               -1, &st, NULL) != SQLITE_OK) {
+            AP_ERROR("settings: prepare delete: %s", sqlite3_errmsg(reg));
+            sqlite3_close(reg);
+            return -1;
+        }
+        sqlite3_bind_text(st, 1, key, -1, SQLITE_STATIC);
+    } else {
+        if (sqlite3_prepare_v2(reg,
+                "INSERT INTO settings(key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
+                -1, &st, NULL) != SQLITE_OK) {
+            AP_ERROR("settings: prepare upsert: %s", sqlite3_errmsg(reg));
+            sqlite3_close(reg);
+            return -1;
+        }
+        sqlite3_bind_text(st, 1, key,   -1, SQLITE_STATIC);
+        sqlite3_bind_text(st, 2, value, -1, SQLITE_STATIC);
+    }
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    sqlite3_close(reg);
+    if (rc != SQLITE_DONE) {
+        AP_ERROR("settings: step: %s", sqlite3_errstr(rc));
+        return -1;
+    }
+    return 0;
 }
 
 int ap_registry_list(ap_registry_entry *out, int max)
