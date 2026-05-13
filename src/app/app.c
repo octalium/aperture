@@ -73,6 +73,12 @@ struct ap_app {
     char             loading_path[4096];
     uint64_t         photo_load_gen;
     int              export_inflight;
+
+    // Workspace chrome
+    bool             show_panels;          // Tab to toggle
+    bool             open_library_modal;   // File → Open Library… requested
+    char             open_library_input[4096];
+    bool             quit_requested;
 };
 
 #define THUMB_MAX_INFLIGHT 8
@@ -105,6 +111,7 @@ ap_app *ap_app_create(int width, int height, const char *title)
         return NULL;
     }
     app->mode = AP_MODE_LIBRARY;
+    app->show_panels = true;
 
     app->gpu = ap_gpu_create(width, height, title);
     if (!app->gpu) {
@@ -216,6 +223,7 @@ bool ap_app_should_run(ap_app *app)
 {
     if (!app) return false;
     if (g_quit_requested) return false;
+    if (app->quit_requested) return false;
     return ap_gpu_should_run(app->gpu);
 }
 
@@ -640,6 +648,131 @@ static void drain_one_completed_job(ap_app *app)
     }
 }
 
+// ---- menubar + global hotkeys ----------------------------------------
+
+static void trigger_quick_export(ap_app *app)
+{
+    if (!app->photo) return;
+    const char *src = ap_photo_path(app->photo);
+    char out[4096];
+    int n = snprintf(out, sizeof(out), "%s.jpg", src);
+    if (n > 0 && (size_t)n < sizeof(out)) {
+        ap_app_request_jpeg_export(app, app->photo, out, 90);
+    } else {
+        AP_ERROR("export: path too long for %s", src);
+    }
+}
+
+static void draw_menubar(ap_app *app)
+{
+    if (!igBeginMainMenuBar()) return;
+
+    if (igBeginMenu("File", true)) {
+        if (igMenuItem_Bool("Open Library…", NULL, false, true)) {
+            // Pre-fill with current root, if any
+            const char *root = app->library ? ap_library_root(app->library) : "";
+            snprintf(app->open_library_input,
+                     sizeof(app->open_library_input), "%s", root ? root : "");
+            app->open_library_modal = true;
+        }
+
+        if (igBeginMenu("Recent Libraries", true)) {
+            ap_registry_entry rows[16];
+            int n = ap_registry_list(rows, 16);
+            if (n <= 0) {
+                igMenuItem_Bool("(none yet)", NULL, false, false);
+            } else {
+                for (int i = 0; i < n; i++) {
+                    if (igMenuItem_Bool(rows[i].path, NULL, false, true)) {
+                        ap_app_open_library(app, rows[i].path);
+                    }
+                }
+            }
+            igEndMenu();
+        }
+
+        igSeparator();
+
+        if (igMenuItem_Bool("Close Photo", "Esc",
+                            false, app->photo != NULL)) {
+            ap_app_close_photo(app);
+        }
+        if (igMenuItem_Bool("Close Library", NULL,
+                            false, app->library != NULL)) {
+            ap_app_close_library(app);
+        }
+
+        igSeparator();
+
+        if (igMenuItem_Bool("Export…", "Ctrl+E",
+                            false, app->photo != NULL)) {
+            trigger_quick_export(app);
+        }
+
+        igSeparator();
+
+        if (igMenuItem_Bool("Quit", "Ctrl+Q", false, true)) {
+            app->quit_requested = true;
+        }
+        igEndMenu();
+    }
+
+    if (igBeginMenu("View", true)) {
+        bool show = app->show_panels;
+        if (igMenuItem_BoolPtr("Show Panels", "Tab", &show, true)) {
+            app->show_panels = show;
+        }
+        igEndMenu();
+    }
+
+    igEndMainMenuBar();
+}
+
+static void draw_open_library_modal(ap_app *app)
+{
+    if (app->open_library_modal) {
+        igOpenPopup_Str("Open Library", 0);
+        app->open_library_modal = false;
+    }
+    if (!igBeginPopupModal("Open Library", NULL, 0)) return;
+
+    igText("Path to a directory holding raw photos:");
+    igInputText("##path", app->open_library_input,
+                sizeof(app->open_library_input), 0, NULL, NULL);
+
+    bool submit = igButton("Open", (ImVec2_c){ 120.0f, 0.0f });
+    igSameLine(0.0f, -1.0f);
+    bool cancel = igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f });
+
+    if (submit && app->open_library_input[0]) {
+        if (ap_app_open_library(app, app->open_library_input) == 0) {
+            app->open_library_input[0] = '\0';
+            igCloseCurrentPopup();
+        }
+    } else if (cancel) {
+        igCloseCurrentPopup();
+    }
+    igEndPopup();
+}
+
+static void drive_global_hotkeys(ap_app *app)
+{
+    ImGuiIO *io = igGetIO_Nil();
+    if (!io) return;
+
+    if (igIsKeyPressed_Bool(ImGuiKey_Tab, false) && !io->WantCaptureKeyboard) {
+        app->show_panels = !app->show_panels;
+    }
+    if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_Q, false)) {
+        app->quit_requested = true;
+    }
+    if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_E, false) && app->photo) {
+        trigger_quick_export(app);
+    }
+}
+
+// ----------------------------------------------------------------------
+
 static void draw_loading_overlay(ap_app *app)
 {
     if (!app->photo_loading) return;
@@ -661,11 +794,17 @@ int ap_app_run_frame(ap_app *app)
 
     ap_imgui_new_frame();
 
-    for (const ap_panel *const *p = ap_panel_registry; *p; p++) {
-        const ap_panel *panel = *p;
-        if (panel->mode == AP_MODE_ANY || panel->mode == app->mode) {
-            if (panel->draw) {
-                panel->draw(app);
+    draw_menubar(app);
+    draw_open_library_modal(app);
+    drive_global_hotkeys(app);
+
+    if (app->show_panels) {
+        for (const ap_panel *const *p = ap_panel_registry; *p; p++) {
+            const ap_panel *panel = *p;
+            if (panel->mode == AP_MODE_ANY || panel->mode == app->mode) {
+                if (panel->draw) {
+                    panel->draw(app);
+                }
             }
         }
     }

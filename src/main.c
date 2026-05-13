@@ -1,5 +1,6 @@
 #include "app/app.h"
 #include "core/log.h"
+#include "library/library.h"
 
 #include <errno.h>
 #include <string.h>
@@ -39,6 +40,14 @@ int main(int argc, char **argv)
         if (open_argument(app, argv[1]) != 0) {
             ap_app_destroy(app);
             return 1;
+        }
+    } else {
+        // No CLI arg — resume the most-recent library if one exists.
+        ap_registry_entry rows[1];
+        if (ap_registry_list(rows, 1) > 0) {
+            AP_INFO("resuming most-recent library: %s", rows[0].path);
+            // Failure here is non-fatal — start with no library open.
+            ap_app_open_library(app, rows[0].path);
         }
     }
 
