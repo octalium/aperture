@@ -11,9 +11,12 @@
 #include <string.h>
 
 #define GRID_DEFAULT_CELL_SIZE  192
-#define GRID_DEFAULT_CELL_GAP   12
+#define GRID_DEFAULT_CELL_GAP_X 8
+#define GRID_DEFAULT_CELL_GAP_Y 4
 #define GRID_DEFAULT_BORDER     4
-#define GRID_MARGIN             24
+#define GRID_MARGIN             16
+#define GRID_MIN_CELL_SIZE      64
+#define GRID_MAX_CELL_SIZE      512
 #define GRID_MAX_THUMBS         4096   // matches MAX_THUMBS in grid.frag
 
 typedef struct {
@@ -25,10 +28,10 @@ typedef struct {
     int   selected_idx;
     int   cells_per_row;
     int   cell_size_px;
-    int   cell_gap_px;
+    int   cell_gap_x_px;
+    int   cell_gap_y_px;
     int   border_px;
     int   _pad0;
-    int   _pad1;
 } grid_push;
 
 struct ap_grid {
@@ -50,31 +53,41 @@ struct ap_grid {
     int photo_count;
     int selected_idx;
 
+    uint8_t *selected_bitmap;     // photo_count bits, allocated in
+                                  // set_photo_count; NULL when empty
+
     int cell_size;
-    int cell_gap;
+    int cell_gap_x;
+    int cell_gap_y;
     int border_px;
 
     float scroll_y;
 };
 
+#define BIT_GET(bm, i) (((bm)[(i) >> 3] >> ((i) & 7)) & 1u)
+#define BIT_SET(bm, i) ((bm)[(i) >> 3] |=  (1u << ((i) & 7)))
+#define BIT_CLR(bm, i) ((bm)[(i) >> 3] &= ~(1u << ((i) & 7)))
+
 typedef struct {
     int origin_x, origin_y;
     int cells_per_row;
     int cell_size;
-    int cell_gap;
+    int cell_gap_x;
+    int cell_gap_y;
 } grid_layout;
 
 static grid_layout layout_for(const ap_grid *g, int win_w, int win_h)
 {
     grid_layout L = {
-        .origin_x  = GRID_MARGIN,
-        .origin_y  = GRID_MARGIN - (int)g->scroll_y,
-        .cell_size = g->cell_size,
-        .cell_gap  = g->cell_gap,
+        .origin_x   = GRID_MARGIN,
+        .origin_y   = GRID_MARGIN - (int)g->scroll_y,
+        .cell_size  = g->cell_size,
+        .cell_gap_x = g->cell_gap_x,
+        .cell_gap_y = g->cell_gap_y,
     };
     int avail = win_w - 2 * GRID_MARGIN;
-    int pitch = L.cell_size + L.cell_gap;
-    L.cells_per_row = pitch > 0 ? (avail + L.cell_gap) / pitch : 1;
+    int pitch_x = L.cell_size + L.cell_gap_x;
+    L.cells_per_row = pitch_x > 0 ? (avail + L.cell_gap_x) / pitch_x : 1;
     if (L.cells_per_row < 1) L.cells_per_row = 1;
     (void)win_h;
     return L;
@@ -90,8 +103,8 @@ static float max_scroll_for(const ap_grid *g, int win_w, int win_h)
 {
     grid_layout L = layout_for(g, win_w, win_h);
     int rows = total_rows(g, L.cells_per_row);
-    int pitch = L.cell_size + L.cell_gap;
-    int content_h = rows * pitch + GRID_MARGIN;
+    int pitch_y = L.cell_size + L.cell_gap_y;
+    int content_h = rows * pitch_y + GRID_MARGIN;
     if (content_h <= win_h) return 0.0f;
     return (float)(content_h - win_h);
 }
@@ -467,7 +480,8 @@ ap_grid *ap_grid_create(ap_gpu *g)
     }
     grid->gpu          = g;
     grid->cell_size    = GRID_DEFAULT_CELL_SIZE;
-    grid->cell_gap     = GRID_DEFAULT_CELL_GAP;
+    grid->cell_gap_x   = GRID_DEFAULT_CELL_GAP_X;
+    grid->cell_gap_y   = GRID_DEFAULT_CELL_GAP_Y;
     grid->border_px    = GRID_DEFAULT_BORDER;
     grid->selected_idx = 0;
 
@@ -493,6 +507,7 @@ void ap_grid_destroy(ap_grid *grid)
     if (grid->placeholder_view)    vkDestroyImageView(dev, grid->placeholder_view, NULL);
     if (grid->placeholder_image)   vkDestroyImage(dev, grid->placeholder_image, NULL);
     if (grid->placeholder_memory)  vkFreeMemory(dev, grid->placeholder_memory, NULL);
+    free(grid->selected_bitmap);
     free(grid);
 }
 
@@ -528,6 +543,17 @@ void ap_grid_set_photo_count(ap_grid *grid, int count)
     }
     grid->scroll_y = 0.0f;
 
+    // Reallocate the selection bitmap to match the new photo count.
+    free(grid->selected_bitmap);
+    grid->selected_bitmap = NULL;
+    if (count > 0) {
+        size_t bytes = (size_t)((count + 7) / 8);
+        grid->selected_bitmap = calloc(bytes, 1);
+        if (grid->selected_bitmap && count > 0) {
+            BIT_SET(grid->selected_bitmap, grid->selected_idx);
+        }
+    }
+
     // Reset the entire descriptor array back to the placeholder. The
     // previous library's ap_thumbnail textures are about to be (or
     // have just been) destroyed; their views can't stay bound.
@@ -557,6 +583,72 @@ void ap_grid_set_selected(ap_grid *grid, int idx)
     if (idx < 0) idx = 0;
     if (idx >= grid->photo_count) idx = grid->photo_count - 1;
     grid->selected_idx = idx;
+    if (grid->selected_bitmap) {
+        BIT_SET(grid->selected_bitmap, idx);
+    }
+}
+
+static void selection_clear(ap_grid *grid)
+{
+    if (!grid->selected_bitmap || grid->photo_count <= 0) return;
+    memset(grid->selected_bitmap, 0, (size_t)((grid->photo_count + 7) / 8));
+}
+
+void ap_grid_select_only(ap_grid *grid, int idx)
+{
+    if (!grid || grid->photo_count <= 0) return;
+    if (idx < 0) idx = 0;
+    if (idx >= grid->photo_count) idx = grid->photo_count - 1;
+    selection_clear(grid);
+    if (grid->selected_bitmap) BIT_SET(grid->selected_bitmap, idx);
+    grid->selected_idx = idx;
+}
+
+void ap_grid_select_toggle(ap_grid *grid, int idx)
+{
+    if (!grid || !grid->selected_bitmap
+        || idx < 0 || idx >= grid->photo_count) return;
+    if (BIT_GET(grid->selected_bitmap, idx)) {
+        BIT_CLR(grid->selected_bitmap, idx);
+        // Focus stays where it was; if we just cleared the current
+        // focus, leave focus alone — it remains visible but
+        // unselected, which is fine UX.
+    } else {
+        BIT_SET(grid->selected_bitmap, idx);
+        grid->selected_idx = idx;
+    }
+}
+
+void ap_grid_select_range(ap_grid *grid, int anchor_idx, int idx)
+{
+    if (!grid || !grid->selected_bitmap || grid->photo_count <= 0) return;
+    if (anchor_idx < 0) anchor_idx = 0;
+    if (anchor_idx >= grid->photo_count) anchor_idx = grid->photo_count - 1;
+    if (idx < 0) idx = 0;
+    if (idx >= grid->photo_count) idx = grid->photo_count - 1;
+
+    int lo = anchor_idx < idx ? anchor_idx : idx;
+    int hi = anchor_idx < idx ? idx : anchor_idx;
+    selection_clear(grid);
+    for (int i = lo; i <= hi; i++) BIT_SET(grid->selected_bitmap, i);
+    grid->selected_idx = idx;
+}
+
+bool ap_grid_is_selected(const ap_grid *grid, int idx)
+{
+    if (!grid || !grid->selected_bitmap
+        || idx < 0 || idx >= grid->photo_count) return false;
+    return BIT_GET(grid->selected_bitmap, idx) != 0;
+}
+
+int ap_grid_selection_count(const ap_grid *grid)
+{
+    if (!grid || !grid->selected_bitmap) return 0;
+    int n = 0;
+    for (int i = 0; i < grid->photo_count; i++) {
+        if (BIT_GET(grid->selected_bitmap, i)) n++;
+    }
+    return n;
 }
 
 int ap_grid_selected(const ap_grid *grid)
@@ -576,6 +668,25 @@ int ap_grid_cells_per_row(const ap_grid *grid, int win_width, int win_height)
     return L.cells_per_row;
 }
 
+int ap_grid_cell_size(const ap_grid *grid)
+{
+    return grid ? grid->cell_size : 0;
+}
+
+void ap_grid_set_cell_size(ap_grid *grid, int px)
+{
+    if (!grid) return;
+    if (px < GRID_MIN_CELL_SIZE) px = GRID_MIN_CELL_SIZE;
+    if (px > GRID_MAX_CELL_SIZE) px = GRID_MAX_CELL_SIZE;
+    grid->cell_size = px;
+}
+
+void ap_grid_reset_cell_size(ap_grid *grid)
+{
+    if (!grid) return;
+    grid->cell_size = GRID_DEFAULT_CELL_SIZE;
+}
+
 void ap_grid_scroll(ap_grid *grid, float dy, int win_width, int win_height)
 {
     if (!grid) return;
@@ -592,11 +703,11 @@ void ap_grid_ensure_visible(ap_grid *grid, int idx,
 
     grid_layout L = layout_for(grid, win_width, win_height);
     if (L.cells_per_row <= 0) return;
-    int pitch = L.cell_size + L.cell_gap;
-    int row   = idx / L.cells_per_row;
+    int pitch_y = L.cell_size + L.cell_gap_y;
+    int row     = idx / L.cells_per_row;
 
     // Where the cell *would* sit on screen at the current scroll.
-    float cell_top    = (float)GRID_MARGIN + (float)(row * pitch) - grid->scroll_y;
+    float cell_top    = (float)GRID_MARGIN + (float)(row * pitch_y) - grid->scroll_y;
     float cell_bottom = cell_top + (float)L.cell_size;
 
     if (cell_top < (float)GRID_MARGIN) {
@@ -616,18 +727,19 @@ int ap_grid_hit_test(const ap_grid *grid,
     if (!grid || grid->photo_count <= 0) return -1;
 
     grid_layout L = layout_for(grid, win_width, win_height);
-    int pitch = L.cell_size + L.cell_gap;
+    int pitch_x = L.cell_size + L.cell_gap_x;
+    int pitch_y = L.cell_size + L.cell_gap_y;
 
     float x = screen_x - (float)L.origin_x;
     float y = screen_y - (float)L.origin_y;
     if (x < 0.0f || y < 0.0f) return -1;
 
-    int col = (int)(x / (float)pitch);
-    int row = (int)(y / (float)pitch);
+    int col = (int)(x / (float)pitch_x);
+    int row = (int)(y / (float)pitch_y);
     if (col < 0 || col >= L.cells_per_row) return -1;
 
-    float in_x = x - (float)(col * pitch);
-    float in_y = y - (float)(row * pitch);
+    float in_x = x - (float)(col * pitch_x);
+    float in_y = y - (float)(row * pitch_y);
     if (in_x >= (float)L.cell_size || in_y >= (float)L.cell_size) return -1;
 
     int idx = row * L.cells_per_row + col;
@@ -643,12 +755,13 @@ int ap_grid_cell_rect(const ap_grid *grid, int idx,
     if (!grid || idx < 0 || idx >= grid->photo_count) return -1;
 
     grid_layout L = layout_for(grid, win_width, win_height);
-    int pitch = L.cell_size + L.cell_gap;
+    int pitch_x = L.cell_size + L.cell_gap_x;
+    int pitch_y = L.cell_size + L.cell_gap_y;
     int row = idx / L.cells_per_row;
     int col = idx % L.cells_per_row;
 
-    if (out_x) *out_x = (float)(L.origin_x + col * pitch);
-    if (out_y) *out_y = (float)(L.origin_y + row * pitch);
+    if (out_x) *out_x = (float)(L.origin_x + col * pitch_x);
+    if (out_y) *out_y = (float)(L.origin_y + row * pitch_y);
     if (out_w) *out_w = (float)L.cell_size;
     if (out_h) *out_h = (float)L.cell_size;
     (void)win_height;
@@ -684,7 +797,8 @@ void ap_grid_record(ap_grid *grid, VkCommandBuffer cmd,
         .selected_idx    = grid->selected_idx,
         .cells_per_row   = L.cells_per_row,
         .cell_size_px    = L.cell_size,
-        .cell_gap_px     = L.cell_gap,
+        .cell_gap_x_px   = L.cell_gap_x,
+        .cell_gap_y_px   = L.cell_gap_y,
         .border_px       = grid->border_px,
     };
 

@@ -41,6 +41,15 @@ typedef struct {
 // the default row seeded if either is missing. Returns 0 on success.
 int ap_pipeline_get_default(ap_pipeline_def *out);
 
+// ----- app-wide key/value settings (registry db) -----
+
+// Look up a setting by key. On success writes a NUL-terminated string
+// into `out` and returns 0. Returns -1 when missing or on error.
+int ap_settings_get(const char *key, char *out, size_t out_len);
+
+// Upsert a setting. Pass NULL or empty to remove. Returns 0 on success.
+int ap_settings_set(const char *key, const char *value);
+
 // Open a directory as a library:
 //   - Resolves `path` to an absolute root.
 //   - Opens or creates `<root>/library.aperture-db` (SQLite).

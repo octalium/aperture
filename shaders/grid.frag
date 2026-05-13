@@ -17,9 +17,10 @@ layout(push_constant) uniform PushConstants {
     int   selected_idx;
     int   cells_per_row;
     int   cell_size_px;
-    int   cell_gap_px;
+    int   cell_gap_x_px;
+    int   cell_gap_y_px;
     int   border_px;
-    int   _pad0, _pad1;
+    int   _pad0;
 } pc;
 
 // Aspect-correct UV inside a square cell. Letterbox bands fall back
@@ -44,19 +45,20 @@ vec4 sample_cell(int idx, vec2 in_cell) {
 
 void main() {
     vec2 px = v_screen_uv * pc.window_size_px - pc.origin_px;
-    int  pitch = pc.cell_size_px + pc.cell_gap_px;
+    int  pitch_x = pc.cell_size_px + pc.cell_gap_x_px;
+    int  pitch_y = pc.cell_size_px + pc.cell_gap_y_px;
 
     if (px.x < 0.0 || px.y < 0.0) { f_color = pc.bg_color; return; }
 
-    int col = int(floor(px.x / float(pitch)));
-    int row = int(floor(px.y / float(pitch)));
+    int col = int(floor(px.x / float(pitch_x)));
+    int row = int(floor(px.y / float(pitch_y)));
 
     if (col < 0 || col >= pc.cells_per_row) { f_color = pc.bg_color; return; }
 
     int idx = row * pc.cells_per_row + col;
     if (idx < 0 || idx >= pc.photo_count) { f_color = pc.bg_color; return; }
 
-    vec2 cell_origin = vec2(float(col * pitch), float(row * pitch));
+    vec2 cell_origin = vec2(float(col * pitch_x), float(row * pitch_y));
     vec2 in_cell     = px - cell_origin;
     if (in_cell.x >= float(pc.cell_size_px) ||
         in_cell.y >= float(pc.cell_size_px)) {

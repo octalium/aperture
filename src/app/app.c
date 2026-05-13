@@ -69,6 +69,11 @@ struct ap_app {
     ap_grid         *grid;
     ap_mode          mode;
     ap_photo        *photo;
+    int              photo_library_idx;   // library index of the photo
+                                          // currently shown in photo
+                                          // mode, or -1. Lets photo-mode
+                                          // arrow nav walk the library
+                                          // without mutating grid state.
     ap_library      *library;
     ap_worker_pool  *workers;
     int              thumb_inflight;
@@ -117,6 +122,7 @@ ap_app *ap_app_create(int width, int height, const char *title)
     }
     app->mode = AP_MODE_LIBRARY;
     app->show_panels = true;
+    app->photo_library_idx = -1;
 
     app->gpu = ap_gpu_create(width, height, title);
     if (!app->gpu) {
@@ -148,8 +154,23 @@ ap_app *ap_app_create(int width, int height, const char *title)
         return NULL;
     }
 
+    // Restore persisted preferences.
+    {
+        char buf[32];
+        if (ap_settings_get("fullscreen", buf, sizeof(buf)) == 0
+            && atoi(buf) != 0) {
+            ap_gpu_toggle_fullscreen(app->gpu);
+        }
+    }
+
     install_signal_handlers();
     return app;
+}
+
+static void toggle_and_persist_fullscreen(ap_app *app)
+{
+    ap_gpu_toggle_fullscreen(app->gpu);
+    ap_settings_set("fullscreen", ap_gpu_is_fullscreen(app->gpu) ? "1" : "0");
 }
 
 // Free a completed work item without acting on its result. Used at
@@ -334,6 +355,7 @@ void ap_app_close_photo(ap_app *app)
     ap_gpu_set_graph(app->gpu, NULL);
     ap_photo_close(app->photo);
     app->photo = NULL;
+    app->photo_library_idx = -1;
     app->mode  = AP_MODE_LIBRARY;
     bind_mode_view(app);
 }
@@ -429,19 +451,22 @@ ap_library *ap_app_library(ap_app *app)
 
 static void navigate_library_relative(ap_app *app, int dir)
 {
-    if (!app->library || !app->grid) return;
+    // Walks the library list while staying in photo mode. The
+    // library's grid selection is intentionally untouched - it
+    // represents the user's earlier intent in library mode and
+    // should survive this navigation so backing out (Esc) puts
+    // them where they were.
+    if (!app->library) return;
     int n = ap_library_photo_count(app->library);
-    if (n <= 0) return;
-    int sel = ap_grid_selected(app->grid);
-    int new_sel = sel + dir;
-    if (new_sel < 0 || new_sel >= n) return;
-    ap_grid_set_selected(app->grid, new_sel);
+    if (n <= 0 || app->photo_library_idx < 0) return;
+    int new_idx = app->photo_library_idx + dir;
+    if (new_idx < 0 || new_idx >= n) return;
 
     char abs[4096];
-    if (ap_library_photo_absolute_path(app->library, new_sel,
-                                       abs, sizeof(abs)) == 0) {
-        ap_app_open_photo(app, abs);
-    }
+    if (ap_library_photo_absolute_path(app->library, new_idx,
+                                       abs, sizeof(abs)) != 0) return;
+    app->photo_library_idx = new_idx;
+    ap_app_open_photo(app, abs);
 }
 
 static void drive_canvas_input(ap_app *app)
@@ -503,6 +528,7 @@ static void open_selected_photo(ap_app *app)
         AP_ERROR("library: photo path overflow at idx %d", idx);
         return;
     }
+    app->photo_library_idx = idx;
     if (ap_app_open_photo(app, abs) != 0) {
         AP_ERROR("library: failed to open %s", abs);
     }
@@ -522,18 +548,39 @@ static void drive_grid_input(ap_app *app)
 
     if (!io->WantCaptureMouse) {
         if (io->MouseWheel != 0.0f) {
-            const float wheel_step_px = 60.0f;
-            ap_grid_scroll(app->grid, -io->MouseWheel * wheel_step_px,
-                           win_w, win_h);
+            if (io->KeyCtrl) {
+                int cur  = ap_grid_cell_size(app->grid);
+                int step = 16;
+                int next = cur + (int)(io->MouseWheel) * step;
+                ap_grid_set_cell_size(app->grid, next);
+            } else {
+                const float wheel_step_px = 60.0f;
+                ap_grid_scroll(app->grid, -io->MouseWheel * wheel_step_px,
+                               win_w, win_h);
+            }
         }
-        if (igIsMouseClicked_Bool(ImGuiMouseButton_Left, false)) {
+        if (igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
             int hit = ap_grid_hit_test(app->grid,
                                        io->MousePos.x, io->MousePos.y,
                                        win_w, win_h);
             if (hit >= 0) {
-                ap_grid_set_selected(app->grid, hit);
+                ap_grid_select_only(app->grid, hit);
                 open_selected_photo(app);
                 return;
+            }
+        } else if (igIsMouseClicked_Bool(ImGuiMouseButton_Left, false)) {
+            int hit = ap_grid_hit_test(app->grid,
+                                       io->MousePos.x, io->MousePos.y,
+                                       win_w, win_h);
+            if (hit >= 0) {
+                int anchor = ap_grid_selected(app->grid);
+                if (io->KeyShift) {
+                    ap_grid_select_range(app->grid, anchor, hit);
+                } else if (io->KeyCtrl) {
+                    ap_grid_select_toggle(app->grid, hit);
+                } else {
+                    ap_grid_select_only(app->grid, hit);
+                }
             }
         }
     }
@@ -546,14 +593,46 @@ static void drive_grid_input(ap_app *app)
     else if (igIsKeyPressed_Bool(ImGuiKey_DownArrow, true))  new_sel = sel + cpr;
     else if (igIsKeyPressed_Bool(ImGuiKey_UpArrow,   true))  new_sel = sel - cpr;
     if (new_sel != sel) {
-        ap_grid_set_selected(app->grid, new_sel);
+        if (io->KeyShift) {
+            ap_grid_select_range(app->grid, sel, new_sel);
+        } else {
+            ap_grid_select_only(app->grid, new_sel);
+        }
         ap_grid_ensure_visible(app->grid, ap_grid_selected(app->grid),
                                win_w, win_h);
     }
 
-    if (igIsKeyPressed_Bool(ImGuiKey_Enter, false) ||
-        igIsKeyPressed_Bool(ImGuiKey_Space, false)) {
+    if (!io->KeyCtrl && (igIsKeyPressed_Bool(ImGuiKey_Enter, false) ||
+                         igIsKeyPressed_Bool(ImGuiKey_Space, false))) {
         open_selected_photo(app);
+    }
+}
+
+static void draw_selection_overlay(ap_app *app)
+{
+    if (!app->library || !app->grid) return;
+    int n = ap_library_photo_count(app->library);
+    if (n <= 0) return;
+    int sel_count = ap_grid_selection_count(app->grid);
+    if (sel_count <= 1) return;   // focus highlight alone is enough
+
+    ImGuiIO *io = igGetIO_Nil();
+    if (!io) return;
+    int win_w = (int)io->DisplaySize.x;
+    int win_h = (int)io->DisplaySize.y;
+    ImDrawList *dl = igGetForegroundDrawList_ViewportPtr(NULL);
+    if (!dl) return;
+
+    int focus = ap_grid_selected(app->grid);
+    for (int i = 0; i < n; i++) {
+        if (i == focus) continue;
+        if (!ap_grid_is_selected(app->grid, i)) continue;
+        float cx, cy, cw, ch;
+        if (ap_grid_cell_rect(app->grid, i, win_w, win_h,
+                              &cx, &cy, &cw, &ch) != 0) continue;
+        ImVec2_c tl = { cx,      cy      };
+        ImVec2_c br = { cx + cw, cy + ch };
+        ImDrawList_AddRect(dl, tl, br, 0xFFB8C4D9, 0.0f, 0, 2.0f);
     }
 }
 
@@ -571,6 +650,7 @@ static void draw_grid_labels(ap_app *app)
     ImDrawList *dl = igGetForegroundDrawList_ViewportPtr(NULL);
     if (!dl) return;
 
+    const float band_h = 18.0f;
     for (int i = 0; i < n; i++) {
         const char *rel = ap_library_photo_relative_path(app->library, i);
         if (!rel) continue;
@@ -578,8 +658,36 @@ static void draw_grid_labels(ap_app *app)
         if (ap_grid_cell_rect(app->grid, i, win_w, win_h, &cx, &cy, &cw, &ch) != 0) {
             continue;
         }
-        ImVec2_c pos = { cx + 6.0f, cy + ch - 18.0f };
-        ImDrawList_AddText_Vec2(dl, pos, 0xFFEEEEEE, rel, NULL);
+
+        // Letterbox the label band to the actual image rect inside the
+        // cell, mirroring the shader's aspect-fit math. Portrait
+        // thumbnails leave space at the sides; landscape leaves space
+        // top and bottom. Without this, labels sit on top of the image
+        // itself instead of riding cleanly under it.
+        float fit_x = cx, fit_y = cy, fit_w = cw, fit_h = ch;
+        ap_thumbnail *t = ap_library_thumbnail(app->library, i);
+        if (t) {
+            int tw = ap_thumbnail_width(t);
+            int th = ap_thumbnail_height(t);
+            if (tw > 0 && th > 0) {
+                float s = cw / (float)tw;
+                float sy = ch / (float)th;
+                if (sy < s) s = sy;
+                fit_w = (float)tw * s;
+                fit_h = (float)th * s;
+                fit_x = cx + (cw - fit_w) * 0.5f;
+                fit_y = cy + (ch - fit_h) * 0.5f;
+            }
+        }
+
+        // Don't paint the band when the cell is too small to read it.
+        if (fit_h < band_h * 2.0f) continue;
+
+        ImVec2_c band_tl = { fit_x,         fit_y + fit_h - band_h };
+        ImVec2_c band_br = { fit_x + fit_w, fit_y + fit_h          };
+        ImDrawList_AddRectFilled(dl, band_tl, band_br, 0xB8000000, 0.0f, 0);
+        ImVec2_c text_pos = { fit_x + 4.0f, fit_y + fit_h - band_h + 2.0f };
+        ImDrawList_AddText_Vec2(dl, text_pos, 0xFFEEEEEE, rel, NULL);
     }
 }
 
@@ -759,12 +867,16 @@ static void draw_menubar(ap_app *app)
 
     if (igBeginMenu("View", true)) {
         bool show = app->show_panels;
-        if (igMenuItem_BoolPtr("Show Panels", "Tab", &show, true)) {
+        if (igMenuItem_BoolPtr("Show Panels", "Ctrl+Space", &show, true)) {
             app->show_panels = show;
         }
         if (igMenuItem_Bool("Fullscreen", "F11",
                             ap_gpu_is_fullscreen(app->gpu), true)) {
-            ap_gpu_toggle_fullscreen(app->gpu);
+            toggle_and_persist_fullscreen(app);
+        }
+        igSeparator();
+        if (igMenuItem_Bool("Reset Cell Zoom", "Ctrl+0", false, true)) {
+            ap_grid_reset_cell_size(app->grid);
         }
         igEndMenu();
     }
@@ -804,13 +916,16 @@ static void draw_menubar(ap_app *app)
             for (int i = 0; i < n; i++) {
                 bool current = app->library
                     && strcmp(rows[i].path, ap_library_root(app->library)) == 0;
+                // Menu shows the name (or path when unnamed). Hover
+                // gets the full path as a tooltip - keeps the menu
+                // narrow and the buffer manageable.
                 const char *label_name = rows[i].name[0] ? rows[i].name
                                                          : rows[i].path;
-                char label[8192];
-                snprintf(label, sizeof(label), "%s    %s",
-                         label_name, rows[i].path);
-                if (igMenuItem_Bool(label, NULL, current, true) && !current) {
+                if (igMenuItem_Bool(label_name, NULL, current, true) && !current) {
                     ap_app_open_library(app, rows[i].path);
+                }
+                if (igIsItemHovered(0)) {
+                    igSetTooltip("%s", rows[i].path);
                 }
             }
         }
@@ -885,17 +1000,52 @@ static void drive_global_hotkeys(ap_app *app)
     ImGuiIO *io = igGetIO_Nil();
     if (!io) return;
 
-    if (igIsKeyPressed_Bool(ImGuiKey_Tab, false) && !io->WantCaptureKeyboard) {
+    // Ctrl+Space toggles panel visibility. Ctrl-modified so it
+    // doesn't conflict with widget focus / text input, and doesn't
+    // need the WantCaptureKeyboard guard the way bare Tab did.
+    if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_Space, false)) {
         app->show_panels = !app->show_panels;
     }
     if (igIsKeyPressed_Bool(ImGuiKey_F11, false)) {
-        ap_gpu_toggle_fullscreen(app->gpu);
+        toggle_and_persist_fullscreen(app);
     }
     if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_Q, false)) {
         app->quit_requested = true;
     }
     if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_E, false) && app->photo) {
         trigger_quick_export(app);
+    }
+    if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_0, false)) {
+        if (app->mode == AP_MODE_PHOTO) {
+            ap_canvas_reset_view(app->canvas);
+        } else {
+            ap_grid_reset_cell_size(app->grid);
+        }
+    }
+
+    if (io->KeyCtrl && (igIsKeyPressed_Bool(ImGuiKey_Equal, true) ||
+                        igIsKeyPressed_Bool(ImGuiKey_KeypadAdd, true))) {
+        if (app->mode == AP_MODE_PHOTO) {
+            int win_w = (int)io->DisplaySize.x;
+            int win_h = (int)io->DisplaySize.y;
+            ap_canvas_zoom_at(app->canvas, 1.15f,
+                              win_w * 0.5f, win_h * 0.5f, win_w, win_h);
+        } else {
+            ap_grid_set_cell_size(app->grid,
+                                  ap_grid_cell_size(app->grid) + 16);
+        }
+    }
+    if (io->KeyCtrl && (igIsKeyPressed_Bool(ImGuiKey_Minus, true) ||
+                        igIsKeyPressed_Bool(ImGuiKey_KeypadSubtract, true))) {
+        if (app->mode == AP_MODE_PHOTO) {
+            int win_w = (int)io->DisplaySize.x;
+            int win_h = (int)io->DisplaySize.y;
+            ap_canvas_zoom_at(app->canvas, 1.0f / 1.15f,
+                              win_w * 0.5f, win_h * 0.5f, win_w, win_h);
+        } else {
+            ap_grid_set_cell_size(app->grid,
+                                  ap_grid_cell_size(app->grid) - 16);
+        }
     }
 }
 
@@ -943,6 +1093,7 @@ int ap_app_run_frame(ap_app *app)
     } else if (app->mode == AP_MODE_LIBRARY && !app->photo_loading) {
         drive_grid_input(app);
         draw_grid_labels(app);
+        draw_selection_overlay(app);
         submit_pending_thumbs(app);
     }
     drain_one_completed_job(app);
