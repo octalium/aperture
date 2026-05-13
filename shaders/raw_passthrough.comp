@@ -1,0 +1,33 @@
+#version 450
+
+// Bayer-as-grayscale fallback: maps the R16_UNORM sensor plane into the
+// chain's RGBA16F working format with R=G=B = normalized raw value, no
+// demosaic, no white balance, no color profile. Used when the user has
+// disabled / removed the Demosaic module and is viewing the sensor data
+// as-shot, and also as the body of "View Raw" mode.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, r16)     uniform readonly  image2D in_image;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
+
+void main()
+{
+    ivec2 out_coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 out_size  = imageSize(out_image);
+    if (out_coord.x >= out_size.x || out_coord.y >= out_size.y) {
+        return;
+    }
+
+    // Output dims usually equal the sensor dims (the photo's view of
+    // "no edits"). When the user toggled EXIF orientation off, the
+    // graph's input texture is the sensor plane directly, so a 1:1
+    // sample is correct. With EXIF orientation on the input plane is
+    // smaller than the display image — clamp so out-of-range cells
+    // get the edge value rather than crash on validation.
+    ivec2 in_size  = imageSize(in_image);
+    ivec2 in_coord = clamp(out_coord, ivec2(0), in_size - ivec2(1));
+
+    float v = imageLoad(in_image, in_coord).r;
+    imageStore(out_image, out_coord, vec4(v, v, v, 1.0));
+}

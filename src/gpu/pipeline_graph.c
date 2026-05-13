@@ -426,11 +426,20 @@ ap_pipeline_graph *ap_pipeline_graph_create(ap_gpu *g, ap_texture *input,
 
     // Only Output Transfer is auto-appended by the graph; every other
     // module (including Demosaic and Color) is a regular user-visible
-    // entry on the stack. The default-pipeline seed puts the baseline
-    // modules in the stack on a fresh photo open.
-    const ap_module *m_out = ap_module_find("output_transfer");
-    if (!m_out) {
-        AP_ERROR("ap_pipeline_graph_create: output_transfer module missing");
+    // entry on the stack. Output Transfer's job (linear -> sRGB EOTF)
+    // is a hard requirement of the display surface, so it stays as
+    // transport.
+    //
+    // The downstream modules (Color, Exposure, Tone, Output Transfer)
+    // all expect an RGBA16F input. The graph's source texture is R16
+    // (Bayer). So *something* has to perform the R16 -> RGBA16F step
+    // at the head of the chain. Normally Demosaic does that. When the
+    // user has disabled / removed Demosaic, we insert
+    // `raw_passthrough` — a grayscale R16 -> RGBA16F module — instead.
+    const ap_module *m_out  = ap_module_find("output_transfer");
+    const ap_module *m_pass = ap_module_find("raw_passthrough");
+    if (!m_out || !m_pass) {
+        AP_ERROR("ap_pipeline_graph_create: transport modules missing");
         return NULL;
     }
 
@@ -438,7 +447,23 @@ ap_pipeline_graph *ap_pipeline_graph_create(ap_gpu *g, ap_texture *input,
     int              chain_entry_idx[MAX_MODULES];
     int              stage_count = 0;
 
-    int n = stack ? ap_edit_stack_count(stack) : 0;
+    // Does the stack have any enabled Demosaic entry? If not, we'll
+    // prepend the raw passthrough so format dimensions line up.
+    bool need_passthrough = true;
+    int  n = stack ? ap_edit_stack_count(stack) : 0;
+    for (int i = 0; i < n; i++) {
+        const ap_edit_entry *e = ap_edit_stack_at_const(stack, i);
+        if (e && e->enabled && strcmp(e->module_name, "demosaic") == 0) {
+            need_passthrough = false;
+            break;
+        }
+    }
+    if (need_passthrough) {
+        chain_modules[stage_count]   = m_pass;
+        chain_entry_idx[stage_count] = -1;
+        stage_count++;
+    }
+
     for (int i = 0; i < n; i++) {
         const ap_edit_entry *e = ap_edit_stack_at_const(stack, i);
         if (!e || !e->enabled) continue;
