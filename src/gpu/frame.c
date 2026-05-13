@@ -154,9 +154,15 @@ int gpu_frame_render(struct ap_gpu *g, const ap_edit_state *edit)
                                          f->image_available, VK_NULL_HANDLE,
                                          &image_index);
     if (acq == VK_ERROR_OUT_OF_DATE_KHR) {
+        // We've already begun an ImGui frame in this iteration but are
+        // about to skip the record/submit path entirely. End the frame
+        // so the next ap_imgui_new_frame doesn't trip ImGui's
+        // FrameCountEnded == FrameCount assertion.
+        ap_imgui_discard_frame();
         return gpu_swapchain_recreate(g);
     }
     if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR) {
+        ap_imgui_discard_frame();
         AP_ERROR("vkAcquireNextImageKHR -> %s", gpu_vk_result_str(acq));
         return -1;
     }

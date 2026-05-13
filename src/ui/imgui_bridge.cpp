@@ -112,6 +112,11 @@ extern "C" void ap_imgui_render(VkCommandBuffer cmd)
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd, VK_NULL_HANDLE);
 }
 
+extern "C" void ap_imgui_discard_frame(void)
+{
+    ImGui::EndFrame();
+}
+
 extern "C" uint64_t ap_imgui_register_texture(VkSampler sampler,
                                               VkImageView view,
                                               VkImageLayout layout)
