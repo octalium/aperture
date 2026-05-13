@@ -12,7 +12,7 @@ extern "C" {
 
 typedef struct GLFWwindow GLFWwindow;
 
-// Backend lifecycle. The bridge's job narrows to this — anything that
+// Backend lifecycle. The bridge's job narrows to this - anything that
 // touches ImGui's GLFW / Vulkan impl backends, plus texture-handle
 // registration. Higher-level UI lives in src/panels/ via cimgui.
 
@@ -28,6 +28,12 @@ bool ap_imgui_init(GLFWwindow *window,
 void ap_imgui_shutdown(void);
 void ap_imgui_new_frame(void);
 void ap_imgui_render(VkCommandBuffer cmd);
+
+// End the current ImGui frame without producing draw data. Use when
+// the GPU path bails after ap_imgui_new_frame (e.g. swapchain
+// recreate); without this, the next NewFrame trips
+// ErrorCheckNewFrameSanityChecks and aborts.
+void ap_imgui_discard_frame(void);
 
 uint64_t ap_imgui_register_texture(VkSampler sampler, VkImageView view, VkImageLayout layout);
 void     ap_imgui_unregister_texture(uint64_t tex_id);

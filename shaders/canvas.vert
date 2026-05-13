@@ -12,6 +12,6 @@ void main() {
     gl_Position = vec4(pos, 0.0, 1.0);
 
     // Vulkan NDC has y pointing down, so y=0 here is the top of the
-    // swapchain — matches our image origin convention.
+    // swapchain - matches our image origin convention.
     v_screen_uv = pos * 0.5 + 0.5;
 }

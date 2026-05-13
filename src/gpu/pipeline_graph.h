@@ -30,7 +30,7 @@ typedef struct ap_module ap_module;
 // display, middle modules alternate between the two working buffers.
 //
 // `meta` is per-image static metadata (camera color matrix, black
-// levels, sensor dims, flip code, etc.) — copied into the graph at
+// levels, sensor dims, flip code, etc.) - copied into the graph at
 // create time and passed to each module's pack_push. May be NULL for
 // chains that don't need it.
 ap_pipeline_graph *ap_pipeline_graph_create(ap_gpu *g,
@@ -50,12 +50,12 @@ int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
 // Copy the current display image (final stage's output) into a CPU
 // buffer. `out_pixels` must hold at least `output_width * output_height
 // * 4` bytes; data is written as 8-bit RGBA, sRGB-encoded (the bytes
-// the encode shader produced). Returns 0 on success. Synchronous —
+// the encode shader produced). Returns 0 on success. Synchronous -
 // waits on the device before reading.
 int ap_pipeline_graph_readback(ap_pipeline_graph *graph,
                                void *out_pixels, size_t out_size);
 
-// The display image (final output) — for sampling via ImGui or canvas.
+// The display image (final output) - for sampling via ImGui or canvas.
 VkImageView   ap_pipeline_graph_output_view(const ap_pipeline_graph *graph);
 VkSampler     ap_pipeline_graph_output_sampler(const ap_pipeline_graph *graph);
 VkImageLayout ap_pipeline_graph_output_layout(const ap_pipeline_graph *graph);

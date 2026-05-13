@@ -1,13 +1,10 @@
 #include "panels.h"
 
-#include "core/log.h"
 #include "photo/photo.h"
 
 #include "cimgui.h"
 
 #include <stdio.h>
-
-#define JPEG_DEFAULT_QUALITY 90
 
 static void photo_edit_draw(ap_app *app)
 {
@@ -30,26 +27,13 @@ static void photo_edit_draw(ap_app *app)
             edit->respect_orientation = respect ? 1 : 0;
             // Pipeline graph dims and demosaic flip are baked at
             // photo-open time, so apply by reopening on the same path.
-            // The current `photo` pointer becomes stale once we open
-            // — bail out of the rest of the panel for this frame.
+            // The current `photo` pointer becomes stale once we open -
+            // bail out of the rest of the panel for this frame.
             char path_copy[4096];
             snprintf(path_copy, sizeof(path_copy), "%s", ap_photo_path(photo));
             ap_app_open_photo(app, path_copy);
             igEnd();
             return;
-        }
-
-        igSeparator();
-
-        if (igButton("Export to JPEG", (ImVec2_c){ 0.0f, 0.0f })) {
-            const char *src = ap_photo_path(photo);
-            char out[4096];
-            int n = snprintf(out, sizeof(out), "%s.jpg", src);
-            if (n > 0 && (size_t)n < sizeof(out)) {
-                ap_app_request_jpeg_export(app, photo, out, JPEG_DEFAULT_QUALITY);
-            } else {
-                AP_ERROR("export: path too long for %s", src);
-            }
         }
     }
     igEnd();

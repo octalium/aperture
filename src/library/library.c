@@ -34,6 +34,7 @@ static const char *RAW_EXTENSIONS[] = {
 struct ap_library {
     char     *root;        // absolute path to the photo directory
     char      id[37];      // RFC 4122 v4 UUID, 36 chars + NUL
+    char      name[128];   // user-set display name; empty if unset
     sqlite3  *db;          // <app_root>/libraries/<id>.db
 
     char    **photo_paths; // relative to root
@@ -50,6 +51,7 @@ static const char *REGISTRY_SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS libraries ("
     "    id         TEXT PRIMARY KEY,"
     "    path       TEXT NOT NULL UNIQUE,"
+    "    name       TEXT,"
     "    created_at INTEGER NOT NULL"
     ");"
     "CREATE TABLE IF NOT EXISTS pipelines ("
@@ -58,7 +60,21 @@ static const char *REGISTRY_SCHEMA_SQL =
     "    modules TEXT NOT NULL"
     ");";
 
-// Comma-separated module names — order matters; resolved via
+// Backfill the `name` column on registry dbs created before it was
+// added. ALTER returns SQLITE_ERROR with "duplicate column name" when
+// it already exists - we treat that as success.
+static void backfill_name_column(sqlite3 *reg)
+{
+    char *err = NULL;
+    int rc = sqlite3_exec(reg,
+        "ALTER TABLE libraries ADD COLUMN name TEXT;", NULL, NULL, &err);
+    if (rc != SQLITE_OK && err && !strstr(err, "duplicate column")) {
+        AP_WARN("registry: backfill name column: %s", err);
+    }
+    sqlite3_free(err);
+}
+
+// Comma-separated module names - order matters; resolved via
 // ap_module_find when a photo opens. Kept as a single TEXT column
 // rather than a join table for v1 simplicity.
 static const char *DEFAULT_PIPELINE_NAME    = "default";
@@ -134,6 +150,7 @@ static int registry_open(sqlite3 **out_db)
         sqlite3_close(reg);
         return -1;
     }
+    backfill_name_column(reg);
 
     if (seed_default_pipeline(reg) < 0) {
         sqlite3_close(reg);
@@ -278,7 +295,7 @@ int ap_registry_list(ap_registry_entry *out, int max)
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(reg,
-            "SELECT id, path, created_at FROM libraries "
+            "SELECT id, path, name, created_at FROM libraries "
             "ORDER BY created_at DESC;",
             -1, &stmt, NULL) != SQLITE_OK) {
         AP_ERROR("registry: prepare list: %s", sqlite3_errmsg(reg));
@@ -298,10 +315,12 @@ int ap_registry_list(ap_registry_entry *out, int max)
         }
         const char *id   = (const char *)sqlite3_column_text(stmt, 0);
         const char *path = (const char *)sqlite3_column_text(stmt, 1);
-        int64_t   ctime  = sqlite3_column_int64(stmt, 2);
+        const char *name = (const char *)sqlite3_column_text(stmt, 2);
+        int64_t   ctime  = sqlite3_column_int64(stmt, 3);
         if (!id || !path) continue;
         snprintf(out[n].id,   sizeof(out[n].id),   "%s", id);
         snprintf(out[n].path, sizeof(out[n].path), "%s", path);
+        snprintf(out[n].name, sizeof(out[n].name), "%s", name ? name : "");
         out[n].created_at = ctime;
         n++;
     }
@@ -517,6 +536,25 @@ ap_library *ap_library_open(const char *path)
         goto fail;
     }
 
+    // Load existing display name from the registry, if any.
+    {
+        sqlite3 *reg = NULL;
+        if (registry_open(&reg) == 0) {
+            sqlite3_stmt *st = NULL;
+            if (sqlite3_prepare_v2(reg,
+                    "SELECT name FROM libraries WHERE id = ?;",
+                    -1, &st, NULL) == SQLITE_OK) {
+                sqlite3_bind_text(st, 1, lib->id, -1, SQLITE_STATIC);
+                if (sqlite3_step(st) == SQLITE_ROW) {
+                    const char *n = (const char *)sqlite3_column_text(st, 0);
+                    snprintf(lib->name, sizeof(lib->name), "%s", n ? n : "");
+                }
+                sqlite3_finalize(st);
+            }
+            sqlite3_close(reg);
+        }
+    }
+
     char db_filename[64];
     snprintf(db_filename, sizeof(db_filename), "libraries/%s.db", lib->id);
     char db_path[4096];
@@ -597,6 +635,43 @@ void ap_library_close(ap_library *lib)
 const char *ap_library_root(const ap_library *lib)
 {
     return lib ? lib->root : NULL;
+}
+
+const char *ap_library_name(const ap_library *lib)
+{
+    return lib ? lib->name : "";
+}
+
+int ap_library_set_name(ap_library *lib, const char *name)
+{
+    if (!lib) return -1;
+    sqlite3 *reg = NULL;
+    if (registry_open(&reg) < 0) return -1;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(reg,
+            "UPDATE libraries SET name = ? WHERE id = ?;",
+            -1, &st, NULL) != SQLITE_OK) {
+        AP_ERROR("registry: prepare set name: %s", sqlite3_errmsg(reg));
+        sqlite3_close(reg);
+        return -1;
+    }
+    if (name && *name) {
+        sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    } else {
+        sqlite3_bind_null(st, 1);
+    }
+    sqlite3_bind_text(st, 2, lib->id, -1, SQLITE_STATIC);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    sqlite3_close(reg);
+    if (rc != SQLITE_DONE) {
+        AP_ERROR("registry: set name step: %s", sqlite3_errstr(rc));
+        return -1;
+    }
+
+    snprintf(lib->name, sizeof(lib->name), "%s", (name && *name) ? name : "");
+    return 0;
 }
 
 int ap_library_photo_count(const ap_library *lib)

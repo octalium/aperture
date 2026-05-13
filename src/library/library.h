@@ -14,6 +14,7 @@ typedef struct ap_library ap_library;
 typedef struct {
     char    id[37];      // RFC 4122 v4 UUID + NUL
     char    path[4096];  // absolute filesystem path
+    char    name[128];   // user-set display name; empty if unset
     int64_t created_at;  // unix seconds
 } ap_registry_entry;
 
@@ -57,6 +58,14 @@ void        ap_library_close(ap_library *lib);
 const char *ap_library_root(const ap_library *lib);
 int         ap_library_photo_count(const ap_library *lib);
 
+// User-set display name. Empty string when unset (callers fall back
+// to the basename of the path).
+const char *ap_library_name(const ap_library *lib);
+
+// Persist a new display name on the library's registry row. Pass an
+// empty string (or NULL) to clear. Returns 0 on success.
+int         ap_library_set_name(ap_library *lib, const char *name);
+
 // Relative path of the n-th photo (n in [0, count)). Owned by the
 // library; valid until close.
 const char *ap_library_photo_relative_path(const ap_library *lib, int index);
@@ -82,7 +91,7 @@ void ap_library_set_thumbnail(ap_library *lib, int index, ap_thumbnail *t);
 
 // Index of the next photo whose thumbnail hasn't been decoded yet,
 // or -1 if every slot is filled. The library does not decide when
-// or how decoding happens — callers drive a per-frame pump.
+// or how decoding happens - callers drive a per-frame pump.
 int  ap_library_pending_thumbnail_idx(const ap_library *lib);
 
 #ifdef __cplusplus

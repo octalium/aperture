@@ -31,7 +31,7 @@ void      ap_photo_close(ap_photo *photo);
 
 ap_pipeline_graph *ap_photo_graph(ap_photo *photo);
 
-// Mutable — sliders write here; the render loop reads here.
+// Mutable - sliders write here; the render loop reads here.
 ap_edit_state *ap_photo_edit(ap_photo *photo);
 
 int         ap_photo_width(const ap_photo *photo);

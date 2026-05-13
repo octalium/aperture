@@ -23,7 +23,7 @@ static int demosaic_pack_push(const ap_module *self,
     (void)self;
     (void)edit;
     if (!meta) {
-        return -1; // signal "skip" — no metadata, no demosaic.
+        return -1; // signal "skip" - no metadata, no demosaic.
     }
 
     demosaic_push_t *pc = push_out;

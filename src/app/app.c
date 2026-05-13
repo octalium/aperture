@@ -60,6 +60,9 @@ static void thumb_job_run(ap_work_item *self);
 static void photo_open_job_run(ap_work_item *self);
 static void export_job_run(ap_work_item *self);
 
+// Forward decl - used by open/close before its definition.
+static void refresh_window_title(ap_app *app);
+
 struct ap_app {
     ap_gpu          *gpu;
     ap_canvas       *canvas;
@@ -73,6 +76,14 @@ struct ap_app {
     char             loading_path[4096];
     uint64_t         photo_load_gen;
     int              export_inflight;
+
+    // Workspace chrome
+    bool             show_panels;          // Tab to toggle
+    bool             open_library_modal;   // File -> Open Library
+    char             open_library_input[4096];
+    bool             rename_library_modal; // Library indicator -> Rename
+    char             rename_library_input[128];
+    bool             quit_requested;
 };
 
 #define THUMB_MAX_INFLIGHT 8
@@ -105,6 +116,7 @@ ap_app *ap_app_create(int width, int height, const char *title)
         return NULL;
     }
     app->mode = AP_MODE_LIBRARY;
+    app->show_panels = true;
 
     app->gpu = ap_gpu_create(width, height, title);
     if (!app->gpu) {
@@ -216,6 +228,7 @@ bool ap_app_should_run(ap_app *app)
 {
     if (!app) return false;
     if (g_quit_requested) return false;
+    if (app->quit_requested) return false;
     return ap_gpu_should_run(app->gpu);
 }
 
@@ -388,6 +401,7 @@ int ap_app_open_library(ap_app *app, const char *path)
     ap_grid_set_selected(app->grid, 0);
     app->mode = AP_MODE_LIBRARY;
     bind_mode_view(app);
+    refresh_window_title(app);
     return 0;
 }
 
@@ -396,7 +410,7 @@ void ap_app_close_library(ap_app *app)
     if (!app || !app->library) return;
 
     // Wait for outstanding decode work to land in the completed queue
-    // and toss the buffers — they belong to the library that's going
+    // and toss the buffers - they belong to the library that's going
     // away. Then drop GPU references before the textures vanish.
     ap_worker_pool_wait_idle(app->workers);
     discard_completed_thumb_jobs(app);
@@ -405,11 +419,29 @@ void ap_app_close_library(ap_app *app)
     ap_library_close(app->library);
     app->library = NULL;
     bind_mode_view(app);
+    refresh_window_title(app);
 }
 
 ap_library *ap_app_library(ap_app *app)
 {
     return app ? app->library : NULL;
+}
+
+static void navigate_library_relative(ap_app *app, int dir)
+{
+    if (!app->library || !app->grid) return;
+    int n = ap_library_photo_count(app->library);
+    if (n <= 0) return;
+    int sel = ap_grid_selected(app->grid);
+    int new_sel = sel + dir;
+    if (new_sel < 0 || new_sel >= n) return;
+    ap_grid_set_selected(app->grid, new_sel);
+
+    char abs[4096];
+    if (ap_library_photo_absolute_path(app->library, new_sel,
+                                       abs, sizeof(abs)) == 0) {
+        ap_app_open_photo(app, abs);
+    }
 }
 
 static void drive_canvas_input(ap_app *app)
@@ -422,6 +454,17 @@ static void drive_canvas_input(ap_app *app)
     if (igIsKeyPressed_Bool(ImGuiKey_Escape, false)) {
         ap_app_close_photo(app);
         return;
+    }
+
+    if (!io->WantCaptureKeyboard) {
+        if (igIsKeyPressed_Bool(ImGuiKey_RightArrow, true)) {
+            navigate_library_relative(app, +1);
+            return;
+        }
+        if (igIsKeyPressed_Bool(ImGuiKey_LeftArrow, true)) {
+            navigate_library_relative(app, -1);
+            return;
+        }
     }
 
     if (io->WantCaptureMouse) return;
@@ -623,7 +666,7 @@ static void handle_export_complete(ap_app *app, export_job *j)
 }
 
 // Pop one completed work item per frame and dispatch on its run-fn.
-// Pool poll is non-blocking — when nothing's ready, this is a no-op.
+// Pool poll is non-blocking - when nothing's ready, this is a no-op.
 static void drain_one_completed_job(ap_app *app)
 {
     if (!app->workers) return;
@@ -639,6 +682,224 @@ static void drain_one_completed_job(ap_app *app)
         AP_WARN("worker: unknown completed run-fn, leaking item");
     }
 }
+
+// ---- menubar + global hotkeys ----------------------------------------
+
+static void trigger_quick_export(ap_app *app)
+{
+    if (!app->photo) return;
+    const char *src = ap_photo_path(app->photo);
+    char out[4096];
+    int n = snprintf(out, sizeof(out), "%s.jpg", src);
+    if (n > 0 && (size_t)n < sizeof(out)) {
+        ap_app_request_jpeg_export(app, app->photo, out, 90);
+    } else {
+        AP_ERROR("export: path too long for %s", src);
+    }
+}
+
+static const char *library_display_label(ap_library *lib)
+{
+    if (!lib) return "(no library)";
+    const char *name = ap_library_name(lib);
+    if (name && *name) return name;
+    return ap_library_root(lib);
+}
+
+static void refresh_window_title(ap_app *app)
+{
+    if (!app || !app->gpu) return;
+    if (!app->library) {
+        ap_gpu_set_window_title(app->gpu, "Aperture");
+        return;
+    }
+    char title[5120];
+    snprintf(title, sizeof(title), "Aperture: %s",
+             library_display_label(app->library));
+    ap_gpu_set_window_title(app->gpu, title);
+}
+
+static void draw_menubar(ap_app *app)
+{
+    if (!igBeginMainMenuBar()) return;
+
+    if (igBeginMenu("File", true)) {
+        if (igMenuItem_Bool("Open Library", NULL, false, true)) {
+            const char *root = app->library ? ap_library_root(app->library) : "";
+            snprintf(app->open_library_input,
+                     sizeof(app->open_library_input), "%s", root ? root : "");
+            app->open_library_modal = true;
+        }
+
+        igSeparator();
+
+        if (igMenuItem_Bool("Close Photo", "Esc",
+                            false, app->photo != NULL)) {
+            ap_app_close_photo(app);
+        }
+        if (igMenuItem_Bool("Close Library", NULL,
+                            false, app->library != NULL)) {
+            ap_app_close_library(app);
+        }
+
+        igSeparator();
+
+        if (igMenuItem_Bool("Export", "Ctrl+E",
+                            false, app->photo != NULL)) {
+            trigger_quick_export(app);
+        }
+
+        igSeparator();
+
+        if (igMenuItem_Bool("Quit", "Ctrl+Q", false, true)) {
+            app->quit_requested = true;
+        }
+        igEndMenu();
+    }
+
+    if (igBeginMenu("View", true)) {
+        bool show = app->show_panels;
+        if (igMenuItem_BoolPtr("Show Panels", "Tab", &show, true)) {
+            app->show_panels = show;
+        }
+        if (igMenuItem_Bool("Fullscreen", "F11",
+                            ap_gpu_is_fullscreen(app->gpu), true)) {
+            ap_gpu_toggle_fullscreen(app->gpu);
+        }
+        igEndMenu();
+    }
+
+    // Library indicator + quick switcher. The menu label is the
+    // library's user-set name when set, the full path otherwise, or
+    // "(no library)" when none is open. Centered in the menubar so
+    // it reads as a status indicator independent of the File/View
+    // dropdowns on the left.
+    const char *lib_label = library_display_label(app->library);
+    {
+        ImVec2_c label_size = igCalcTextSize(lib_label, NULL, false, -1.0f);
+        ImGuiStyle *style = igGetStyle();
+        float item_w   = label_size.x + style->FramePadding.x * 2.0f;
+        float center_x = (igGetWindowWidth() - item_w) * 0.5f;
+        // Don't backtrack - leave a gap after View if the label is
+        // somehow huge.
+        igSetCursorPosX(center_x);
+    }
+    if (igBeginMenu(lib_label, true)) {
+        if (app->library) {
+            igText("%s", ap_library_root(app->library));
+            igText("%d photos", ap_library_photo_count(app->library));
+            if (igMenuItem_Bool("Rename", NULL, false, true)) {
+                snprintf(app->rename_library_input,
+                         sizeof(app->rename_library_input), "%s",
+                         ap_library_name(app->library));
+                app->rename_library_modal = true;
+            }
+            igSeparator();
+        }
+        ap_registry_entry rows[16];
+        int n = ap_registry_list(rows, 16);
+        if (n <= 0) {
+            igMenuItem_Bool("(no recent libraries)", NULL, false, false);
+        } else {
+            for (int i = 0; i < n; i++) {
+                bool current = app->library
+                    && strcmp(rows[i].path, ap_library_root(app->library)) == 0;
+                const char *label_name = rows[i].name[0] ? rows[i].name
+                                                         : rows[i].path;
+                char label[8192];
+                snprintf(label, sizeof(label), "%s    %s",
+                         label_name, rows[i].path);
+                if (igMenuItem_Bool(label, NULL, current, true) && !current) {
+                    ap_app_open_library(app, rows[i].path);
+                }
+            }
+        }
+        igEndMenu();
+    }
+
+    igEndMainMenuBar();
+}
+
+static void draw_open_library_modal(ap_app *app)
+{
+    if (app->open_library_modal) {
+        igOpenPopup_Str("Open Library", 0);
+        app->open_library_modal = false;
+    }
+    if (!igBeginPopupModal("Open Library", NULL, 0)) return;
+
+    igText("Path to a directory holding raw photos:");
+    igInputText("##path", app->open_library_input,
+                sizeof(app->open_library_input), 0, NULL, NULL);
+
+    bool submit = igButton("Open", (ImVec2_c){ 120.0f, 0.0f });
+    igSameLine(0.0f, -1.0f);
+    bool cancel = igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f });
+
+    if (submit && app->open_library_input[0]) {
+        if (ap_app_open_library(app, app->open_library_input) == 0) {
+            app->open_library_input[0] = '\0';
+            igCloseCurrentPopup();
+        }
+    } else if (cancel) {
+        igCloseCurrentPopup();
+    }
+    igEndPopup();
+}
+
+static void draw_rename_library_modal(ap_app *app)
+{
+    if (app->rename_library_modal) {
+        igOpenPopup_Str("Rename Library", 0);
+        app->rename_library_modal = false;
+    }
+    if (!igBeginPopupModal("Rename Library", NULL, 0)) return;
+
+    if (!app->library) {
+        igCloseCurrentPopup();
+        igEndPopup();
+        return;
+    }
+
+    igText("Display name for this library:");
+    igText("(leave blank to clear and show the path)");
+    igInputText("##name", app->rename_library_input,
+                sizeof(app->rename_library_input), 0, NULL, NULL);
+
+    bool submit = igButton("Save", (ImVec2_c){ 120.0f, 0.0f });
+    igSameLine(0.0f, -1.0f);
+    bool cancel = igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f });
+
+    if (submit) {
+        ap_library_set_name(app->library, app->rename_library_input);
+        refresh_window_title(app);
+        igCloseCurrentPopup();
+    } else if (cancel) {
+        igCloseCurrentPopup();
+    }
+    igEndPopup();
+}
+
+static void drive_global_hotkeys(ap_app *app)
+{
+    ImGuiIO *io = igGetIO_Nil();
+    if (!io) return;
+
+    if (igIsKeyPressed_Bool(ImGuiKey_Tab, false) && !io->WantCaptureKeyboard) {
+        app->show_panels = !app->show_panels;
+    }
+    if (igIsKeyPressed_Bool(ImGuiKey_F11, false)) {
+        ap_gpu_toggle_fullscreen(app->gpu);
+    }
+    if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_Q, false)) {
+        app->quit_requested = true;
+    }
+    if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_E, false) && app->photo) {
+        trigger_quick_export(app);
+    }
+}
+
+// ----------------------------------------------------------------------
 
 static void draw_loading_overlay(ap_app *app)
 {
@@ -661,11 +922,18 @@ int ap_app_run_frame(ap_app *app)
 
     ap_imgui_new_frame();
 
-    for (const ap_panel *const *p = ap_panel_registry; *p; p++) {
-        const ap_panel *panel = *p;
-        if (panel->mode == AP_MODE_ANY || panel->mode == app->mode) {
-            if (panel->draw) {
-                panel->draw(app);
+    draw_menubar(app);
+    draw_open_library_modal(app);
+    draw_rename_library_modal(app);
+    drive_global_hotkeys(app);
+
+    if (app->show_panels) {
+        for (const ap_panel *const *p = ap_panel_registry; *p; p++) {
+            const ap_panel *panel = *p;
+            if (panel->mode == AP_MODE_ANY || panel->mode == app->mode) {
+                if (panel->draw) {
+                    panel->draw(app);
+                }
             }
         }
     }
