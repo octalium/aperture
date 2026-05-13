@@ -49,7 +49,10 @@ static const char *read_string(toml_table_t *t, const char *key)
     return v.ok ? v.u.s : NULL;
 }
 
-// Migrate a v1 sidecar's flat edit fields into stack entries.
+// Migrate a v1 sidecar's flat edit fields into stack entries. v1
+// implicitly applied demosaic + WB / color matrix as transport; v2
+// surfaces those as Demosaic + Color in the stack, so we prepend
+// them on top of the user-tunable Exposure + Tone.
 static void load_v1_edit_table(toml_table_t *edit_tbl, ap_edit_stack *stack,
                                bool *respect_orientation)
 {
@@ -59,6 +62,9 @@ static void load_v1_edit_table(toml_table_t *edit_tbl, ap_edit_stack *stack,
     if (read_int(edit_tbl, "respect_orientation", &i) == 0 && respect_orientation) {
         *respect_orientation = i != 0;
     }
+
+    ap_edit_stack_add(stack, "demosaic");
+    ap_edit_stack_add(stack, "color");
 
     int exp_idx = ap_edit_stack_add(stack, "exposure");
     if (exp_idx >= 0) {
@@ -81,6 +87,9 @@ static void load_v2_edit_entry(toml_table_t *t, ap_edit_stack *stack)
 {
     const char *module_name = read_string(t, "module");
     if (!module_name) return;
+    // Drop legacy `encode` entries — Output Transfer is now appended
+    // automatically by the graph and isn't a user-stack entry.
+    if (strcmp(module_name, "encode") == 0) return;
     int idx = ap_edit_stack_add(stack, module_name);
     if (idx < 0) return;
     ap_edit_entry *e = ap_edit_stack_at(stack, idx);
@@ -157,6 +166,30 @@ int ap_sidecar_load(const char *source_path, ap_edit_stack *stack,
         for (int r = 0; r < nrows; r++) {
             toml_table_t *t = toml_table_at(arr, r);
             if (t) load_v2_edit_entry(t, stack);
+        }
+    }
+
+    // Legacy v2 sidecars (written before Demosaic + Color became
+    // user-visible stack entries) don't carry those entries. Prepend
+    // them so old photos still render correctly without forcing the
+    // user to add them manually.
+    bool has_demosaic = false, has_color = false;
+    for (int i = 0; i < stack->count; i++) {
+        if (strcmp(stack->entries[i].module_name, "demosaic") == 0) has_demosaic = true;
+        if (strcmp(stack->entries[i].module_name, "color")    == 0) has_color    = true;
+    }
+    if (!has_demosaic || !has_color) {
+        ap_edit_stack old = *stack;
+        ap_edit_stack_init(stack);
+        if (!has_demosaic) ap_edit_stack_add(stack, "demosaic");
+        if (!has_color)    ap_edit_stack_add(stack, "color");
+        for (int i = 0; i < old.count; i++) {
+            int new_idx = ap_edit_stack_add(stack, old.entries[i].module_name);
+            if (new_idx >= 0) {
+                ap_edit_entry *e = ap_edit_stack_at(stack, new_idx);
+                memcpy(e->params, old.entries[i].params, sizeof(e->params));
+                e->enabled = old.entries[i].enabled;
+            }
         }
     }
 

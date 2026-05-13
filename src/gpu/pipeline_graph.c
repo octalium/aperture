@@ -424,25 +424,19 @@ ap_pipeline_graph *ap_pipeline_graph_create(ap_gpu *g, ap_texture *input,
         return NULL;
     }
 
-    // Resolve transport modules once; bail clearly if the registry's
-    // missing one of them.
-    const ap_module *m_demosaic = ap_module_find("demosaic");
-    const ap_module *m_encode   = ap_module_find("encode");
-    if (!m_demosaic || !m_encode) {
-        AP_ERROR("ap_pipeline_graph_create: transport modules missing");
+    // Only Output Transfer is auto-appended by the graph; every other
+    // module (including Demosaic and Color) is a regular user-visible
+    // entry on the stack. The default-pipeline seed puts the baseline
+    // modules in the stack on a fresh photo open.
+    const ap_module *m_out = ap_module_find("output_transfer");
+    if (!m_out) {
+        AP_ERROR("ap_pipeline_graph_create: output_transfer module missing");
         return NULL;
     }
 
-    // Build the stage list: demosaic, then each enabled user entry
-    // (resolved + sanity-checked), then encode. Track each user
-    // entry's index in the stack so record() can pull its params.
     const ap_module *chain_modules[MAX_MODULES];
     int              chain_entry_idx[MAX_MODULES];
     int              stage_count = 0;
-
-    chain_modules[stage_count]   = m_demosaic;
-    chain_entry_idx[stage_count] = -1;
-    stage_count++;
 
     int n = stack ? ap_edit_stack_count(stack) : 0;
     for (int i = 0; i < n; i++) {
@@ -463,7 +457,7 @@ ap_pipeline_graph *ap_pipeline_graph_create(ap_gpu *g, ap_texture *input,
         stage_count++;
     }
 
-    chain_modules[stage_count]   = m_encode;
+    chain_modules[stage_count]   = m_out;
     chain_entry_idx[stage_count] = -1;
     stage_count++;
 

@@ -3,15 +3,17 @@
 #include <string.h>
 
 extern const ap_module module_demosaic;
+extern const ap_module module_color;
 extern const ap_module module_exposure;
 extern const ap_module module_tone;
-extern const ap_module module_encode;
+extern const ap_module module_output_transfer;
 
 const ap_module *const ap_module_registry[] = {
     &module_demosaic,
+    &module_color,
     &module_exposure,
     &module_tone,
-    &module_encode,
+    &module_output_transfer,
     NULL,
 };
 

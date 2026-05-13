@@ -82,7 +82,9 @@ static void backfill_name_column(sqlite3 *reg)
 // ap_module_find when a photo opens. Kept as a single TEXT column
 // rather than a join table for v1 simplicity.
 static const char *DEFAULT_PIPELINE_NAME    = "default";
-static const char *DEFAULT_PIPELINE_MODULES = "demosaic,exposure,tone,encode";
+// Baseline edits for a fresh photo. Output Transfer is auto-appended
+// by the pipeline graph; everything else is on the user-facing stack.
+static const char *DEFAULT_PIPELINE_MODULES = "demosaic,color";
 
 static int gen_uuid_v4(char buf[37])
 {
@@ -113,9 +115,13 @@ static int gen_uuid_v4(char buf[37])
 
 static int seed_default_pipeline(sqlite3 *reg)
 {
+    // Always overwrite the default row. The default reflects the
+    // current build's baseline edits; user-defined pipelines (when we
+    // add them) will live under different names.
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(reg,
-            "INSERT OR IGNORE INTO pipelines(name, modules) VALUES (?, ?);",
+            "INSERT INTO pipelines(name, modules) VALUES (?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET modules = excluded.modules;",
             -1, &stmt, NULL) != SQLITE_OK) {
         AP_ERROR("registry: prepare seed: %s", sqlite3_errmsg(reg));
         return -1;

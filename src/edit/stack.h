@@ -24,6 +24,8 @@ typedef struct {
     char  module_name[AP_EDIT_NAME_LEN];
     float params[AP_EDIT_PARAMS_SLOTS];
     bool  enabled;
+    bool  show_config;   // UI-only, not persisted: is the config
+                         // window visible for this entry?
 } ap_edit_entry;
 
 typedef struct ap_edit_stack {
