@@ -34,6 +34,10 @@ struct ap_gpu {
     GLFWwindow *window;
     bool framebuffer_resized;
 
+    bool window_fullscreen;
+    int  windowed_x, windowed_y;
+    int  windowed_w, windowed_h;
+
     VkInstance instance;
     VkDebugUtilsMessengerEXT debug_messenger;
 

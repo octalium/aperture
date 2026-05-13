@@ -32,6 +32,10 @@ void ap_gpu_set_grid(ap_gpu *g, ap_grid *grid);
 
 void ap_gpu_set_window_title(ap_gpu *g, const char *title);
 
+// Toggle borderless fullscreen on the monitor the window currently
+// sits on. Windowed geometry is remembered across the toggle.
+void ap_gpu_toggle_fullscreen(ap_gpu *g);
+
 #ifdef __cplusplus
 }
 #endif

@@ -762,6 +762,9 @@ static void draw_menubar(ap_app *app)
         if (igMenuItem_BoolPtr("Show Panels", "Tab", &show, true)) {
             app->show_panels = show;
         }
+        if (igMenuItem_Bool("Fullscreen", "F11", false, true)) {
+            ap_gpu_toggle_fullscreen(app->gpu);
+        }
         igEndMenu();
     }
 
@@ -883,6 +886,9 @@ static void drive_global_hotkeys(ap_app *app)
 
     if (igIsKeyPressed_Bool(ImGuiKey_Tab, false) && !io->WantCaptureKeyboard) {
         app->show_panels = !app->show_panels;
+    }
+    if (igIsKeyPressed_Bool(ImGuiKey_F11, false)) {
+        ap_gpu_toggle_fullscreen(app->gpu);
     }
     if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_Q, false)) {
         app->quit_requested = true;
