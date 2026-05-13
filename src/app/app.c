@@ -602,8 +602,8 @@ static void drive_grid_input(ap_app *app)
                                win_w, win_h);
     }
 
-    if (igIsKeyPressed_Bool(ImGuiKey_Enter, false) ||
-        igIsKeyPressed_Bool(ImGuiKey_Space, false)) {
+    if (!io->KeyCtrl && (igIsKeyPressed_Bool(ImGuiKey_Enter, false) ||
+                         igIsKeyPressed_Bool(ImGuiKey_Space, false))) {
         open_selected_photo(app);
     }
 }
@@ -867,7 +867,7 @@ static void draw_menubar(ap_app *app)
 
     if (igBeginMenu("View", true)) {
         bool show = app->show_panels;
-        if (igMenuItem_BoolPtr("Show Panels", "Tab", &show, true)) {
+        if (igMenuItem_BoolPtr("Show Panels", "Ctrl+Space", &show, true)) {
             app->show_panels = show;
         }
         if (igMenuItem_Bool("Fullscreen", "F11",
@@ -1000,7 +1000,10 @@ static void drive_global_hotkeys(ap_app *app)
     ImGuiIO *io = igGetIO_Nil();
     if (!io) return;
 
-    if (igIsKeyPressed_Bool(ImGuiKey_Tab, false) && !io->WantCaptureKeyboard) {
+    // Ctrl+Space toggles panel visibility. Ctrl-modified so it
+    // doesn't conflict with widget focus / text input, and doesn't
+    // need the WantCaptureKeyboard guard the way bare Tab did.
+    if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_Space, false)) {
         app->show_panels = !app->show_panels;
     }
     if (igIsKeyPressed_Bool(ImGuiKey_F11, false)) {
