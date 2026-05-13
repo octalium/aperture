@@ -85,13 +85,13 @@ static void image_barrier(VkCommandBuffer cmd, VkImage image,
 }
 
 static int record_frame(struct ap_gpu *g, VkCommandBuffer cmd,
-                        uint32_t image_index, const ap_edit_state *edit)
+                        uint32_t image_index, const ap_edit_stack *stack)
 {
     VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     VK_CHECK(vkBeginCommandBuffer(cmd, &bi));
 
     if (g->current_graph) {
-        ap_pipeline_graph_record(g->current_graph, cmd, edit);
+        ap_pipeline_graph_record(g->current_graph, cmd, stack);
     }
 
     VkImage target  = g->swapchain_images[image_index].image;
@@ -143,7 +143,7 @@ static int record_frame(struct ap_gpu *g, VkCommandBuffer cmd,
     return 0;
 }
 
-int gpu_frame_render(struct ap_gpu *g, const ap_edit_state *edit)
+int gpu_frame_render(struct ap_gpu *g, const ap_edit_stack *stack)
 {
     gpu_frame *f = &g->frames[g->current_frame];
 
@@ -170,7 +170,7 @@ int gpu_frame_render(struct ap_gpu *g, const ap_edit_state *edit)
     VK_CHECK(vkResetFences(g->device, 1, &f->in_flight));
     VK_CHECK(vkResetCommandBuffer(f->cmd, 0));
 
-    if (record_frame(g, f->cmd, image_index, edit) < 0) {
+    if (record_frame(g, f->cmd, image_index, stack) < 0) {
         return -1;
     }
 

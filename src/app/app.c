@@ -365,6 +365,11 @@ ap_photo *ap_app_photo(ap_app *app)
     return app ? app->photo : NULL;
 }
 
+ap_canvas *ap_app_canvas(ap_app *app)
+{
+    return app ? app->canvas : NULL;
+}
+
 bool ap_app_photo_loading(const ap_app *app)
 {
     return app ? app->photo_loading : false;
@@ -1099,9 +1104,9 @@ int ap_app_run_frame(ap_app *app)
     drain_one_completed_job(app);
     draw_loading_overlay(app);
 
-    const ap_edit_state *edit = NULL;
+    const ap_edit_stack *stack = NULL;
     if (app->photo) {
-        edit = ap_photo_edit(app->photo);
+        stack = ap_photo_stack(app->photo);
     }
-    return ap_gpu_render_frame(app->gpu, edit);
+    return ap_gpu_render_frame(app->gpu, stack);
 }

@@ -17,10 +17,18 @@ struct ap_photo {
     int width;
     int height;
 
+    // Pre-graph state used to rebuild the graph after a stack change.
+    int             sensor_w;
+    int             sensor_h;
+    int             display_w;     // post-orientation display dims
+    int             display_h;
+    ap_raw_metadata meta;
+
     ap_texture        *texture;
     ap_pipeline_graph *graph;
 
-    ap_edit_state edit;
+    ap_edit_stack stack;
+    bool          respect_orientation;
 };
 
 static char *strdup_or_null(const char *s)
@@ -31,6 +39,55 @@ static char *strdup_or_null(const char *s)
     if (!out) return NULL;
     memcpy(out, s, n + 1);
     return out;
+}
+
+// Build the pipeline graph from photo->stack with current orientation
+// + meta + dims. Photo holds enough cached state that this can run
+// at any time after the texture has been uploaded.
+static int rebuild_graph(ap_photo *photo)
+{
+    if (!photo) return -1;
+
+    int output_w, output_h;
+    ap_raw_metadata graph_meta = photo->meta;
+    if (photo->respect_orientation) {
+        output_w = photo->display_w;
+        output_h = photo->display_h;
+    } else {
+        output_w = photo->sensor_w;
+        output_h = photo->sensor_h;
+        graph_meta.flip = 0;
+    }
+    photo->width  = output_w;
+    photo->height = output_h;
+
+    if (photo->graph) {
+        ap_pipeline_graph_destroy(photo->graph);
+        photo->graph = NULL;
+    }
+    photo->graph = ap_pipeline_graph_create(photo->gpu, photo->texture,
+                                            output_w, output_h,
+                                            &photo->stack,
+                                            &graph_meta);
+    if (!photo->graph) {
+        AP_ERROR("photo: graph build failed for %s", photo->path);
+        return -1;
+    }
+    return 0;
+}
+
+// Seed the stack with the entries from the registry's default
+// pipeline, skipping any transport modules (demosaic / encode) that
+// the graph manages itself.
+static void seed_stack_from_default(ap_edit_stack *stack)
+{
+    ap_pipeline_def def;
+    if (ap_pipeline_get_default(&def) != 0) return;
+    for (int i = 0; i < def.module_count; i++) {
+        const ap_module *m = ap_module_find(def.modules[i]);
+        if (!m || !m->user_visible) continue;
+        ap_edit_stack_add(stack, def.modules[i]);
+    }
 }
 
 ap_photo *ap_photo_open_with_raw(ap_gpu *g, const char *path,
@@ -56,14 +113,15 @@ ap_photo *ap_photo_open_with_raw(ap_gpu *g, const char *path,
         free(photo);
         return NULL;
     }
-    photo->edit = (ap_edit_state){
-        .exposure_ev         = 0.0f,
-        .tone_contrast       = 1.0f,
-        .tone_pivot          = 0.18f,
-        .respect_orientation = 1,
-    };
-    if (ap_sidecar_load_edit(path, &photo->edit) == 0) {
+    photo->respect_orientation = true;
+    ap_edit_stack_init(&photo->stack);
+
+    if (ap_sidecar_load(path, &photo->stack, &photo->respect_orientation) == 0) {
         AP_INFO("photo: loaded sidecar for %s", path);
+    } else {
+        // First open of this photo (or schema mismatch). Seed the
+        // stack from the registry's default pipeline.
+        seed_stack_from_default(&photo->stack);
     }
 
     photo->texture = ap_texture_create_r16(g, raw->bayer,
@@ -73,46 +131,16 @@ ap_photo *ap_photo_open_with_raw(ap_gpu *g, const char *path,
         goto fail;
     }
 
-    // Display dims default to the post-orientation size. When the
-    // user has turned EXIF orientation off for this photo, the
-    // pipeline graph runs at sensor dims with the demosaic flip
-    // forced to 0. The input texture is always at sensor dims.
-    int output_w = raw->width;
-    int output_h = raw->height;
-    ap_raw_metadata graph_meta = raw->meta;
-    if (!photo->edit.respect_orientation) {
-        output_w = raw->bayer_width;
-        output_h = raw->bayer_height;
-        graph_meta.flip = 0;
-    }
-    photo->width  = output_w;
-    photo->height = output_h;
-
-    ap_pipeline_def def;
-    if (ap_pipeline_get_default(&def) != 0 || def.module_count <= 0) {
-        AP_ERROR("photo: no default pipeline available");
-        ap_raw_image_free(raw);
-        goto fail;
-    }
-    const ap_module *chain[AP_PIPELINE_MAX_MODULES] = {0};
-    for (int i = 0; i < def.module_count; i++) {
-        chain[i] = ap_module_find(def.modules[i]);
-        if (!chain[i]) {
-            AP_ERROR("photo: pipeline '%s' references unknown module '%s'",
-                     def.name, def.modules[i]);
-            ap_raw_image_free(raw);
-            goto fail;
-        }
-    }
-    photo->graph = ap_pipeline_graph_create(g, photo->texture,
-                                            output_w, output_h,
-                                            chain, def.module_count,
-                                            &graph_meta);
+    photo->sensor_w  = raw->bayer_width;
+    photo->sensor_h  = raw->bayer_height;
+    photo->display_w = raw->width;
+    photo->display_h = raw->height;
+    photo->meta      = raw->meta;
     ap_raw_image_free(raw);
-    if (!photo->graph) {
+
+    if (rebuild_graph(photo) < 0) {
         goto fail;
     }
-
     return photo;
 
 fail:
@@ -139,7 +167,8 @@ void ap_photo_close(ap_photo *photo)
 
     // Persist current edit state before tearing down.
     if (photo->path) {
-        if (ap_sidecar_save_edit(photo->path, &photo->edit) != 0) {
+        if (ap_sidecar_save(photo->path, &photo->stack,
+                            photo->respect_orientation) != 0) {
             AP_WARN("photo: failed to save sidecar for %s", photo->path);
         }
     }
@@ -156,9 +185,24 @@ void ap_photo_close(ap_photo *photo)
     free(photo);
 }
 
+int ap_photo_rebuild_graph(ap_photo *photo)
+{
+    return rebuild_graph(photo);
+}
+
 ap_pipeline_graph *ap_photo_graph(ap_photo *photo) { return photo->graph; }
-ap_edit_state     *ap_photo_edit(ap_photo *photo)  { return &photo->edit; }
+ap_edit_stack     *ap_photo_stack(ap_photo *photo) { return &photo->stack; }
 int                ap_photo_width(const ap_photo *photo)   { return photo->width; }
 int                ap_photo_height(const ap_photo *photo)  { return photo->height; }
 const char        *ap_photo_path(const ap_photo *photo)    { return photo->path; }
 
+bool ap_photo_respect_orientation(const ap_photo *photo)
+{
+    return photo ? photo->respect_orientation : true;
+}
+
+void ap_photo_set_respect_orientation(ap_photo *photo, bool yes)
+{
+    if (!photo) return;
+    photo->respect_orientation = yes;
+}

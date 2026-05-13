@@ -9,12 +9,12 @@ typedef struct {
 } encode_push_t;
 
 static int encode_pack_push(const ap_module *self,
-                            const ap_edit_state *edit,
+                            const float *params,
                             const ap_raw_metadata *meta,
                             void *push_out)
 {
     (void)self;
-    (void)edit;
+    (void)params;
     (void)meta;
     encode_push_t *pc = push_out;
     pc->transfer_function = TRANSFER_SRGB;
@@ -22,11 +22,12 @@ static int encode_pack_push(const ap_module *self,
 }
 
 const ap_module module_encode = {
-    .name         = "encode",
-    .display_name = "Output Transfer",
-    .category     = AP_MODULE_OUTPUT_TRANSFER,
-    .spv_data     = encode_comp_spv,
-    .spv_size     = encode_comp_spv_size,
-    .push_size    = sizeof(encode_push_t),
-    .pack_push    = encode_pack_push,
+    .name           = "encode",
+    .display_name   = "Output Transfer",
+    .category       = AP_MODULE_OUTPUT_TRANSFER,
+    .user_visible   = false,
+    .spv_data       = encode_comp_spv,
+    .spv_size       = encode_comp_spv_size,
+    .push_size      = sizeof(encode_push_t),
+    .pack_push      = encode_pack_push,
 };

@@ -4,6 +4,7 @@ aperture_sources += files(
 
 subdir('app')
 subdir('core')
+subdir('edit')
 subdir('gpu')
 subdir('io')
 subdir('library')

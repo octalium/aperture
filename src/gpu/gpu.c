@@ -104,9 +104,9 @@ bool ap_gpu_should_run(ap_gpu *g)
     return !glfwWindowShouldClose(g->window);
 }
 
-int ap_gpu_render_frame(ap_gpu *g, const ap_edit_state *edit)
+int ap_gpu_render_frame(ap_gpu *g, const ap_edit_stack *stack)
 {
-    return gpu_frame_render(g, edit);
+    return gpu_frame_render(g, stack);
 }
 
 void ap_gpu_set_graph(ap_gpu *g, ap_pipeline_graph *graph)

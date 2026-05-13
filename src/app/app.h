@@ -46,6 +46,11 @@ void      ap_app_close_photo(ap_app *app);
 ap_photo *ap_app_photo(ap_app *app);
 bool      ap_app_photo_loading(const ap_app *app);
 
+// Loupe canvas. Panels need it to rebind after a pipeline-graph
+// rebuild (the new graph has different output VkImageView / sampler).
+typedef struct ap_canvas ap_canvas;
+ap_canvas *ap_app_canvas(ap_app *app);
+
 // Synchronous GPU readback + asynchronous JPEG encode+write. Returns
 // 0 if the readback succeeded and the encode job was queued.
 int       ap_app_request_jpeg_export(ap_app *app, ap_photo *photo,

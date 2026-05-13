@@ -5,6 +5,7 @@
 
 #include <vulkan/vulkan.h>
 
+#include "edit/stack.h"
 #include "gpu/gpu.h"
 #include "gpu/texture.h"
 #include "io/raw.h"
@@ -19,15 +20,16 @@ typedef struct ap_pipeline_graph ap_pipeline_graph;
 // gpu-layer file. Callers include modules/module.h to get the full type.
 typedef struct ap_module ap_module;
 
-// Construct a graph wired to the given input texture, dispatching the
-// supplied modules in order. Allocates the float16 ping-pong working
-// buffers and the UNORM display image at `output_width × output_height`,
-// which may differ from the input texture's dimensions (e.g. when the
-// first stage applies an EXIF orientation rotation). Dispatch dims are
-// always the output dims; module shaders that need the input dims are
-// expected to pull them from the metadata. Wires each module's
-// descriptor set by ping-pong position: first reads input, last writes
-// display, middle modules alternate between the two working buffers.
+// Construct a graph from the photo's edit stack. The graph runs:
+//   [demosaic] + (enabled user-visible stack entries in order) + [encode]
+// where the transport modules (demosaic, encode) are inserted by the
+// graph itself, not the user. Disabled entries are skipped at build
+// time so they consume neither dispatch nor working memory.
+//
+// Allocates the float16 ping-pong working buffers and the UNORM display
+// image at `output_width × output_height`, which may differ from the
+// input texture's dimensions (e.g. when the first stage applies an
+// EXIF orientation rotation).
 //
 // `meta` is per-image static metadata (camera color matrix, black
 // levels, sensor dims, flip code, etc.) - copied into the graph at
@@ -37,15 +39,15 @@ ap_pipeline_graph *ap_pipeline_graph_create(ap_gpu *g,
                                             ap_texture *input,
                                             int output_width,
                                             int output_height,
-                                            const ap_module *const *modules,
-                                            int module_count,
+                                            const ap_edit_stack *stack,
                                             const ap_raw_metadata *meta);
 void ap_pipeline_graph_destroy(ap_pipeline_graph *graph);
 
-// Records the full chain for one frame. Each module's pack_push runs
-// against `edit`, then a dispatch + a barrier.
+// Records the full chain for one frame. Each module's pack_push gets
+// the parameter slots of the edit-stack entry that scheduled it
+// (NULL for transport modules), then a dispatch + a barrier.
 int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
-                             const ap_edit_state *edit);
+                             const ap_edit_stack *stack);
 
 // Copy the current display image (final stage's output) into a CPU
 // buffer. `out_pixels` must hold at least `output_width * output_height

@@ -16,12 +16,12 @@ typedef struct {
 } demosaic_push_t;
 
 static int demosaic_pack_push(const ap_module *self,
-                              const ap_edit_state *edit,
+                              const float *params,
                               const ap_raw_metadata *meta,
                               void *push_out)
 {
     (void)self;
-    (void)edit;
+    (void)params;
     if (!meta) {
         return -1; // signal "skip" - no metadata, no demosaic.
     }
@@ -53,6 +53,7 @@ const ap_module module_demosaic = {
     .name         = "demosaic",
     .display_name = "Demosaic",
     .category     = AP_MODULE_COLOR,
+    .user_visible = false,
     .spv_data     = demosaic_comp_spv,
     .spv_size     = demosaic_comp_spv_size,
     .push_size    = sizeof(demosaic_push_t),
