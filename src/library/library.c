@@ -51,7 +51,18 @@ static const char *REGISTRY_SCHEMA_SQL =
     "    id         TEXT PRIMARY KEY,"
     "    path       TEXT NOT NULL UNIQUE,"
     "    created_at INTEGER NOT NULL"
+    ");"
+    "CREATE TABLE IF NOT EXISTS pipelines ("
+    "    id      INTEGER PRIMARY KEY,"
+    "    name    TEXT NOT NULL UNIQUE,"
+    "    modules TEXT NOT NULL"
     ");";
+
+// Comma-separated module names — order matters; resolved via
+// ap_module_find when a photo opens. Kept as a single TEXT column
+// rather than a join table for v1 simplicity.
+static const char *DEFAULT_PIPELINE_NAME    = "default";
+static const char *DEFAULT_PIPELINE_MODULES = "demosaic,exposure,tone,encode";
 
 static int gen_uuid_v4(char buf[37])
 {
@@ -80,6 +91,26 @@ static int gen_uuid_v4(char buf[37])
     return 0;
 }
 
+static int seed_default_pipeline(sqlite3 *reg)
+{
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(reg,
+            "INSERT OR IGNORE INTO pipelines(name, modules) VALUES (?, ?);",
+            -1, &stmt, NULL) != SQLITE_OK) {
+        AP_ERROR("registry: prepare seed: %s", sqlite3_errmsg(reg));
+        return -1;
+    }
+    sqlite3_bind_text(stmt, 1, DEFAULT_PIPELINE_NAME,    -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, DEFAULT_PIPELINE_MODULES, -1, SQLITE_STATIC);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        AP_ERROR("registry: seed default pipeline: %s", sqlite3_errstr(rc));
+        return -1;
+    }
+    return 0;
+}
+
 static int registry_open(sqlite3 **out_db)
 {
     if (ap_app_root_ensure() < 0) return -1;
@@ -100,6 +131,11 @@ static int registry_open(sqlite3 **out_db)
     if (sqlite3_exec(reg, REGISTRY_SCHEMA_SQL, NULL, NULL, &err) != SQLITE_OK) {
         AP_ERROR("registry: schema: %s", err ? err : "(no message)");
         sqlite3_free(err);
+        sqlite3_close(reg);
+        return -1;
+    }
+
+    if (seed_default_pipeline(reg) < 0) {
         sqlite3_close(reg);
         return -1;
     }
@@ -162,6 +198,75 @@ static int registry_resolve_id(const char *abs_path, char id_out[37])
     }
     AP_INFO("library: registered new id %s for %s", id_out, abs_path);
     return 0;
+}
+
+static int parse_module_list(const char *src, ap_pipeline_def *out)
+{
+    out->module_count = 0;
+    int slot = 0;
+    int col  = 0;
+    for (const char *p = src; ; p++) {
+        if (*p == ',' || *p == '\0') {
+            if (slot >= AP_PIPELINE_MAX_MODULES) {
+                AP_ERROR("pipeline: too many modules (max %d)",
+                         AP_PIPELINE_MAX_MODULES);
+                return -1;
+            }
+            if (col >= AP_PIPELINE_MODULE_LEN) {
+                AP_ERROR("pipeline: module name too long (max %d)",
+                         AP_PIPELINE_MODULE_LEN - 1);
+                return -1;
+            }
+            out->modules[slot][col] = '\0';
+            if (col > 0) slot++;
+            col = 0;
+            if (*p == '\0') break;
+        } else {
+            if (col + 1 >= AP_PIPELINE_MODULE_LEN) {
+                AP_ERROR("pipeline: module name too long (max %d)",
+                         AP_PIPELINE_MODULE_LEN - 1);
+                return -1;
+            }
+            out->modules[slot][col++] = *p;
+        }
+    }
+    out->module_count = slot;
+    return 0;
+}
+
+int ap_pipeline_get_default(ap_pipeline_def *out)
+{
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+
+    sqlite3 *reg = NULL;
+    if (registry_open(&reg) < 0) return -1;
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(reg,
+            "SELECT id, name, modules FROM pipelines WHERE name = ?;",
+            -1, &stmt, NULL) != SQLITE_OK) {
+        AP_ERROR("pipeline: prepare select: %s", sqlite3_errmsg(reg));
+        sqlite3_close(reg);
+        return -1;
+    }
+    sqlite3_bind_text(stmt, 1, DEFAULT_PIPELINE_NAME, -1, SQLITE_STATIC);
+
+    int rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        AP_ERROR("pipeline: default missing after seed (%s)", sqlite3_errstr(rc));
+        sqlite3_finalize(stmt);
+        sqlite3_close(reg);
+        return -1;
+    }
+    out->id = sqlite3_column_int64(stmt, 0);
+    const char *name    = (const char *)sqlite3_column_text(stmt, 1);
+    const char *modules = (const char *)sqlite3_column_text(stmt, 2);
+    snprintf(out->name, sizeof(out->name), "%s", name ? name : "");
+    int parse_rc = modules ? parse_module_list(modules, out) : -1;
+    sqlite3_finalize(stmt);
+    sqlite3_close(reg);
+    return parse_rc;
 }
 
 int ap_registry_list(ap_registry_entry *out, int max)

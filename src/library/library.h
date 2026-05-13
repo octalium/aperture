@@ -23,6 +23,23 @@ typedef struct {
 // + schema if needed).
 int ap_registry_list(ap_registry_entry *out, int max);
 
+// ----- pipelines (app-wide, registry db) -----
+
+#define AP_PIPELINE_MAX_MODULES 16
+#define AP_PIPELINE_NAME_LEN    64
+#define AP_PIPELINE_MODULE_LEN  32
+
+typedef struct {
+    int64_t id;
+    char    name[AP_PIPELINE_NAME_LEN];
+    char    modules[AP_PIPELINE_MAX_MODULES][AP_PIPELINE_MODULE_LEN];
+    int     module_count;
+} ap_pipeline_def;
+
+// Fetch the app-wide default pipeline. The registry is created and
+// the default row seeded if either is missing. Returns 0 on success.
+int ap_pipeline_get_default(ap_pipeline_def *out);
+
 // Open a directory as a library:
 //   - Resolves `path` to an absolute root.
 //   - Opens or creates `<root>/library.aperture-db` (SQLite).

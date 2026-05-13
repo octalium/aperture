@@ -3,6 +3,7 @@
 #include "core/log.h"
 #include "gpu/texture.h"
 #include "io/raw.h"
+#include "library/library.h"
 #include "modules/module.h"
 #include "sidecar/sidecar.h"
 
@@ -87,16 +88,25 @@ ap_photo *ap_photo_open_with_raw(ap_gpu *g, const char *path,
     photo->width  = output_w;
     photo->height = output_h;
 
-    const ap_module *chain[] = {
-        ap_module_find("demosaic"),
-        ap_module_find("exposure"),
-        ap_module_find("tone"),
-        ap_module_find("encode"),
-    };
+    ap_pipeline_def def;
+    if (ap_pipeline_get_default(&def) != 0 || def.module_count <= 0) {
+        AP_ERROR("photo: no default pipeline available");
+        ap_raw_image_free(raw);
+        goto fail;
+    }
+    const ap_module *chain[AP_PIPELINE_MAX_MODULES] = {0};
+    for (int i = 0; i < def.module_count; i++) {
+        chain[i] = ap_module_find(def.modules[i]);
+        if (!chain[i]) {
+            AP_ERROR("photo: pipeline '%s' references unknown module '%s'",
+                     def.name, def.modules[i]);
+            ap_raw_image_free(raw);
+            goto fail;
+        }
+    }
     photo->graph = ap_pipeline_graph_create(g, photo->texture,
                                             output_w, output_h,
-                                            chain,
-                                            (int)(sizeof(chain) / sizeof(chain[0])),
+                                            chain, def.module_count,
                                             &graph_meta);
     ap_raw_image_free(raw);
     if (!photo->graph) {
