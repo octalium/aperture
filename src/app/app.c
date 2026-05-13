@@ -69,6 +69,11 @@ struct ap_app {
     ap_grid         *grid;
     ap_mode          mode;
     ap_photo        *photo;
+    int              photo_library_idx;   // library index of the photo
+                                          // currently shown in photo
+                                          // mode, or -1. Lets photo-mode
+                                          // arrow nav walk the library
+                                          // without mutating grid state.
     ap_library      *library;
     ap_worker_pool  *workers;
     int              thumb_inflight;
@@ -117,6 +122,7 @@ ap_app *ap_app_create(int width, int height, const char *title)
     }
     app->mode = AP_MODE_LIBRARY;
     app->show_panels = true;
+    app->photo_library_idx = -1;
 
     app->gpu = ap_gpu_create(width, height, title);
     if (!app->gpu) {
@@ -349,6 +355,7 @@ void ap_app_close_photo(ap_app *app)
     ap_gpu_set_graph(app->gpu, NULL);
     ap_photo_close(app->photo);
     app->photo = NULL;
+    app->photo_library_idx = -1;
     app->mode  = AP_MODE_LIBRARY;
     bind_mode_view(app);
 }
@@ -444,19 +451,22 @@ ap_library *ap_app_library(ap_app *app)
 
 static void navigate_library_relative(ap_app *app, int dir)
 {
-    if (!app->library || !app->grid) return;
+    // Walks the library list while staying in photo mode. The
+    // library's grid selection is intentionally untouched - it
+    // represents the user's earlier intent in library mode and
+    // should survive this navigation so backing out (Esc) puts
+    // them where they were.
+    if (!app->library) return;
     int n = ap_library_photo_count(app->library);
-    if (n <= 0) return;
-    int sel = ap_grid_selected(app->grid);
-    int new_sel = sel + dir;
-    if (new_sel < 0 || new_sel >= n) return;
-    ap_grid_set_selected(app->grid, new_sel);
+    if (n <= 0 || app->photo_library_idx < 0) return;
+    int new_idx = app->photo_library_idx + dir;
+    if (new_idx < 0 || new_idx >= n) return;
 
     char abs[4096];
-    if (ap_library_photo_absolute_path(app->library, new_sel,
-                                       abs, sizeof(abs)) == 0) {
-        ap_app_open_photo(app, abs);
-    }
+    if (ap_library_photo_absolute_path(app->library, new_idx,
+                                       abs, sizeof(abs)) != 0) return;
+    app->photo_library_idx = new_idx;
+    ap_app_open_photo(app, abs);
 }
 
 static void drive_canvas_input(ap_app *app)
@@ -518,6 +528,7 @@ static void open_selected_photo(ap_app *app)
         AP_ERROR("library: photo path overflow at idx %d", idx);
         return;
     }
+    app->photo_library_idx = idx;
     if (ap_app_open_photo(app, abs) != 0) {
         AP_ERROR("library: failed to open %s", abs);
     }
