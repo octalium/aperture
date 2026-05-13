@@ -50,6 +50,14 @@ void ap_photo_set_respect_orientation(ap_photo *photo, bool yes);
 // success; the photo's previous graph is destroyed first.
 int ap_photo_rebuild_graph(ap_photo *photo);
 
+// "View Raw" mode: when on, the graph is rebuilt with an empty
+// stack — every user edit is bypassed and only the raw_passthrough
+// stage runs, showing the Bayer plane as grayscale. The user's
+// stack data is preserved; toggling off restores the rendered
+// view.
+bool ap_photo_view_raw(const ap_photo *photo);
+void ap_photo_set_view_raw(ap_photo *photo, bool yes);
+
 int         ap_photo_width(const ap_photo *photo);
 int         ap_photo_height(const ap_photo *photo);
 const char *ap_photo_path(const ap_photo *photo);

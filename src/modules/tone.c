@@ -29,10 +29,15 @@ static int tone_pack_push(const ap_module *self,
 
 static void tone_render(const ap_module *self, float *params)
 {
-    (void)self;
     if (!params) return;
     igSliderFloat("Contrast", &params[SLOT_CONTRAST], 0.5f,  4.0f, "%.2f", 0);
+    if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
+        params[SLOT_CONTRAST] = self->params_default[SLOT_CONTRAST];
+    }
     igSliderFloat("Pivot",    &params[SLOT_PIVOT],    0.05f, 0.5f, "%.3f", 0);
+    if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
+        params[SLOT_PIVOT] = self->params_default[SLOT_PIVOT];
+    }
 }
 
 const ap_module module_tone = {

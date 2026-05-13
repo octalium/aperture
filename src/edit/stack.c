@@ -107,3 +107,64 @@ int ap_edit_stack_focus(const ap_edit_stack *s)
 {
     return s ? s->focus : -1;
 }
+
+int ap_edit_stack_reset(ap_edit_stack *s, int idx)
+{
+    if (!s || idx < 0 || idx >= s->count) return -1;
+    ap_edit_entry *e = &s->entries[idx];
+    const ap_module *m = ap_module_find(e->module_name);
+    if (!m) return -1;
+    memset(e->params, 0, sizeof(e->params));
+    int n = m->params_count;
+    if (n > AP_EDIT_PARAMS_SLOTS) n = AP_EDIT_PARAMS_SLOTS;
+    if (m->params_default && n > 0) {
+        memcpy(e->params, m->params_default, (size_t)n * sizeof(float));
+    }
+    return 0;
+}
+
+const char *ap_edit_stack_label_at(const ap_edit_stack *s, int idx,
+                                   char *buf, size_t buflen)
+{
+    if (!s || idx < 0 || idx >= s->count || !buf || buflen == 0) {
+        if (buf && buflen > 0) buf[0] = '\0';
+        return buf;
+    }
+    const ap_edit_entry *e = &s->entries[idx];
+    if (e->display_name[0]) {
+        snprintf(buf, buflen, "%s", e->display_name);
+        return buf;
+    }
+    const ap_module *m = ap_module_find(e->module_name);
+    const char *base = m ? m->display_name : e->module_name;
+
+    // Auto-suffix when the module appears more than once on the stack.
+    int n_before = 0;
+    int n_total  = 0;
+    for (int i = 0; i < s->count; i++) {
+        if (s->entries[i].display_name[0]) continue;
+        if (strcmp(s->entries[i].module_name, e->module_name) == 0) {
+            if (i < idx) n_before++;
+            n_total++;
+        }
+    }
+    if (n_total <= 1) {
+        snprintf(buf, buflen, "%s", base);
+    } else {
+        snprintf(buf, buflen, "%s %d", base, n_before + 1);
+    }
+    return buf;
+}
+
+bool ap_edit_stack_name_unique(const ap_edit_stack *s, const char *candidate,
+                               int ignore_idx)
+{
+    if (!s || !candidate || !*candidate) return false;
+    char buf[AP_EDIT_DISPLAY_LEN];
+    for (int i = 0; i < s->count; i++) {
+        if (i == ignore_idx) continue;
+        const char *label = ap_edit_stack_label_at(s, i, buf, sizeof(buf));
+        if (label && strcmp(label, candidate) == 0) return false;
+    }
+    return true;
+}

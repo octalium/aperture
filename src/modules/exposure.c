@@ -27,9 +27,11 @@ static int exposure_pack_push(const ap_module *self,
 
 static void exposure_render(const ap_module *self, float *params)
 {
-    (void)self;
     if (!params) return;
     igSliderFloat("EV", &params[SLOT_EV], -5.0f, 5.0f, "%.2f", 0);
+    if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
+        params[SLOT_EV] = self->params_default[SLOT_EV];
+    }
 }
 
 const ap_module module_exposure = {

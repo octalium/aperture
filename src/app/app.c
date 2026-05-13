@@ -883,6 +883,20 @@ static void draw_menubar(ap_app *app)
         if (igMenuItem_Bool("Reset Cell Zoom", "Ctrl+0", false, true)) {
             ap_grid_reset_cell_size(app->grid);
         }
+        if (app->photo) {
+            bool view_raw = ap_photo_view_raw(app->photo);
+            if (igMenuItem_Bool("View Raw", "`", view_raw, true)) {
+                ap_photo_set_view_raw(app->photo, !view_raw);
+                ap_app_wait_idle(app);
+                ap_photo_rebuild_graph(app->photo);
+                ap_pipeline_graph *graph = ap_photo_graph(app->photo);
+                ap_canvas_set_input(app->canvas,
+                                    ap_pipeline_graph_output_view(graph),
+                                    ap_pipeline_graph_output_sampler(graph),
+                                    ap_pipeline_graph_output_width(graph),
+                                    ap_pipeline_graph_output_height(graph));
+            }
+        }
         igEndMenu();
     }
 
@@ -1020,6 +1034,18 @@ static void drive_global_hotkeys(ap_app *app)
     if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_E, false) && app->photo) {
         trigger_quick_export(app);
     }
+    if (igIsKeyPressed_Bool(ImGuiKey_GraveAccent, false) && app->photo
+        && !io->WantCaptureKeyboard) {
+        ap_photo_set_view_raw(app->photo, !ap_photo_view_raw(app->photo));
+        ap_app_wait_idle(app);
+        ap_photo_rebuild_graph(app->photo);
+        ap_pipeline_graph *graph = ap_photo_graph(app->photo);
+        ap_canvas_set_input(app->canvas,
+                            ap_pipeline_graph_output_view(graph),
+                            ap_pipeline_graph_output_sampler(graph),
+                            ap_pipeline_graph_output_width(graph),
+                            ap_pipeline_graph_output_height(graph));
+    }
     if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_0, false)) {
         if (app->mode == AP_MODE_PHOTO) {
             ap_canvas_reset_view(app->canvas);
@@ -1121,17 +1147,30 @@ int ap_app_run_frame(ap_app *app)
                                  ImGuiDockNodeFlags_DockSpace);
             igDockBuilderSetNodeSize(dockspace_id, vp->WorkSize);
 
-            ImGuiID right = 0, center = 0;
-            ImGuiID left  = igDockBuilderSplitNode(dockspace_id,
-                                                   ImGuiDir_Left, 0.18f,
-                                                   NULL, &center);
-            right         = igDockBuilderSplitNode(center,
-                                                   ImGuiDir_Right, 0.25f,
-                                                   NULL, &center);
+            // Left column: Image (top), Histogram (bottom).
+            // Right column: Tools (top), Edits (bottom).
+            // Center stays empty so the canvas / grid render through.
+            ImGuiID center = 0;
+            ImGuiID left   = igDockBuilderSplitNode(dockspace_id,
+                                                    ImGuiDir_Left, 0.18f,
+                                                    NULL, &center);
+            ImGuiID right  = igDockBuilderSplitNode(center,
+                                                    ImGuiDir_Right, 0.25f,
+                                                    NULL, &center);
 
-            igDockBuilderDockWindow("Image", left);
-            igDockBuilderDockWindow("Edits", right);
-            igDockBuilderDockWindow("Tools", right);
+            ImGuiID left_bot  = 0;
+            ImGuiID left_top  = igDockBuilderSplitNode(left,
+                                                       ImGuiDir_Up, 0.55f,
+                                                       NULL, &left_bot);
+            ImGuiID right_bot = 0;
+            ImGuiID right_top = igDockBuilderSplitNode(right,
+                                                       ImGuiDir_Up, 0.45f,
+                                                       NULL, &right_bot);
+
+            igDockBuilderDockWindow("Image",     left_top);
+            igDockBuilderDockWindow("Histogram", left_bot);
+            igDockBuilderDockWindow("Tools",     right_top);
+            igDockBuilderDockWindow("Edits",     right_bot);
             igDockBuilderFinish(dockspace_id);
         }
         igDockSpace(dockspace_id,

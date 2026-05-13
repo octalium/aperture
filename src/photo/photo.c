@@ -29,6 +29,7 @@ struct ap_photo {
 
     ap_edit_stack stack;
     bool          respect_orientation;
+    bool          view_raw;        // bypass user stack at graph build
 };
 
 static char *strdup_or_null(const char *s)
@@ -65,9 +66,14 @@ static int rebuild_graph(ap_photo *photo)
         ap_pipeline_graph_destroy(photo->graph);
         photo->graph = NULL;
     }
+    // In view-raw mode, pass an empty stack so the graph builds only
+    // its auto-inserted raw_passthrough + output_transfer.
+    ap_edit_stack empty;
+    ap_edit_stack_init(&empty);
+    const ap_edit_stack *use_stack = photo->view_raw ? &empty : &photo->stack;
     photo->graph = ap_pipeline_graph_create(photo->gpu, photo->texture,
                                             output_w, output_h,
-                                            &photo->stack,
+                                            use_stack,
                                             &graph_meta);
     if (!photo->graph) {
         AP_ERROR("photo: graph build failed for %s", photo->path);
@@ -205,4 +211,15 @@ void ap_photo_set_respect_orientation(ap_photo *photo, bool yes)
 {
     if (!photo) return;
     photo->respect_orientation = yes;
+}
+
+bool ap_photo_view_raw(const ap_photo *photo)
+{
+    return photo ? photo->view_raw : false;
+}
+
+void ap_photo_set_view_raw(ap_photo *photo, bool yes)
+{
+    if (!photo) return;
+    photo->view_raw = yes;
 }

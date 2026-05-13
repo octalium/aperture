@@ -2,6 +2,7 @@
 #define APERTURE_EDIT_STACK_H
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -20,8 +21,14 @@ extern "C" {
 #define AP_EDIT_PARAMS_SLOTS 8
 #define AP_EDIT_STACK_MAX   32
 
+#define AP_EDIT_DISPLAY_LEN 64
+
 typedef struct {
     char  module_name[AP_EDIT_NAME_LEN];
+    char  display_name[AP_EDIT_DISPLAY_LEN]; // user-set; empty falls
+                                             // back to module's name
+                                             // plus an auto-suffix
+                                             // to disambiguate dupes
     float params[AP_EDIT_PARAMS_SLOTS];
     bool  enabled;
     bool  show_config;   // UI-only, not persisted: is the config
@@ -60,6 +67,26 @@ const ap_edit_entry *ap_edit_stack_at_const(const ap_edit_stack *s, int idx);
 
 void           ap_edit_stack_set_focus(ap_edit_stack *s, int idx);
 int            ap_edit_stack_focus(const ap_edit_stack *s);
+
+// Reset the entry at idx to its module's default params. No-op for
+// modules with no params or unknown module. Returns 0 on success.
+int            ap_edit_stack_reset(ap_edit_stack *s, int idx);
+
+// The label shown in the Edits row / config window title. Returns
+// `entry->display_name` when non-empty, otherwise the module's
+// display_name with an auto-suffix when the same module appears
+// multiple times on the stack ("Exposure", "Exposure 2", ...).
+// Caller-supplied buffer; safe truncation.
+const char    *ap_edit_stack_label_at(const ap_edit_stack *s, int idx,
+                                      char *buf, size_t buflen);
+
+// True when the supplied name is unique in the stack (or not used
+// anywhere except by `ignore_idx`, which is treated as the caller's
+// own entry for rename validation). Compares against both
+// display_name and the auto-suffix labels.
+bool           ap_edit_stack_name_unique(const ap_edit_stack *s,
+                                         const char *candidate,
+                                         int ignore_idx);
 
 #ifdef __cplusplus
 }

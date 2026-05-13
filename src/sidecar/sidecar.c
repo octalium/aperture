@@ -97,6 +97,10 @@ static void load_v2_edit_entry(toml_table_t *t, ap_edit_stack *stack)
 
     int64_t i = 0;
     if (read_int(t, "enabled", &i) == 0) e->enabled = i != 0;
+    const char *display = read_string(t, "name");
+    if (display && *display) {
+        snprintf(e->display_name, sizeof(e->display_name), "%s", display);
+    }
 
     if (m && m->params_names) {
         for (int s = 0; s < m->params_count; s++) {
@@ -238,6 +242,11 @@ int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
             "module  = \"%s\"\n"
             "enabled = %d\n",
             e->module_name, e->enabled ? 1 : 0) < 0) goto io_fail;
+        if (e->display_name[0]) {
+            if (fprintf(f, "name    = \"%s\"\n", e->display_name) < 0) {
+                goto io_fail;
+            }
+        }
         if (m && m->params_names) {
             for (int s = 0; s < m->params_count; s++) {
                 const char *name = m->params_names[s];

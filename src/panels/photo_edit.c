@@ -12,17 +12,18 @@
 
 // Photo-mode workspace:
 //
-//   Image  - left dock: per-photo settings + viewing aids
-//   Edits  - right dock (tab): the photo's stack, scrollable,
-//            click row to toggle its config window, drag rows to
-//            reorder.
-//   Tools  - right dock (same tab group): scrollable list of every
-//            user-visible module. Click adds to top of stack and
-//            opens its config window.
+//   Left column:
+//     Image      - per-photo settings (Respect EXIF, ...)
+//     Histogram  - viewing aid
+//   Right column:
+//     Tools      - palette of every user-visible module
+//     Edits      - the photo's stack (scrollable, drag to reorder,
+//                  right-click for Rename / Reset / Remove)
 //
-// Plus a per-entry config window centered on the viewport the first
-// time it appears (ImGuiCond_Appearing). show_config is in-memory
-// only - every session starts with all config windows closed.
+// Per-entry config windows pop up centered on first appearance; the
+// title is the entry's display name (auto-suffixed for duplicates,
+// or whatever the user renamed it to). show_config is in-memory
+// only.
 
 static void rebuild_after_change(ap_app *app, ap_photo *photo)
 {
@@ -36,7 +37,63 @@ static void rebuild_after_change(ap_app *app, ap_photo *photo)
                         ap_pipeline_graph_output_height(graph));
 }
 
-// ---- Edits window ----------------------------------------------------
+// ---- Edits window ---------------------------------------------------
+
+// State for the rename modal. Module-scoped so the popup survives
+// across frames while the user types.
+static int  g_rename_idx = -1;
+static char g_rename_buf[AP_EDIT_DISPLAY_LEN];
+
+static void open_rename_popup(int idx, const char *current)
+{
+    g_rename_idx = idx;
+    snprintf(g_rename_buf, sizeof(g_rename_buf), "%s", current ? current : "");
+}
+
+static bool draw_rename_modal(ap_edit_stack *stack)
+{
+    if (g_rename_idx < 0) return false;
+    if (!igIsPopupOpen_Str("Rename Edit", 0)) {
+        igOpenPopup_Str("Rename Edit", 0);
+    }
+
+    bool changed = false;
+    if (igBeginPopupModal("Rename Edit", NULL,
+                          ImGuiWindowFlags_AlwaysAutoResize)) {
+        igText("New name:");
+        igInputText("##rn", g_rename_buf, sizeof(g_rename_buf), 0, NULL, NULL);
+
+        if (igButton("Save", (ImVec2_c){ 120.0f, 0.0f })) {
+            ap_edit_entry *e = ap_edit_stack_at(stack, g_rename_idx);
+            if (e) {
+                snprintf(e->display_name, sizeof(e->display_name),
+                         "%s", g_rename_buf);
+                changed = true;
+            }
+            g_rename_idx = -1;
+            igCloseCurrentPopup();
+        }
+        igSameLine(0.0f, -1.0f);
+        if (igButton("Clear", (ImVec2_c){ 120.0f, 0.0f })) {
+            ap_edit_entry *e = ap_edit_stack_at(stack, g_rename_idx);
+            if (e) {
+                e->display_name[0] = '\0';
+                changed = true;
+            }
+            g_rename_idx = -1;
+            igCloseCurrentPopup();
+        }
+        igSameLine(0.0f, -1.0f);
+        if (igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f })) {
+            g_rename_idx = -1;
+            igCloseCurrentPopup();
+        }
+        igEndPopup();
+    } else {
+        g_rename_idx = -1;
+    }
+    return changed;
+}
 
 static void edits_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
 {
@@ -46,20 +103,28 @@ static void edits_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
     }
 
     int n = ap_edit_stack_count(stack);
+
+    igTextDisabled("drag rows to reorder  ·  right-click for actions");
+    igSeparator();
+
     if (n == 0) {
         igTextDisabled("No edits applied. Click a tool to add one.");
         igEnd();
         return;
     }
 
-    int  do_remove = -1;
-    int  drag_src = -1, drag_dst = -1;
-    bool changed = false;
+    int  do_remove      = -1;
+    int  do_reset       = -1;
+    int  do_rename      = -1;
+    int  drag_src       = -1;
+    int  drag_dst       = -1;
+    bool changed        = false;
 
     for (int i = 0; i < n; i++) {
         ap_edit_entry *e = ap_edit_stack_at(stack, i);
-        const ap_module *m = ap_module_find(e->module_name);
-        const char *label = m ? m->display_name : e->module_name;
+        char label_buf[AP_EDIT_DISPLAY_LEN];
+        const char *label = ap_edit_stack_label_at(stack, i,
+                                                   label_buf, sizeof(label_buf));
 
         igPushID_Int(i);
 
@@ -70,17 +135,16 @@ static void edits_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
         }
         igSameLine(0.0f, -1.0f);
 
-        // The selectable spans most of the row; leave a strip on the
-        // right for the close button.
+        // Reserve room on the right for the close button.
         float avail = igGetContentRegionAvail().x;
-        ImVec2_c row_size = { avail - 24.0f, 0.0f };
+        ImVec2_c row_size = { avail - 28.0f, 0.0f };
         bool active = e->show_config;
         if (igSelectable_Bool(label, active,
                               ImGuiSelectableFlags_AllowOverlap, row_size)) {
             e->show_config = !e->show_config;
         }
 
-        // Drag the row to reorder.
+        // Drag-and-drop reorder.
         if (igBeginDragDropSource(0)) {
             igSetDragDropPayload("AP_EDIT_IDX", &i, sizeof(int), 0);
             igText("%s", label);
@@ -99,6 +163,26 @@ static void edits_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
             igEndDragDropTarget();
         }
 
+        // Right-click context menu on the row's primary hit-area.
+        if (igBeginPopupContextItem(NULL, ImGuiPopupFlags_MouseButtonRight)) {
+            if (igMenuItem_Bool("Open config", NULL, false, true)) {
+                e->show_config = true;
+            }
+            if (igMenuItem_Bool("Rename...", NULL, false, true)) {
+                do_rename = i;
+            }
+            if (igMenuItem_Bool("Reset parameters", NULL, false,
+                                e->display_name[0] != 0 ||
+                                ap_module_find(e->module_name) != NULL)) {
+                do_reset = i;
+            }
+            igSeparator();
+            if (igMenuItem_Bool("Remove", "Del", false, true)) {
+                do_remove = i;
+            }
+            igEndPopup();
+        }
+
         igSameLine(0.0f, -1.0f);
         if (igSmallButton("x")) do_remove = i;
 
@@ -109,17 +193,31 @@ static void edits_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
         ap_edit_stack_reorder(stack, drag_src, drag_dst);
         changed = true;
     }
+    if (do_reset >= 0) {
+        ap_edit_stack_reset(stack, do_reset);
+        changed = true;
+    }
     if (do_remove >= 0) {
         ap_edit_stack_remove(stack, do_remove);
         changed = true;
     }
+    if (do_rename >= 0) {
+        ap_edit_entry *e = ap_edit_stack_at(stack, do_rename);
+        char buf[AP_EDIT_DISPLAY_LEN];
+        const char *current = e->display_name[0]
+            ? e->display_name
+            : ap_edit_stack_label_at(stack, do_rename, buf, sizeof(buf));
+        open_rename_popup(do_rename, current);
+    }
+
+    if (draw_rename_modal(stack)) changed = true;
 
     igEnd();
 
     if (changed) rebuild_after_change(app, photo);
 }
 
-// ---- Tools window ----------------------------------------------------
+// ---- Tools window ---------------------------------------------------
 
 static void tools_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
 {
@@ -127,6 +225,9 @@ static void tools_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
         igEnd();
         return;
     }
+
+    igTextDisabled("click to add to the top of the stack");
+    igSeparator();
 
     bool added = false;
     for (const ap_module *const *p = ap_module_registry; *p; p++) {
@@ -148,7 +249,7 @@ static void tools_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
     if (added) rebuild_after_change(app, photo);
 }
 
-// ---- Image window ----------------------------------------------------
+// ---- Image window ---------------------------------------------------
 
 static void image_window(ap_app *app, ap_photo *photo)
 {
@@ -173,48 +274,94 @@ static void image_window(ap_app *app, ap_photo *photo)
         }
     }
 
-    if (igCollapsingHeader_TreeNodeFlags("Histogram", 0)) {
-        igTextDisabled("(coming soon)");
-    }
+    igEnd();
+}
 
+// ---- Histogram window -----------------------------------------------
+
+static void histogram_window(ap_photo *photo)
+{
+    (void)photo;
+    if (!igBegin("Histogram", NULL, 0)) {
+        igEnd();
+        return;
+    }
+    igTextDisabled("(coming soon: live histogram from the rendered image)");
     igEnd();
 }
 
 // ---- per-entry config windows ---------------------------------------
 
-static void entry_config_windows(ap_edit_stack *stack)
+static bool config_window(ap_app *app, ap_photo *photo,
+                          ap_edit_stack *stack, int idx)
 {
-    int n = ap_edit_stack_count(stack);
+    ap_edit_entry *e = ap_edit_stack_at(stack, idx);
+    if (!e->show_config) return false;
+    const ap_module *m = ap_module_find(e->module_name);
+    if (!m) return false;
+
+    char label_buf[AP_EDIT_DISPLAY_LEN];
+    const char *display = ap_edit_stack_label_at(stack, idx,
+                                                 label_buf, sizeof(label_buf));
+    // ###entry_<i> = stable hidden ID so each entry gets its own
+    // window state even when names collide.
+    char title[128];
+    snprintf(title, sizeof(title), "%s###entry_%d", display, idx);
+
     ImGuiIO *io = igGetIO_Nil();
     ImVec2_c center = { 0.0f, 0.0f };
     if (io) {
         center.x = io->DisplaySize.x * 0.5f;
         center.y = io->DisplaySize.y * 0.5f;
     }
+    igSetNextWindowPos(center, ImGuiCond_Appearing,
+                       (ImVec2_c){ 0.5f, 0.5f });
 
-    for (int i = 0; i < n; i++) {
-        ap_edit_entry *e = ap_edit_stack_at(stack, i);
-        if (!e->show_config) continue;
+    bool open = true;
+    bool changed = false;
 
-        const ap_module *m = ap_module_find(e->module_name);
-        const char *display = m ? m->display_name : e->module_name;
-        char title[128];
-        snprintf(title, sizeof(title), "%s  #%d###entry_%d", display, i + 1, i);
-
-        igPushID_Int(i);
-        igSetNextWindowPos(center, ImGuiCond_Appearing,
-                           (ImVec2_c){ 0.5f, 0.5f });
-        bool open = true;
-        if (igBegin(title, &open, ImGuiWindowFlags_AlwaysAutoResize)) {
-            if (m && m->render_params) {
-                m->render_params(m, e->params);
-            } else {
-                igTextDisabled("(no parameters)");
-            }
+    igPushID_Int(idx);
+    if (igBegin(title, &open, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (igSmallButton("Reset")) {
+            ap_edit_stack_reset(stack, idx);
+            changed = true;
         }
-        igEnd();
-        if (!open) e->show_config = false;
-        igPopID();
+        igSameLine(0.0f, -1.0f);
+        igTextDisabled("double-click a value to reset it");
+        igSeparator();
+
+        if (m->render_params) {
+            // Capture the pre-render snapshot, render, and compare so
+            // a slider drag rebuilds the graph (params change but
+            // pixels need re-dispatch).
+            float before[AP_EDIT_PARAMS_SLOTS];
+            memcpy(before, e->params, sizeof(before));
+            m->render_params(m, e->params);
+            // Per-slot double-click reset: ImGui doesn't expose a
+            // "was this specific item double-clicked" lookup after
+            // the fact, so each module's render_params is expected to
+            // check itself via igIsItemHovered + igIsMouseDoubleClicked
+            // (see exposure.c / tone.c). The whole-entry reset above
+            // is the catch-all.
+            if (memcmp(before, e->params, sizeof(before)) != 0) changed = true;
+        } else {
+            igTextDisabled("(no parameters)");
+        }
+    }
+    igEnd();
+    igPopID();
+
+    if (!open) e->show_config = false;
+    if (changed) rebuild_after_change(app, photo);
+    return changed;
+}
+
+static void entry_config_windows(ap_app *app, ap_photo *photo,
+                                 ap_edit_stack *stack)
+{
+    int n = ap_edit_stack_count(stack);
+    for (int i = 0; i < n; i++) {
+        config_window(app, photo, stack, i);
     }
 }
 
@@ -230,7 +377,8 @@ static void photo_edit_draw(ap_app *app)
     edits_window(app, photo, stack);
     tools_window(app, photo, stack);
     image_window(app, photo);
-    entry_config_windows(stack);
+    histogram_window(photo);
+    entry_config_windows(app, photo, stack);
 }
 
 const ap_panel panel_photo_edit = {
