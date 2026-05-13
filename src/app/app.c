@@ -624,6 +624,7 @@ static void draw_grid_labels(ap_app *app)
     ImDrawList *dl = igGetForegroundDrawList_ViewportPtr(NULL);
     if (!dl) return;
 
+    const float band_h = 18.0f;
     for (int i = 0; i < n; i++) {
         const char *rel = ap_library_photo_relative_path(app->library, i);
         if (!rel) continue;
@@ -631,8 +632,36 @@ static void draw_grid_labels(ap_app *app)
         if (ap_grid_cell_rect(app->grid, i, win_w, win_h, &cx, &cy, &cw, &ch) != 0) {
             continue;
         }
-        ImVec2_c pos = { cx + 6.0f, cy + ch - 18.0f };
-        ImDrawList_AddText_Vec2(dl, pos, 0xFFEEEEEE, rel, NULL);
+
+        // Letterbox the label band to the actual image rect inside the
+        // cell, mirroring the shader's aspect-fit math. Portrait
+        // thumbnails leave space at the sides; landscape leaves space
+        // top and bottom. Without this, labels sit on top of the image
+        // itself instead of riding cleanly under it.
+        float fit_x = cx, fit_y = cy, fit_w = cw, fit_h = ch;
+        ap_thumbnail *t = ap_library_thumbnail(app->library, i);
+        if (t) {
+            int tw = ap_thumbnail_width(t);
+            int th = ap_thumbnail_height(t);
+            if (tw > 0 && th > 0) {
+                float s = cw / (float)tw;
+                float sy = ch / (float)th;
+                if (sy < s) s = sy;
+                fit_w = (float)tw * s;
+                fit_h = (float)th * s;
+                fit_x = cx + (cw - fit_w) * 0.5f;
+                fit_y = cy + (ch - fit_h) * 0.5f;
+            }
+        }
+
+        // Don't paint the band when the cell is too small to read it.
+        if (fit_h < band_h * 2.0f) continue;
+
+        ImVec2_c band_tl = { fit_x,         fit_y + fit_h - band_h };
+        ImVec2_c band_br = { fit_x + fit_w, fit_y + fit_h          };
+        ImDrawList_AddRectFilled(dl, band_tl, band_br, 0xB8000000, 0.0f, 0);
+        ImVec2_c text_pos = { fit_x + 4.0f, fit_y + fit_h - band_h + 2.0f };
+        ImDrawList_AddText_Vec2(dl, text_pos, 0xFFEEEEEE, rel, NULL);
     }
 }
 
@@ -819,6 +848,10 @@ static void draw_menubar(ap_app *app)
                             ap_gpu_is_fullscreen(app->gpu), true)) {
             ap_gpu_toggle_fullscreen(app->gpu);
         }
+        igSeparator();
+        if (igMenuItem_Bool("Reset Cell Zoom", "Ctrl+0", false, true)) {
+            ap_grid_reset_cell_size(app->grid);
+        }
         igEndMenu();
     }
 
@@ -952,6 +985,9 @@ static void drive_global_hotkeys(ap_app *app)
     }
     if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_E, false) && app->photo) {
         trigger_quick_export(app);
+    }
+    if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_0, false)) {
+        ap_grid_reset_cell_size(app->grid);
     }
 }
 

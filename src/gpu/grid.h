@@ -47,6 +47,7 @@ int  ap_grid_cells_per_row(const ap_grid *grid, int win_width, int win_height);
 // Cell-size zoom (pixels per side). Clamped to a sane range.
 int  ap_grid_cell_size(const ap_grid *grid);
 void ap_grid_set_cell_size(ap_grid *grid, int px);
+void ap_grid_reset_cell_size(ap_grid *grid);
 
 // Vertical scroll. `dy` is in window pixels - positive scrolls
 // content up (reveals content below). Clamps to [0, max_scroll]

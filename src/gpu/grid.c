@@ -681,6 +681,12 @@ void ap_grid_set_cell_size(ap_grid *grid, int px)
     grid->cell_size = px;
 }
 
+void ap_grid_reset_cell_size(ap_grid *grid)
+{
+    if (!grid) return;
+    grid->cell_size = GRID_DEFAULT_CELL_SIZE;
+}
+
 void ap_grid_scroll(ap_grid *grid, float dy, int win_width, int win_height)
 {
     if (!grid) return;
