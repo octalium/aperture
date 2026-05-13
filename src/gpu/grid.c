@@ -53,6 +53,9 @@ struct ap_grid {
     int photo_count;
     int selected_idx;
 
+    uint8_t *selected_bitmap;     // photo_count bits, allocated in
+                                  // set_photo_count; NULL when empty
+
     int cell_size;
     int cell_gap_x;
     int cell_gap_y;
@@ -60,6 +63,10 @@ struct ap_grid {
 
     float scroll_y;
 };
+
+#define BIT_GET(bm, i) (((bm)[(i) >> 3] >> ((i) & 7)) & 1u)
+#define BIT_SET(bm, i) ((bm)[(i) >> 3] |=  (1u << ((i) & 7)))
+#define BIT_CLR(bm, i) ((bm)[(i) >> 3] &= ~(1u << ((i) & 7)))
 
 typedef struct {
     int origin_x, origin_y;
@@ -500,6 +507,7 @@ void ap_grid_destroy(ap_grid *grid)
     if (grid->placeholder_view)    vkDestroyImageView(dev, grid->placeholder_view, NULL);
     if (grid->placeholder_image)   vkDestroyImage(dev, grid->placeholder_image, NULL);
     if (grid->placeholder_memory)  vkFreeMemory(dev, grid->placeholder_memory, NULL);
+    free(grid->selected_bitmap);
     free(grid);
 }
 
@@ -535,6 +543,17 @@ void ap_grid_set_photo_count(ap_grid *grid, int count)
     }
     grid->scroll_y = 0.0f;
 
+    // Reallocate the selection bitmap to match the new photo count.
+    free(grid->selected_bitmap);
+    grid->selected_bitmap = NULL;
+    if (count > 0) {
+        size_t bytes = (size_t)((count + 7) / 8);
+        grid->selected_bitmap = calloc(bytes, 1);
+        if (grid->selected_bitmap && count > 0) {
+            BIT_SET(grid->selected_bitmap, grid->selected_idx);
+        }
+    }
+
     // Reset the entire descriptor array back to the placeholder. The
     // previous library's ap_thumbnail textures are about to be (or
     // have just been) destroyed; their views can't stay bound.
@@ -564,6 +583,72 @@ void ap_grid_set_selected(ap_grid *grid, int idx)
     if (idx < 0) idx = 0;
     if (idx >= grid->photo_count) idx = grid->photo_count - 1;
     grid->selected_idx = idx;
+    if (grid->selected_bitmap) {
+        BIT_SET(grid->selected_bitmap, idx);
+    }
+}
+
+static void selection_clear(ap_grid *grid)
+{
+    if (!grid->selected_bitmap || grid->photo_count <= 0) return;
+    memset(grid->selected_bitmap, 0, (size_t)((grid->photo_count + 7) / 8));
+}
+
+void ap_grid_select_only(ap_grid *grid, int idx)
+{
+    if (!grid || grid->photo_count <= 0) return;
+    if (idx < 0) idx = 0;
+    if (idx >= grid->photo_count) idx = grid->photo_count - 1;
+    selection_clear(grid);
+    if (grid->selected_bitmap) BIT_SET(grid->selected_bitmap, idx);
+    grid->selected_idx = idx;
+}
+
+void ap_grid_select_toggle(ap_grid *grid, int idx)
+{
+    if (!grid || !grid->selected_bitmap
+        || idx < 0 || idx >= grid->photo_count) return;
+    if (BIT_GET(grid->selected_bitmap, idx)) {
+        BIT_CLR(grid->selected_bitmap, idx);
+        // Focus stays where it was; if we just cleared the current
+        // focus, leave focus alone — it remains visible but
+        // unselected, which is fine UX.
+    } else {
+        BIT_SET(grid->selected_bitmap, idx);
+        grid->selected_idx = idx;
+    }
+}
+
+void ap_grid_select_range(ap_grid *grid, int anchor_idx, int idx)
+{
+    if (!grid || !grid->selected_bitmap || grid->photo_count <= 0) return;
+    if (anchor_idx < 0) anchor_idx = 0;
+    if (anchor_idx >= grid->photo_count) anchor_idx = grid->photo_count - 1;
+    if (idx < 0) idx = 0;
+    if (idx >= grid->photo_count) idx = grid->photo_count - 1;
+
+    int lo = anchor_idx < idx ? anchor_idx : idx;
+    int hi = anchor_idx < idx ? idx : anchor_idx;
+    selection_clear(grid);
+    for (int i = lo; i <= hi; i++) BIT_SET(grid->selected_bitmap, i);
+    grid->selected_idx = idx;
+}
+
+bool ap_grid_is_selected(const ap_grid *grid, int idx)
+{
+    if (!grid || !grid->selected_bitmap
+        || idx < 0 || idx >= grid->photo_count) return false;
+    return BIT_GET(grid->selected_bitmap, idx) != 0;
+}
+
+int ap_grid_selection_count(const ap_grid *grid)
+{
+    if (!grid || !grid->selected_bitmap) return 0;
+    int n = 0;
+    for (int i = 0; i < grid->photo_count; i++) {
+        if (BIT_GET(grid->selected_bitmap, i)) n++;
+    }
+    return n;
 }
 
 int ap_grid_selected(const ap_grid *grid)

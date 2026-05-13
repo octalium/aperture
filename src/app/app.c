@@ -538,7 +538,7 @@ static void drive_grid_input(ap_app *app)
                                        io->MousePos.x, io->MousePos.y,
                                        win_w, win_h);
             if (hit >= 0) {
-                ap_grid_set_selected(app->grid, hit);
+                ap_grid_select_only(app->grid, hit);
                 open_selected_photo(app);
                 return;
             }
@@ -547,7 +547,14 @@ static void drive_grid_input(ap_app *app)
                                        io->MousePos.x, io->MousePos.y,
                                        win_w, win_h);
             if (hit >= 0) {
-                ap_grid_set_selected(app->grid, hit);
+                int anchor = ap_grid_selected(app->grid);
+                if (io->KeyShift) {
+                    ap_grid_select_range(app->grid, anchor, hit);
+                } else if (io->KeyCtrl) {
+                    ap_grid_select_toggle(app->grid, hit);
+                } else {
+                    ap_grid_select_only(app->grid, hit);
+                }
             }
         }
     }
@@ -560,7 +567,11 @@ static void drive_grid_input(ap_app *app)
     else if (igIsKeyPressed_Bool(ImGuiKey_DownArrow, true))  new_sel = sel + cpr;
     else if (igIsKeyPressed_Bool(ImGuiKey_UpArrow,   true))  new_sel = sel - cpr;
     if (new_sel != sel) {
-        ap_grid_set_selected(app->grid, new_sel);
+        if (io->KeyShift) {
+            ap_grid_select_range(app->grid, sel, new_sel);
+        } else {
+            ap_grid_select_only(app->grid, new_sel);
+        }
         ap_grid_ensure_visible(app->grid, ap_grid_selected(app->grid),
                                win_w, win_h);
     }
@@ -568,6 +579,34 @@ static void drive_grid_input(ap_app *app)
     if (igIsKeyPressed_Bool(ImGuiKey_Enter, false) ||
         igIsKeyPressed_Bool(ImGuiKey_Space, false)) {
         open_selected_photo(app);
+    }
+}
+
+static void draw_selection_overlay(ap_app *app)
+{
+    if (!app->library || !app->grid) return;
+    int n = ap_library_photo_count(app->library);
+    if (n <= 0) return;
+    int sel_count = ap_grid_selection_count(app->grid);
+    if (sel_count <= 1) return;   // focus highlight alone is enough
+
+    ImGuiIO *io = igGetIO_Nil();
+    if (!io) return;
+    int win_w = (int)io->DisplaySize.x;
+    int win_h = (int)io->DisplaySize.y;
+    ImDrawList *dl = igGetForegroundDrawList_ViewportPtr(NULL);
+    if (!dl) return;
+
+    int focus = ap_grid_selected(app->grid);
+    for (int i = 0; i < n; i++) {
+        if (i == focus) continue;
+        if (!ap_grid_is_selected(app->grid, i)) continue;
+        float cx, cy, cw, ch;
+        if (ap_grid_cell_rect(app->grid, i, win_w, win_h,
+                              &cx, &cy, &cw, &ch) != 0) continue;
+        ImVec2_c tl = { cx,      cy      };
+        ImVec2_c br = { cx + cw, cy + ch };
+        ImDrawList_AddRect(dl, tl, br, 0xFFB8C4D9, 0.0f, 0, 2.0f);
     }
 }
 
@@ -818,13 +857,16 @@ static void draw_menubar(ap_app *app)
             for (int i = 0; i < n; i++) {
                 bool current = app->library
                     && strcmp(rows[i].path, ap_library_root(app->library)) == 0;
+                // Menu shows the name (or path when unnamed). Hover
+                // gets the full path as a tooltip - keeps the menu
+                // narrow and the buffer manageable.
                 const char *label_name = rows[i].name[0] ? rows[i].name
                                                          : rows[i].path;
-                char label[8192];
-                snprintf(label, sizeof(label), "%s    %s",
-                         label_name, rows[i].path);
-                if (igMenuItem_Bool(label, NULL, current, true) && !current) {
+                if (igMenuItem_Bool(label_name, NULL, current, true) && !current) {
                     ap_app_open_library(app, rows[i].path);
+                }
+                if (igIsItemHovered(0)) {
+                    igSetTooltip("%s", rows[i].path);
                 }
             }
         }
@@ -957,6 +999,7 @@ int ap_app_run_frame(ap_app *app)
     } else if (app->mode == AP_MODE_LIBRARY && !app->photo_loading) {
         drive_grid_input(app);
         draw_grid_labels(app);
+        draw_selection_overlay(app);
         submit_pending_thumbs(app);
     }
     drain_one_completed_job(app);

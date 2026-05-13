@@ -22,10 +22,23 @@ void     ap_grid_destroy(ap_grid *grid);
 // Set the number of photos in the current library. Pass 0 to clear.
 void ap_grid_set_photo_count(ap_grid *grid, int count);
 
-// Selection. Index is clamped to [0, count). No-ops on empty grids.
+// Focused cell. Clamped to [0, count); no-op on empty grids. The
+// focus is the cell that arrow keys move from and that Enter / Space
+// opens. It is always in the selection set as a post-condition of
+// any select_* call.
 void ap_grid_set_selected(ap_grid *grid, int idx);
 int  ap_grid_selected(const ap_grid *grid);
 int  ap_grid_photo_count(const ap_grid *grid);
+
+// Multi-selection model. The selection set tracks which cells are
+// "marked"; the focus is one specific cell. A plain click maps to
+// select_only; Shift-click to select_range from focus to idx;
+// Ctrl-click to select_toggle.
+void ap_grid_select_only  (ap_grid *grid, int idx);
+void ap_grid_select_toggle(ap_grid *grid, int idx);
+void ap_grid_select_range (ap_grid *grid, int anchor_idx, int idx);
+bool ap_grid_is_selected  (const ap_grid *grid, int idx);
+int  ap_grid_selection_count(const ap_grid *grid);
 
 // Number of cells per row at the supplied window dims, derived from
 // the grid's own layout knobs.
