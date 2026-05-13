@@ -55,16 +55,25 @@ void ap_edit_stack_remove(ap_edit_stack *s, int idx)
     else if (s->focus == idx)        s->focus = idx > 0 ? idx - 1 : 0;
 }
 
-void ap_edit_stack_move(ap_edit_stack *s, int idx, int dir)
+void ap_edit_stack_reorder(ap_edit_stack *s, int src, int dst)
 {
-    if (!s || idx < 0 || idx >= s->count) return;
-    int other = idx + (dir > 0 ? 1 : -1);
-    if (other < 0 || other >= s->count) return;
-    ap_edit_entry tmp = s->entries[idx];
-    s->entries[idx]   = s->entries[other];
-    s->entries[other] = tmp;
-    if      (s->focus == idx)   s->focus = other;
-    else if (s->focus == other) s->focus = idx;
+    if (!s) return;
+    if (src < 0 || src >= s->count) return;
+    if (dst < 0 || dst >= s->count) return;
+    if (src == dst) return;
+
+    ap_edit_entry tmp = s->entries[src];
+    if (src < dst) {
+        for (int i = src; i < dst; i++) s->entries[i] = s->entries[i + 1];
+    } else {
+        for (int i = src; i > dst; i--) s->entries[i] = s->entries[i - 1];
+    }
+    s->entries[dst] = tmp;
+
+    int f = s->focus;
+    if      (f == src)               s->focus = dst;
+    else if (src < dst && f > src && f <= dst) s->focus = f - 1;
+    else if (src > dst && f < src && f >= dst) s->focus = f + 1;
 }
 
 void ap_edit_stack_set_enabled(ap_edit_stack *s, int idx, bool enabled)

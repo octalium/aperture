@@ -1082,6 +1082,64 @@ int ap_app_run_frame(ap_app *app)
     draw_rename_library_modal(app);
     drive_global_hotkeys(app);
 
+    // Full-viewport invisible host window owns the dockspace that
+    // every panel docks into. PassthruCentralNode keeps the middle
+    // area transparent so the canvas / grid render path stays
+    // visible underneath. Default layout (Image left, Edits + Tools
+    // right) is built once on first launch; ImGui's .ini handles
+    // every subsequent run.
+    if (app->show_panels) {
+        ImGuiViewport *vp = igGetMainViewport();
+        igSetNextWindowPos(vp->WorkPos, ImGuiCond_Always,
+                           (ImVec2_c){ 0.0f, 0.0f });
+        igSetNextWindowSize(vp->WorkSize, ImGuiCond_Always);
+        igSetNextWindowViewport(vp->ID);
+
+        igPushStyleVar_Float(ImGuiStyleVar_WindowRounding,   0.0f);
+        igPushStyleVar_Float(ImGuiStyleVar_WindowBorderSize, 0.0f);
+        igPushStyleVar_Vec2(ImGuiStyleVar_WindowPadding,
+                            (ImVec2_c){ 0.0f, 0.0f });
+
+        ImGuiWindowFlags host_flags = ImGuiWindowFlags_NoTitleBar
+                                    | ImGuiWindowFlags_NoCollapse
+                                    | ImGuiWindowFlags_NoResize
+                                    | ImGuiWindowFlags_NoMove
+                                    | ImGuiWindowFlags_NoBringToFrontOnFocus
+                                    | ImGuiWindowFlags_NoNavFocus
+                                    | ImGuiWindowFlags_NoBackground
+                                    | ImGuiWindowFlags_NoDocking;
+
+        igBegin("##aperture_dockhost", NULL, host_flags);
+        igPopStyleVar(3);
+
+        ImGuiID dockspace_id = igGetID_Str("aperture_dockspace");
+        static bool dock_layout_built = false;
+        if (!dock_layout_built &&
+            igDockBuilderGetNode(dockspace_id) == NULL) {
+            dock_layout_built = true;
+            igDockBuilderAddNode(dockspace_id,
+                                 ImGuiDockNodeFlags_DockSpace);
+            igDockBuilderSetNodeSize(dockspace_id, vp->WorkSize);
+
+            ImGuiID right = 0, center = 0;
+            ImGuiID left  = igDockBuilderSplitNode(dockspace_id,
+                                                   ImGuiDir_Left, 0.18f,
+                                                   NULL, &center);
+            right         = igDockBuilderSplitNode(center,
+                                                   ImGuiDir_Right, 0.25f,
+                                                   NULL, &center);
+
+            igDockBuilderDockWindow("Image", left);
+            igDockBuilderDockWindow("Edits", right);
+            igDockBuilderDockWindow("Tools", right);
+            igDockBuilderFinish(dockspace_id);
+        }
+        igDockSpace(dockspace_id,
+                    (ImVec2_c){ 0.0f, 0.0f },
+                    ImGuiDockNodeFlags_PassthruCentralNode, NULL);
+        igEnd();
+    }
+
     if (app->show_panels) {
         for (const ap_panel *const *p = ap_panel_registry; *p; p++) {
             const ap_panel *panel = *p;

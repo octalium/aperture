@@ -47,9 +47,9 @@ int            ap_edit_stack_add(ap_edit_stack *s, const char *module_name);
 // when empty).
 void           ap_edit_stack_remove(ap_edit_stack *s, int idx);
 
-// Swap entry at idx with its neighbor in direction dir (+1 = down,
-// -1 = up). Out-of-bounds moves are no-ops.
-void           ap_edit_stack_move(ap_edit_stack *s, int idx, int dir);
+// Move the entry currently at `src` to position `dst`, shifting the
+// entries in between. Out-of-bounds or no-op moves are silent.
+void           ap_edit_stack_reorder(ap_edit_stack *s, int src, int dst);
 
 // Toggle the enabled flag of entry at idx.
 void           ap_edit_stack_set_enabled(ap_edit_stack *s, int idx, bool enabled);

@@ -10,32 +10,24 @@
 #include <stdio.h>
 #include <string.h>
 
-// Three photo-mode windows + one short-lived window per visible
-// stack entry. Names map to user intent:
+// Photo-mode workspace:
 //
-//   Edits   - the per-photo stack, top-to-bottom = first-to-last.
-//             Reorder, enable / disable, click row to open the
-//             entry's config window.
-//   Tools   - palette of every registered user-visible module. Click
-//             pushes a new entry on top of the stack and opens its
-//             config window.
-//   Image   - per-photo settings (EXIF orientation) and viewing aids
-//             (histogram lands here in a follow-up).
+//   Image  - left dock: per-photo settings + viewing aids
+//   Edits  - right dock (tab): the photo's stack, scrollable,
+//            click row to toggle its config window, drag rows to
+//            reorder.
+//   Tools  - right dock (same tab group): scrollable list of every
+//            user-visible module. Click adds to top of stack and
+//            opens its config window.
 //
-// Per-entry config windows are ephemeral - state lives on the entry
-// in memory only, never persisted; each open starts centered on the
-// viewport (ImGuiCond_Appearing) so reopening a photo doesn't carry
-// stale layout.
-
-// ---- helpers ----------------------------------------------------------
-
-static const ImVec2_c kBtnAuto = { 0.0f, 0.0f };
+// Plus a per-entry config window centered on the viewport the first
+// time it appears (ImGuiCond_Appearing). show_config is in-memory
+// only - every session starts with all config windows closed.
 
 static void rebuild_after_change(ap_app *app, ap_photo *photo)
 {
     ap_app_wait_idle(app);
     if (ap_photo_rebuild_graph(photo) != 0) return;
-    // Canvas keeps stale view/sampler from the previous graph — rebind.
     ap_pipeline_graph *graph = ap_photo_graph(photo);
     ap_canvas_set_input(ap_app_canvas(app),
                         ap_pipeline_graph_output_view(graph),
@@ -44,7 +36,7 @@ static void rebuild_after_change(ap_app *app, ap_photo *photo)
                         ap_pipeline_graph_output_height(graph));
 }
 
-// ---- Edits window -----------------------------------------------------
+// ---- Edits window ----------------------------------------------------
 
 static void edits_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
 {
@@ -55,65 +47,79 @@ static void edits_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
 
     int n = ap_edit_stack_count(stack);
     if (n == 0) {
-        igTextDisabled("(no edits — pick one from Tools)");
+        igTextDisabled("No edits applied. Click a tool to add one.");
         igEnd();
         return;
     }
 
-    int do_remove  = -1;
-    int do_move_up = -1, do_move_dn = -1;
-    bool stack_changed = false;
+    int  do_remove = -1;
+    int  drag_src = -1, drag_dst = -1;
+    bool changed = false;
 
     for (int i = 0; i < n; i++) {
         ap_edit_entry *e = ap_edit_stack_at(stack, i);
         const ap_module *m = ap_module_find(e->module_name);
+        const char *label = m ? m->display_name : e->module_name;
+
         igPushID_Int(i);
 
         bool enabled = e->enabled;
         if (igCheckbox("##en", &enabled)) {
             e->enabled = enabled;
-            stack_changed = true;
+            changed = true;
         }
         igSameLine(0.0f, -1.0f);
 
-        const char *label = m ? m->display_name : e->module_name;
-        // The row label is the click target that opens the entry's
-        // config window. Reuses Selectable for the hit area; the
-        // toggle for `show_config` lives directly on the entry.
-        bool selected = e->show_config;
-        if (igSelectable_Bool(label, selected, 0,
-                              (ImVec2_c){ 0.0f, 0.0f })) {
+        // The selectable spans most of the row; leave a strip on the
+        // right for the close button.
+        float avail = igGetContentRegionAvail().x;
+        ImVec2_c row_size = { avail - 24.0f, 0.0f };
+        bool active = e->show_config;
+        if (igSelectable_Bool(label, active,
+                              ImGuiSelectableFlags_AllowOverlap, row_size)) {
             e->show_config = !e->show_config;
         }
+
+        // Drag the row to reorder.
+        if (igBeginDragDropSource(0)) {
+            igSetDragDropPayload("AP_EDIT_IDX", &i, sizeof(int), 0);
+            igText("%s", label);
+            igEndDragDropSource();
+        }
+        if (igBeginDragDropTarget()) {
+            const ImGuiPayload *payload =
+                igAcceptDragDropPayload("AP_EDIT_IDX", 0);
+            if (payload && payload->DataSize == (int)sizeof(int)) {
+                int src = *(const int *)payload->Data;
+                if (src != i) {
+                    drag_src = src;
+                    drag_dst = i;
+                }
+            }
+            igEndDragDropTarget();
+        }
+
         igSameLine(0.0f, -1.0f);
-        if (igSmallButton("^"))  do_move_up = i;
-        igSameLine(0.0f, -1.0f);
-        if (igSmallButton("v"))  do_move_dn = i;
-        igSameLine(0.0f, -1.0f);
-        if (igSmallButton("x"))  do_remove  = i;
+        if (igSmallButton("x")) do_remove = i;
 
         igPopID();
     }
 
-    if (do_remove  >= 0) {
+    if (drag_src >= 0 && drag_dst >= 0) {
+        ap_edit_stack_reorder(stack, drag_src, drag_dst);
+        changed = true;
+    }
+    if (do_remove >= 0) {
         ap_edit_stack_remove(stack, do_remove);
-        stack_changed = true;
-    }
-    if (do_move_up >= 0) {
-        ap_edit_stack_move(stack, do_move_up, -1);
-        stack_changed = true;
-    }
-    if (do_move_dn >= 0) {
-        ap_edit_stack_move(stack, do_move_dn, +1);
-        stack_changed = true;
+        changed = true;
     }
 
     igEnd();
 
-    if (stack_changed) rebuild_after_change(app, photo);
+    if (changed) rebuild_after_change(app, photo);
 }
 
-// ---- Tools window -----------------------------------------------------
+// ---- Tools window ----------------------------------------------------
 
 static void tools_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
 {
@@ -126,7 +132,9 @@ static void tools_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
     for (const ap_module *const *p = ap_module_registry; *p; p++) {
         const ap_module *m = *p;
         if (!m->user_visible) continue;
-        if (igButton(m->display_name, kBtnAuto)) {
+        if (igSelectable_Bool(m->display_name, false,
+                              ImGuiSelectableFlags_AllowDoubleClick,
+                              (ImVec2_c){ 0.0f, 0.0f })) {
             int idx = ap_edit_stack_add(stack, m->name);
             if (idx >= 0) {
                 ap_edit_entry *e = ap_edit_stack_at(stack, idx);
@@ -140,7 +148,7 @@ static void tools_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
     if (added) rebuild_after_change(app, photo);
 }
 
-// ---- Image window -----------------------------------------------------
+// ---- Image window ----------------------------------------------------
 
 static void image_window(ap_app *app, ap_photo *photo)
 {
@@ -154,9 +162,9 @@ static void image_window(ap_app *app, ap_photo *photo)
         bool respect = ap_photo_respect_orientation(photo);
         if (igCheckbox("Respect EXIF orientation", &respect)) {
             ap_photo_set_respect_orientation(photo, respect);
-            // Orientation flip changes the graph's dims, so a full
-            // reopen is simpler than rebuilding in-place against a
-            // now-mismatched input texture.
+            // Orientation changes graph dims, so a full reopen is
+            // simpler than rebuilding in-place against a now-stale
+            // input texture.
             char path_copy[4096];
             snprintf(path_copy, sizeof(path_copy), "%s", ap_photo_path(photo));
             ap_app_open_photo(app, path_copy);
@@ -172,7 +180,7 @@ static void image_window(ap_app *app, ap_photo *photo)
     igEnd();
 }
 
-// ---- per-entry config windows ----------------------------------------
+// ---- per-entry config windows ---------------------------------------
 
 static void entry_config_windows(ap_edit_stack *stack)
 {
@@ -210,7 +218,7 @@ static void entry_config_windows(ap_edit_stack *stack)
     }
 }
 
-// ---- panel entry point -----------------------------------------------
+// ---- panel entry point ----------------------------------------------
 
 static void photo_edit_draw(ap_app *app)
 {
