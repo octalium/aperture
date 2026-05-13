@@ -522,11 +522,18 @@ static void drive_grid_input(ap_app *app)
 
     if (!io->WantCaptureMouse) {
         if (io->MouseWheel != 0.0f) {
-            const float wheel_step_px = 60.0f;
-            ap_grid_scroll(app->grid, -io->MouseWheel * wheel_step_px,
-                           win_w, win_h);
+            if (io->KeyCtrl) {
+                int cur  = ap_grid_cell_size(app->grid);
+                int step = 16;
+                int next = cur + (int)(io->MouseWheel) * step;
+                ap_grid_set_cell_size(app->grid, next);
+            } else {
+                const float wheel_step_px = 60.0f;
+                ap_grid_scroll(app->grid, -io->MouseWheel * wheel_step_px,
+                               win_w, win_h);
+            }
         }
-        if (igIsMouseClicked_Bool(ImGuiMouseButton_Left, false)) {
+        if (igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
             int hit = ap_grid_hit_test(app->grid,
                                        io->MousePos.x, io->MousePos.y,
                                        win_w, win_h);
@@ -534,6 +541,13 @@ static void drive_grid_input(ap_app *app)
                 ap_grid_set_selected(app->grid, hit);
                 open_selected_photo(app);
                 return;
+            }
+        } else if (igIsMouseClicked_Bool(ImGuiMouseButton_Left, false)) {
+            int hit = ap_grid_hit_test(app->grid,
+                                       io->MousePos.x, io->MousePos.y,
+                                       win_w, win_h);
+            if (hit >= 0) {
+                ap_grid_set_selected(app->grid, hit);
             }
         }
     }
