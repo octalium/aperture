@@ -420,6 +420,23 @@ ap_library *ap_app_library(ap_app *app)
     return app ? app->library : NULL;
 }
 
+static void navigate_library_relative(ap_app *app, int dir)
+{
+    if (!app->library || !app->grid) return;
+    int n = ap_library_photo_count(app->library);
+    if (n <= 0) return;
+    int sel = ap_grid_selected(app->grid);
+    int new_sel = sel + dir;
+    if (new_sel < 0 || new_sel >= n) return;
+    ap_grid_set_selected(app->grid, new_sel);
+
+    char abs[4096];
+    if (ap_library_photo_absolute_path(app->library, new_sel,
+                                       abs, sizeof(abs)) == 0) {
+        ap_app_open_photo(app, abs);
+    }
+}
+
 static void drive_canvas_input(ap_app *app)
 {
     if (!app->canvas || !app->photo) return;
@@ -430,6 +447,17 @@ static void drive_canvas_input(ap_app *app)
     if (igIsKeyPressed_Bool(ImGuiKey_Escape, false)) {
         ap_app_close_photo(app);
         return;
+    }
+
+    if (!io->WantCaptureKeyboard) {
+        if (igIsKeyPressed_Bool(ImGuiKey_RightArrow, true)) {
+            navigate_library_relative(app, +1);
+            return;
+        }
+        if (igIsKeyPressed_Bool(ImGuiKey_LeftArrow, true)) {
+            navigate_library_relative(app, -1);
+            return;
+        }
     }
 
     if (io->WantCaptureMouse) return;
@@ -663,32 +691,23 @@ static void trigger_quick_export(ap_app *app)
     }
 }
 
+static const char *basename_of(const char *path)
+{
+    if (!path || !*path) return path;
+    const char *slash = strrchr(path, '/');
+    return slash ? slash + 1 : path;
+}
+
 static void draw_menubar(ap_app *app)
 {
     if (!igBeginMainMenuBar()) return;
 
     if (igBeginMenu("File", true)) {
-        if (igMenuItem_Bool("Open Library…", NULL, false, true)) {
-            // Pre-fill with current root, if any
+        if (igMenuItem_Bool("Open Library...", NULL, false, true)) {
             const char *root = app->library ? ap_library_root(app->library) : "";
             snprintf(app->open_library_input,
                      sizeof(app->open_library_input), "%s", root ? root : "");
             app->open_library_modal = true;
-        }
-
-        if (igBeginMenu("Recent Libraries", true)) {
-            ap_registry_entry rows[16];
-            int n = ap_registry_list(rows, 16);
-            if (n <= 0) {
-                igMenuItem_Bool("(none yet)", NULL, false, false);
-            } else {
-                for (int i = 0; i < n; i++) {
-                    if (igMenuItem_Bool(rows[i].path, NULL, false, true)) {
-                        ap_app_open_library(app, rows[i].path);
-                    }
-                }
-            }
-            igEndMenu();
         }
 
         igSeparator();
@@ -704,7 +723,7 @@ static void draw_menubar(ap_app *app)
 
         igSeparator();
 
-        if (igMenuItem_Bool("Export…", "Ctrl+E",
+        if (igMenuItem_Bool("Export", "Ctrl+E",
                             false, app->photo != NULL)) {
             trigger_quick_export(app);
         }
@@ -721,6 +740,37 @@ static void draw_menubar(ap_app *app)
         bool show = app->show_panels;
         if (igMenuItem_BoolPtr("Show Panels", "Tab", &show, true)) {
             app->show_panels = show;
+        }
+        igEndMenu();
+    }
+
+    // Library indicator + quick switcher. The menu label IS the
+    // current library's basename — clicking opens a dropdown of
+    // recent libraries to switch to.
+    const char *lib_label = app->library
+        ? basename_of(ap_library_root(app->library))
+        : "(no library)";
+    if (igBeginMenu(lib_label, true)) {
+        if (app->library) {
+            igText("%s", ap_library_root(app->library));
+            igText("%d photos", ap_library_photo_count(app->library));
+            igSeparator();
+        }
+        ap_registry_entry rows[16];
+        int n = ap_registry_list(rows, 16);
+        if (n <= 0) {
+            igMenuItem_Bool("(no recent libraries)", NULL, false, false);
+        } else {
+            for (int i = 0; i < n; i++) {
+                bool current = app->library
+                    && strcmp(rows[i].path, ap_library_root(app->library)) == 0;
+                char label[5120];
+                snprintf(label, sizeof(label), "%s    %s",
+                         basename_of(rows[i].path), rows[i].path);
+                if (igMenuItem_Bool(label, NULL, current, true) && !current) {
+                    ap_app_open_library(app, rows[i].path);
+                }
+            }
         }
         igEndMenu();
     }
