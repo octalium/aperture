@@ -872,7 +872,9 @@ static void draw_menubar(ap_app *app)
 
     if (igBeginMenu("View", true)) {
         bool show = app->show_panels;
-        if (igMenuItem_BoolPtr("Show Panels", "Ctrl+Space", &show, true)) {
+        const char *panels_sc =
+            (app->mode == AP_MODE_PHOTO) ? "Space" : "Ctrl+Space";
+        if (igMenuItem_BoolPtr("Show Panels", panels_sc, &show, true)) {
             app->show_panels = show;
         }
         if (igMenuItem_Bool("Fullscreen", "F11",
@@ -1019,10 +1021,16 @@ static void drive_global_hotkeys(ap_app *app)
     ImGuiIO *io = igGetIO_Nil();
     if (!io) return;
 
-    // Ctrl+Space toggles panel visibility. Ctrl-modified so it
-    // doesn't conflict with widget focus / text input, and doesn't
-    // need the WantCaptureKeyboard guard the way bare Tab did.
-    if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_Space, false)) {
+    // Panel-visibility toggle. In photo mode a bare Space does it -
+    // the canvas owns the keyboard and Space is otherwise idle there.
+    // Ctrl+Space stays as the global form because library mode binds
+    // bare Space to "open selected photo". The WantTextInput guard
+    // keeps text fields (the rename box, etc.) typeable.
+    bool space = igIsKeyPressed_Bool(ImGuiKey_Space, false);
+    bool toggle_panels =
+        (io->KeyCtrl && space) ||
+        (app->mode == AP_MODE_PHOTO && !io->WantTextInput && space);
+    if (toggle_panels) {
         app->show_panels = !app->show_panels;
     }
     if (igIsKeyPressed_Bool(ImGuiKey_F11, false)) {
