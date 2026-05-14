@@ -2,6 +2,8 @@
 
 #include "color_comp_spv.h"
 
+#include "cimgui.h"
+
 #include <string.h>
 
 typedef struct {
@@ -10,6 +12,21 @@ typedef struct {
     float cam_to_srgb_r1[4];
     float cam_to_srgb_r2[4];
 } color_push_t;
+
+enum { SLOT_ALGO = 0 };
+
+static const float       color_defaults[] = { 0.0f };
+static const char *const color_names[]    = { "algorithm" };
+
+// Algorithm options. Today only the camera-baked WB + matrix runs;
+// the slot is plumbed for future variants ("As Shot WB", "Custom
+// Temperature/Tint", "Reference Profile X", ...) so this can grow
+// without bumping the sidecar schema.
+static const char *const color_algorithms[] = {
+    "Camera Baked WB + Matrix",
+};
+#define COLOR_ALGO_COUNT \
+    ((int)(sizeof(color_algorithms) / sizeof(color_algorithms[0])))
 
 static int color_pack_push(const ap_module *self,
                            const float *params,
@@ -40,13 +57,22 @@ static int color_pack_push(const ap_module *self,
     return 0;
 }
 
-// User-visible but presently parameter-less: the WB multipliers and
-// camera-to-sRGB matrix are determined by the raw's metadata. Disable
-// in the edit stack to see uncorrected camera-space RGB.
-//
-// Future shape: an algorithm selector here ("As Shot WB",
-// "Custom WB", "Reference Profile X", ...) lands as a slot param +
-// a render_params dropdown. Today there's only one implementation.
+static void color_render(const ap_module *self, float *params)
+{
+    (void)self;
+    if (!params) return;
+    int algo = (int)params[SLOT_ALGO];
+    if (algo < 0 || algo >= COLOR_ALGO_COUNT) algo = 0;
+    if (igCombo_Str_arr("Algorithm", &algo, color_algorithms,
+                        COLOR_ALGO_COUNT, -1)) {
+        params[SLOT_ALGO] = (float)algo;
+    }
+}
+
+// User-visible camera color profile: applies the camera's per-channel
+// WB multipliers and the camera-RGB → linear-sRGB matrix from the
+// raw metadata. Disable in the edit stack to see uncorrected
+// camera-space RGB.
 const ap_module module_color = {
     .name           = "color",
     .display_name   = "Camera Profile",
@@ -56,4 +82,8 @@ const ap_module module_color = {
     .spv_size       = color_comp_spv_size,
     .push_size      = sizeof(color_push_t),
     .pack_push      = color_pack_push,
+    .params_count   = 1,
+    .params_default = color_defaults,
+    .params_names   = color_names,
+    .render_params  = color_render,
 };
