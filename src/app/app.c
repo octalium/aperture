@@ -290,12 +290,27 @@ static void photo_open_job_run(ap_work_item *self)
     j->ok = (ap_raw_load(j->path, &j->raw) == 0);
 }
 
+// Release the currently-open photo's GPU resources and free it,
+// without touching navigation state (mode, library index). Both the
+// user-facing close and the prev/next photo swap go through this; the
+// swap path must keep photo_library_idx so navigation can continue.
+static void release_photo(ap_app *app)
+{
+    if (!app->photo) return;
+    ap_app_wait_idle(app);
+    ap_canvas_set_input(app->canvas, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
+    ap_gpu_set_graph(app->gpu, NULL);
+    ap_photo_close(app->photo);
+    app->photo = NULL;
+}
+
 static void install_loaded_photo(ap_app *app, photo_open_job *j)
 {
-    ap_app_close_photo(app);
+    release_photo(app);
     app->photo = ap_photo_open_with_raw(app->gpu, j->path, &j->raw);
     if (!app->photo) {
         AP_ERROR("photo: build from raw failed for %s", j->path);
+        ap_app_close_photo(app);
         return;
     }
     ap_pipeline_graph *graph = ap_photo_graph(app->photo);
@@ -344,17 +359,7 @@ void ap_app_close_photo(ap_app *app)
         app->loading_path[0] = '\0';
     }
 
-    if (!app->photo) {
-        if (app->mode == AP_MODE_PHOTO) app->mode = AP_MODE_LIBRARY;
-        bind_mode_view(app);
-        return;
-    }
-
-    ap_app_wait_idle(app);
-    ap_canvas_set_input(app->canvas, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
-    ap_gpu_set_graph(app->gpu, NULL);
-    ap_photo_close(app->photo);
-    app->photo = NULL;
+    release_photo(app);
     app->photo_library_idx = -1;
     app->mode  = AP_MODE_LIBRARY;
     bind_mode_view(app);
