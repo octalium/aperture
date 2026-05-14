@@ -15,7 +15,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define APERTURE_SIDECAR_SCHEMA 2
+// Pre-release: one sidecar shape, no migrations. We own this format
+// end-to-end and nobody downstream is depending on a stable schema
+// yet, so when the model changes we just change the writer/reader
+// and the pre-existing files become inert (the loader leaves the
+// stack empty and we re-seed from the default pipeline).
 
 static int sidecar_path(const char *source_path, char *out, size_t out_len)
 {
@@ -49,47 +53,11 @@ static const char *read_string(toml_table_t *t, const char *key)
     return v.ok ? v.u.s : NULL;
 }
 
-// Migrate a v1 sidecar's flat edit fields into stack entries. v1
-// implicitly applied demosaic + WB / color matrix as transport; v2
-// surfaces those as Demosaic + Color in the stack, so we prepend
-// them on top of the user-tunable Exposure + Tone.
-static void load_v1_edit_table(toml_table_t *edit_tbl, ap_edit_stack *stack,
-                               bool *respect_orientation)
-{
-    double d = 0.0;
-    int64_t i = 0;
-
-    if (read_int(edit_tbl, "respect_orientation", &i) == 0 && respect_orientation) {
-        *respect_orientation = i != 0;
-    }
-
-    ap_edit_stack_add(stack, "demosaic");
-    ap_edit_stack_add(stack, "color");
-
-    int exp_idx = ap_edit_stack_add(stack, "exposure");
-    if (exp_idx >= 0) {
-        ap_edit_entry *e = ap_edit_stack_at(stack, exp_idx);
-        if (read_double(edit_tbl, "exposure_ev", &d) == 0) {
-            e->params[0] = (float)d;
-        }
-    }
-
-    int tone_idx = ap_edit_stack_add(stack, "tone");
-    if (tone_idx >= 0) {
-        ap_edit_entry *e = ap_edit_stack_at(stack, tone_idx);
-        if (read_double(edit_tbl, "tone_contrast", &d) == 0) e->params[0] = (float)d;
-        if (read_double(edit_tbl, "tone_pivot",    &d) == 0) e->params[1] = (float)d;
-    }
-}
-
 // Load a single [[edit]] table row into the stack.
-static void load_v2_edit_entry(toml_table_t *t, ap_edit_stack *stack)
+static void load_edit_entry(toml_table_t *t, ap_edit_stack *stack)
 {
     const char *module_name = read_string(t, "module");
     if (!module_name) return;
-    // Drop legacy `encode` entries — Output Transfer is now appended
-    // automatically by the graph and isn't a user-stack entry.
-    if (strcmp(module_name, "encode") == 0) return;
     int idx = ap_edit_stack_add(stack, module_name);
     if (idx < 0) return;
     ap_edit_entry *e = ap_edit_stack_at(stack, idx);
@@ -136,64 +104,22 @@ int ap_sidecar_load(const char *source_path, ap_edit_stack *stack,
         return -1;
     }
 
-    int64_t version = APERTURE_SIDECAR_SCHEMA;
     toml_table_t *aperture = toml_table_in(root, "aperture");
-    if (aperture) {
-        read_int(aperture, "schema_version", &version);
-        if (respect_orientation) {
-            int64_t i = 1;
-            if (read_int(aperture, "respect_orientation", &i) == 0) {
-                *respect_orientation = i != 0;
-            }
+    if (aperture && respect_orientation) {
+        int64_t i = 1;
+        if (read_int(aperture, "respect_orientation", &i) == 0) {
+            *respect_orientation = i != 0;
         }
     }
 
     ap_edit_stack_init(stack);
 
-    if (version == 1) {
-        toml_table_t *edit_tbl = toml_table_in(root, "edit");
-        if (edit_tbl) load_v1_edit_table(edit_tbl, stack, respect_orientation);
-        toml_free(root);
-        return 0;
-    }
-    if (version != APERTURE_SIDECAR_SCHEMA) {
-        AP_WARN("sidecar: %s schema_version=%lld unsupported (expected %d)",
-                path, (long long)version, APERTURE_SIDECAR_SCHEMA);
-        toml_free(root);
-        return -1;
-    }
-
-    // v2: [[edit]] array of tables.
     toml_array_t *arr = toml_array_in(root, "edit");
     if (arr) {
         int nrows = toml_array_nelem(arr);
         for (int r = 0; r < nrows; r++) {
             toml_table_t *t = toml_table_at(arr, r);
-            if (t) load_v2_edit_entry(t, stack);
-        }
-    }
-
-    // Legacy v2 sidecars (written before Demosaic + Color became
-    // user-visible stack entries) don't carry those entries. Prepend
-    // them so old photos still render correctly without forcing the
-    // user to add them manually.
-    bool has_demosaic = false, has_color = false;
-    for (int i = 0; i < stack->count; i++) {
-        if (strcmp(stack->entries[i].module_name, "demosaic") == 0) has_demosaic = true;
-        if (strcmp(stack->entries[i].module_name, "color")    == 0) has_color    = true;
-    }
-    if (!has_demosaic || !has_color) {
-        ap_edit_stack old = *stack;
-        ap_edit_stack_init(stack);
-        if (!has_demosaic) ap_edit_stack_add(stack, "demosaic");
-        if (!has_color)    ap_edit_stack_add(stack, "color");
-        for (int i = 0; i < old.count; i++) {
-            int new_idx = ap_edit_stack_add(stack, old.entries[i].module_name);
-            if (new_idx >= 0) {
-                ap_edit_entry *e = ap_edit_stack_at(stack, new_idx);
-                memcpy(e->params, old.entries[i].params, sizeof(e->params));
-                e->enabled = old.entries[i].enabled;
-            }
+            if (t) load_edit_entry(t, stack);
         }
     }
 
@@ -222,14 +148,11 @@ int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
         return -1;
     }
 
-    int rc = -1;
     if (fprintf(f,
-        "# Aperture per-photo sidecar. Schema-versioned; edits are TOML.\n"
+        "# Aperture per-photo sidecar.\n"
         "\n"
         "[aperture]\n"
-        "schema_version       = %d\n"
-        "respect_orientation  = %d\n",
-        APERTURE_SIDECAR_SCHEMA,
+        "respect_orientation = %d\n",
         respect_orientation ? 1 : 0) < 0) goto io_fail;
 
     int count = ap_edit_stack_count(stack);
@@ -251,7 +174,7 @@ int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
             for (int s = 0; s < m->params_count; s++) {
                 const char *name = m->params_names[s];
                 if (!name) continue;
-                if (fprintf(f, "%-7s = %g\n", name, (double)e->params[s]) < 0) {
+                if (fprintf(f, "%-9s = %g\n", name, (double)e->params[s]) < 0) {
                     goto io_fail;
                 }
             }
@@ -277,6 +200,5 @@ io_fail:
     unlink(tmp_path);
     AP_ERROR("sidecar: write %s: %s", tmp_path,
              errno ? strerror(errno) : "i/o error");
-    (void)rc;
     return -1;
 }

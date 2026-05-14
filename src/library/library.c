@@ -84,7 +84,7 @@ static void backfill_name_column(sqlite3 *reg)
 static const char *DEFAULT_PIPELINE_NAME    = "default";
 // Baseline edits for a fresh photo. Output Transfer is auto-appended
 // by the pipeline graph; everything else is on the user-facing stack.
-static const char *DEFAULT_PIPELINE_MODULES = "demosaic,color";
+static const char *DEFAULT_PIPELINE_MODULES = "demosaic,wb,profile";
 
 static int gen_uuid_v4(char buf[37])
 {

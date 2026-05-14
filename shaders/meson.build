@@ -4,7 +4,8 @@ embed_spv  = find_program(meson.project_source_root() / 'tools' / 'embed_spv.py'
 shader_sources = [
   'raw_passthrough.comp',
   'demosaic.comp',
-  'color.comp',
+  'wb.comp',
+  'profile.comp',
   'exposure.comp',
   'tone.comp',
   'output_transfer.comp',

@@ -1,11 +1,8 @@
 #version 450
 
-// White balance (per-channel multipliers, normalized to G = 1) and
-// camera-to-linear-sRGB color matrix. Takes the demosaiced linear
-// camera-space RGB and produces linear sRGB-primaries RGB.
-//
-// G2 has been folded into G upstream, so we read only RGB (the alpha
-// channel is preserved).
+// Color Profile: 3x3 camera-RGB -> linear sRGB matrix transform.
+// Input is expected to be WB-corrected linear camera-RGB; output is
+// linear sRGB-primaries RGB ready for tone / output transfer.
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
@@ -13,7 +10,6 @@ layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D in_image;
 layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
 
 layout(push_constant) uniform PushConstants {
-    vec4 wb_mul;          // .xyz = R, G, B multipliers; .w unused
     vec4 cam_to_srgb_r0;  // .xyz = row 0
     vec4 cam_to_srgb_r1;
     vec4 cam_to_srgb_r2;
@@ -28,11 +24,10 @@ void main()
     }
 
     vec4 in_px = imageLoad(in_image, coord);
-    vec3 cam   = in_px.rgb * pc.wb_mul.rgb;
     vec3 srgb  = vec3(
-        dot(pc.cam_to_srgb_r0.xyz, cam),
-        dot(pc.cam_to_srgb_r1.xyz, cam),
-        dot(pc.cam_to_srgb_r2.xyz, cam));
+        dot(pc.cam_to_srgb_r0.xyz, in_px.rgb),
+        dot(pc.cam_to_srgb_r1.xyz, in_px.rgb),
+        dot(pc.cam_to_srgb_r2.xyz, in_px.rgb));
 
     imageStore(out_image, coord, vec4(srgb, in_px.a));
 }

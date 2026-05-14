@@ -1,0 +1,28 @@
+#version 450
+
+// White Balance: per-channel multipliers (R, G, B) on linear
+// camera-space RGB. WB is normalized to G = 1 in the metadata, so
+// G stays put and R / B scale by their relative quantum efficiency
+// times the current illuminant correction.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D in_image;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
+
+layout(push_constant) uniform PushConstants {
+    vec4 wb_mul;  // .xyz = R, G, B multipliers; .w unused
+} pc;
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(out_image);
+    if (coord.x >= size.x || coord.y >= size.y) {
+        return;
+    }
+
+    vec4 in_px = imageLoad(in_image, coord);
+    imageStore(out_image, coord,
+               vec4(in_px.rgb * pc.wb_mul.rgb, in_px.a));
+}
