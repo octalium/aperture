@@ -370,6 +370,32 @@ ap_canvas *ap_app_canvas(ap_app *app)
     return app ? app->canvas : NULL;
 }
 
+void ap_app_rebuild_photo_graph(ap_app *app)
+{
+    if (!app || !app->photo) return;
+
+    // Idle the device first - the old graph's images may still be in
+    // flight. ap_photo_rebuild_graph then destroys the old graph and
+    // builds a new one from the current edit stack.
+    ap_app_wait_idle(app);
+    if (ap_photo_rebuild_graph(app->photo) != 0) {
+        AP_ERROR("app: photo graph rebuild failed");
+        return;
+    }
+
+    // Both the GPU's current-graph pointer and the canvas binding
+    // referenced the *old* graph that rebuild just freed. Re-point
+    // both at the new one - missing either is a use-after-free the
+    // next time a frame is recorded.
+    ap_pipeline_graph *graph = ap_photo_graph(app->photo);
+    ap_gpu_set_graph(app->gpu, graph);
+    ap_canvas_set_input(app->canvas,
+                        ap_pipeline_graph_output_view(graph),
+                        ap_pipeline_graph_output_sampler(graph),
+                        ap_pipeline_graph_output_width(graph),
+                        ap_pipeline_graph_output_height(graph));
+}
+
 bool ap_app_photo_loading(const ap_app *app)
 {
     return app ? app->photo_loading : false;
@@ -486,7 +512,12 @@ static void drive_canvas_input(ap_app *app)
         return;
     }
 
-    if (!io->WantCaptureKeyboard) {
+    // Prev/next photo. Gate on WantTextInput, not WantCaptureKeyboard:
+    // the always-present docked panels keep WantCaptureKeyboard true,
+    // which would block navigation entirely. WantTextInput is only
+    // set while an actual text field (e.g. the rename box) is active,
+    // which is the one case where arrows should be left to ImGui.
+    if (!io->WantTextInput) {
         if (igIsKeyPressed_Bool(ImGuiKey_RightArrow, true)) {
             navigate_library_relative(app, +1);
             return;
@@ -887,14 +918,7 @@ static void draw_menubar(ap_app *app)
             bool view_raw = ap_photo_view_raw(app->photo);
             if (igMenuItem_Bool("View Raw", "`", view_raw, true)) {
                 ap_photo_set_view_raw(app->photo, !view_raw);
-                ap_app_wait_idle(app);
-                ap_photo_rebuild_graph(app->photo);
-                ap_pipeline_graph *graph = ap_photo_graph(app->photo);
-                ap_canvas_set_input(app->canvas,
-                                    ap_pipeline_graph_output_view(graph),
-                                    ap_pipeline_graph_output_sampler(graph),
-                                    ap_pipeline_graph_output_width(graph),
-                                    ap_pipeline_graph_output_height(graph));
+                ap_app_rebuild_photo_graph(app);
             }
         }
         igEndMenu();
@@ -1035,16 +1059,9 @@ static void drive_global_hotkeys(ap_app *app)
         trigger_quick_export(app);
     }
     if (igIsKeyPressed_Bool(ImGuiKey_GraveAccent, false) && app->photo
-        && !io->WantCaptureKeyboard) {
+        && !io->WantTextInput) {
         ap_photo_set_view_raw(app->photo, !ap_photo_view_raw(app->photo));
-        ap_app_wait_idle(app);
-        ap_photo_rebuild_graph(app->photo);
-        ap_pipeline_graph *graph = ap_photo_graph(app->photo);
-        ap_canvas_set_input(app->canvas,
-                            ap_pipeline_graph_output_view(graph),
-                            ap_pipeline_graph_output_sampler(graph),
-                            ap_pipeline_graph_output_width(graph),
-                            ap_pipeline_graph_output_height(graph));
+        ap_app_rebuild_photo_graph(app);
     }
     if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_0, false)) {
         if (app->mode == AP_MODE_PHOTO) {
