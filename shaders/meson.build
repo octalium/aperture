@@ -2,10 +2,13 @@ glslc      = find_program('glslc')
 embed_spv  = find_program(meson.project_source_root() / 'tools' / 'embed_spv.py')
 
 shader_sources = [
+  'raw_passthrough.comp',
   'demosaic.comp',
+  'wb.comp',
+  'profile.comp',
   'exposure.comp',
   'tone.comp',
-  'encode.comp',
+  'output_transfer.comp',
   'canvas.vert',
   'canvas.frag',
   'grid.vert',

@@ -1,6 +1,7 @@
 #ifndef APERTURE_MODULE_H
 #define APERTURE_MODULE_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -29,19 +30,32 @@ typedef enum {
 typedef struct ap_module ap_module;
 
 // Fill a per-dispatch push-constant blob (size == module->push_size).
-// Modules read `edit` for user-controlled state and `meta` for static
-// per-image data (raw camera matrix, black levels, etc.). `meta` may be
-// NULL for modules that don't need it. Return 0 to dispatch normally;
-// nonzero to skip this module this frame.
+// `params` is the per-instance parameter slot array carried by the
+// edit entry that scheduled this module (NULL for transport modules
+// like demosaic / encode with no user-visible parameters). `meta`
+// carries static per-image data (raw camera matrix, black levels,
+// etc.) and may be NULL for modules that don't need it. Return 0 to
+// dispatch normally; nonzero to skip this module this frame.
 typedef int (*ap_module_pack_push_fn)(const ap_module *self,
-                                      const ap_edit_state *edit,
+                                      const float *params,
                                       const ap_raw_metadata *meta,
                                       void *push_out);
+
+// Render an ImGui config widget for the module's per-instance
+// parameter slots. Called from the focused-edit panel when the user
+// selects this entry on the stack. NULL for transport modules.
+typedef void (*ap_module_render_params_fn)(const ap_module *self,
+                                           float *params);
 
 struct ap_module {
     const char *name;          // unique identifier, lowercase, e.g. "exposure"
     const char *display_name;  // human-readable, e.g. "Exposure"
     ap_module_category category;
+
+    // false marks transport modules that always run as part of the
+    // graph (demosaic, encode) and aren't shown in the tools palette.
+    // true marks user-facing edits.
+    bool user_visible;
 
     // Compute path. NULL spv_data marks a non-GPU module (CPU only); for
     // those the dispatch/push fields are unused. v1 modules are all GPU.
@@ -49,6 +63,15 @@ struct ap_module {
     size_t          spv_size;
     size_t          push_size;
     ap_module_pack_push_fn pack_push;
+
+    // Per-instance parameters. params_count <= AP_EDIT_PARAMS_SLOTS.
+    // params_default[params_count] seeds new stack entries.
+    // params_names[params_count] gives sidecar field names (one per
+    // slot); it doubles as the ground truth for what each slot means.
+    int                  params_count;
+    const float         *params_default;
+    const char *const   *params_names;
+    ap_module_render_params_fn render_params;
 };
 
 // Built-in module registry - NULL-terminated array of pointers. Defined

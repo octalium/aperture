@@ -3,6 +3,7 @@
 #include "sidecar.h"
 
 #include "core/log.h"
+#include "modules/module.h"
 
 #include <toml.h>
 
@@ -14,7 +15,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define APERTURE_SIDECAR_SCHEMA 1
+// Pre-release: one sidecar shape, no migrations. We own this format
+// end-to-end and nobody downstream is depending on a stable schema
+// yet, so when the model changes we just change the writer/reader
+// and the pre-existing files become inert (the loader leaves the
+// stack empty and we re-seed from the default pipeline).
 
 static int sidecar_path(const char *source_path, char *out, size_t out_len)
 {
@@ -42,18 +47,52 @@ static int read_int(toml_table_t *t, const char *key, int64_t *out)
     return 0;
 }
 
-int ap_sidecar_load_edit(const char *source_path, ap_edit_state *edit)
+static const char *read_string(toml_table_t *t, const char *key)
 {
-    if (!source_path || !edit) return -1;
+    toml_datum_t v = toml_string_in(t, key);
+    return v.ok ? v.u.s : NULL;
+}
+
+// Load a single [[edit]] table row into the stack.
+static void load_edit_entry(toml_table_t *t, ap_edit_stack *stack)
+{
+    const char *module_name = read_string(t, "module");
+    if (!module_name) return;
+    int idx = ap_edit_stack_add(stack, module_name);
+    if (idx < 0) return;
+    ap_edit_entry *e = ap_edit_stack_at(stack, idx);
+    const ap_module *m = ap_module_find(module_name);
+
+    int64_t i = 0;
+    if (read_int(t, "enabled", &i) == 0) e->enabled = i != 0;
+    const char *display = read_string(t, "name");
+    if (display && *display) {
+        snprintf(e->display_name, sizeof(e->display_name), "%s", display);
+    }
+
+    if (m && m->params_names) {
+        for (int s = 0; s < m->params_count; s++) {
+            const char *name = m->params_names[s];
+            if (!name) continue;
+            double d = 0.0;
+            if (read_double(t, name, &d) == 0) {
+                e->params[s] = (float)d;
+            }
+        }
+    }
+}
+
+int ap_sidecar_load(const char *source_path, ap_edit_stack *stack,
+                    bool *respect_orientation)
+{
+    if (!source_path || !stack) return -1;
 
     char path[4096];
     if (sidecar_path(source_path, path, sizeof(path)) < 0) return -1;
 
     FILE *f = fopen(path, "r");
     if (!f) {
-        // Treat missing as "no sidecar yet" - defaults apply.
-        if (errno == ENOENT) return -1;
-        AP_WARN("sidecar: fopen(%s): %s", path, strerror(errno));
+        if (errno != ENOENT) AP_WARN("sidecar: fopen(%s): %s", path, strerror(errno));
         return -1;
     }
 
@@ -65,41 +104,33 @@ int ap_sidecar_load_edit(const char *source_path, ap_edit_state *edit)
         return -1;
     }
 
-    int rc = -1;
-
     toml_table_t *aperture = toml_table_in(root, "aperture");
-    if (aperture) {
-        int64_t version = 0;
-        if (read_int(aperture, "schema_version", &version) == 0) {
-            if (version != APERTURE_SIDECAR_SCHEMA) {
-                AP_WARN("sidecar: %s schema_version=%lld unsupported (expected %d)",
-                        path, (long long)version, APERTURE_SIDECAR_SCHEMA);
-                goto done;
-            }
+    if (aperture && respect_orientation) {
+        int64_t i = 1;
+        if (read_int(aperture, "respect_orientation", &i) == 0) {
+            *respect_orientation = i != 0;
         }
     }
 
-    toml_table_t *edit_tbl = toml_table_in(root, "edit");
-    if (edit_tbl) {
-        double d = 0.0;
-        if (read_double(edit_tbl, "exposure_ev",   &d) == 0) edit->exposure_ev   = (float)d;
-        if (read_double(edit_tbl, "tone_contrast", &d) == 0) edit->tone_contrast = (float)d;
-        if (read_double(edit_tbl, "tone_pivot",    &d) == 0) edit->tone_pivot    = (float)d;
-        int64_t i = 0;
-        if (read_int(edit_tbl, "respect_orientation", &i) == 0) {
-            edit->respect_orientation = (int)(i != 0);
+    ap_edit_stack_init(stack);
+
+    toml_array_t *arr = toml_array_in(root, "edit");
+    if (arr) {
+        int nrows = toml_array_nelem(arr);
+        for (int r = 0; r < nrows; r++) {
+            toml_table_t *t = toml_table_at(arr, r);
+            if (t) load_edit_entry(t, stack);
         }
-        rc = 0;
     }
 
-done:
     toml_free(root);
-    return rc;
+    return 0;
 }
 
-int ap_sidecar_save_edit(const char *source_path, const ap_edit_state *edit)
+int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
+                    bool respect_orientation)
 {
-    if (!source_path || !edit) return -1;
+    if (!source_path || !stack) return -1;
 
     char path[4096];
     if (sidecar_path(source_path, path, sizeof(path)) < 0) return -1;
@@ -117,37 +148,45 @@ int ap_sidecar_save_edit(const char *source_path, const ap_edit_state *edit)
         return -1;
     }
 
-    int written = fprintf(f,
-        "# Aperture per-photo sidecar. Schema-versioned; edits are TOML.\n"
+    if (fprintf(f,
+        "# Aperture per-photo sidecar.\n"
         "\n"
         "[aperture]\n"
-        "schema_version = %d\n"
-        "\n"
-        "[edit]\n"
-        "exposure_ev         = %g\n"
-        "tone_contrast       = %g\n"
-        "tone_pivot          = %g\n"
         "respect_orientation = %d\n",
-        APERTURE_SIDECAR_SCHEMA,
-        (double)edit->exposure_ev,
-        (double)edit->tone_contrast,
-        (double)edit->tone_pivot,
-        edit->respect_orientation ? 1 : 0);
+        respect_orientation ? 1 : 0) < 0) goto io_fail;
 
-    if (written < 0) {
-        AP_ERROR("sidecar: fprintf(%s): %s", tmp_path, strerror(errno));
-        fclose(f);
-        unlink(tmp_path);
-        return -1;
+    int count = ap_edit_stack_count(stack);
+    for (int i = 0; i < count; i++) {
+        const ap_edit_entry *e = ap_edit_stack_at_const(stack, i);
+        if (!e) continue;
+        const ap_module *m = ap_module_find(e->module_name);
+        if (fprintf(f,
+            "\n[[edit]]\n"
+            "module  = \"%s\"\n"
+            "enabled = %d\n",
+            e->module_name, e->enabled ? 1 : 0) < 0) goto io_fail;
+        if (e->display_name[0]) {
+            if (fprintf(f, "name    = \"%s\"\n", e->display_name) < 0) {
+                goto io_fail;
+            }
+        }
+        if (m && m->params_names) {
+            for (int s = 0; s < m->params_count; s++) {
+                const char *name = m->params_names[s];
+                if (!name) continue;
+                if (fprintf(f, "%-9s = %g\n", name, (double)e->params[s]) < 0) {
+                    goto io_fail;
+                }
+            }
+        }
     }
 
     if (fflush(f) != 0 || fsync(fileno(f)) != 0) {
         AP_ERROR("sidecar: fsync(%s): %s", tmp_path, strerror(errno));
-        fclose(f);
-        unlink(tmp_path);
-        return -1;
+        goto io_fail;
     }
     fclose(f);
+    f = NULL;
 
     if (rename(tmp_path, path) != 0) {
         AP_ERROR("sidecar: rename(%s -> %s): %s", tmp_path, path, strerror(errno));
@@ -155,4 +194,11 @@ int ap_sidecar_save_edit(const char *source_path, const ap_edit_state *edit)
         return -1;
     }
     return 0;
+
+io_fail:
+    if (f) fclose(f);
+    unlink(tmp_path);
+    AP_ERROR("sidecar: write %s: %s", tmp_path,
+             errno ? strerror(errno) : "i/o error");
+    return -1;
 }

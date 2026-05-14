@@ -365,6 +365,11 @@ ap_photo *ap_app_photo(ap_app *app)
     return app ? app->photo : NULL;
 }
 
+ap_canvas *ap_app_canvas(ap_app *app)
+{
+    return app ? app->canvas : NULL;
+}
+
 bool ap_app_photo_loading(const ap_app *app)
 {
     return app ? app->photo_loading : false;
@@ -878,6 +883,20 @@ static void draw_menubar(ap_app *app)
         if (igMenuItem_Bool("Reset Cell Zoom", "Ctrl+0", false, true)) {
             ap_grid_reset_cell_size(app->grid);
         }
+        if (app->photo) {
+            bool view_raw = ap_photo_view_raw(app->photo);
+            if (igMenuItem_Bool("View Raw", "`", view_raw, true)) {
+                ap_photo_set_view_raw(app->photo, !view_raw);
+                ap_app_wait_idle(app);
+                ap_photo_rebuild_graph(app->photo);
+                ap_pipeline_graph *graph = ap_photo_graph(app->photo);
+                ap_canvas_set_input(app->canvas,
+                                    ap_pipeline_graph_output_view(graph),
+                                    ap_pipeline_graph_output_sampler(graph),
+                                    ap_pipeline_graph_output_width(graph),
+                                    ap_pipeline_graph_output_height(graph));
+            }
+        }
         igEndMenu();
     }
 
@@ -1015,6 +1034,18 @@ static void drive_global_hotkeys(ap_app *app)
     if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_E, false) && app->photo) {
         trigger_quick_export(app);
     }
+    if (igIsKeyPressed_Bool(ImGuiKey_GraveAccent, false) && app->photo
+        && !io->WantCaptureKeyboard) {
+        ap_photo_set_view_raw(app->photo, !ap_photo_view_raw(app->photo));
+        ap_app_wait_idle(app);
+        ap_photo_rebuild_graph(app->photo);
+        ap_pipeline_graph *graph = ap_photo_graph(app->photo);
+        ap_canvas_set_input(app->canvas,
+                            ap_pipeline_graph_output_view(graph),
+                            ap_pipeline_graph_output_sampler(graph),
+                            ap_pipeline_graph_output_width(graph),
+                            ap_pipeline_graph_output_height(graph));
+    }
     if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_0, false)) {
         if (app->mode == AP_MODE_PHOTO) {
             ap_canvas_reset_view(app->canvas);
@@ -1077,6 +1108,77 @@ int ap_app_run_frame(ap_app *app)
     draw_rename_library_modal(app);
     drive_global_hotkeys(app);
 
+    // Full-viewport invisible host window owns the dockspace that
+    // every panel docks into. PassthruCentralNode keeps the middle
+    // area transparent so the canvas / grid render path stays
+    // visible underneath. Default layout (Image left, Edits + Tools
+    // right) is built once on first launch; ImGui's .ini handles
+    // every subsequent run.
+    if (app->show_panels) {
+        ImGuiViewport *vp = igGetMainViewport();
+        igSetNextWindowPos(vp->WorkPos, ImGuiCond_Always,
+                           (ImVec2_c){ 0.0f, 0.0f });
+        igSetNextWindowSize(vp->WorkSize, ImGuiCond_Always);
+        igSetNextWindowViewport(vp->ID);
+
+        igPushStyleVar_Float(ImGuiStyleVar_WindowRounding,   0.0f);
+        igPushStyleVar_Float(ImGuiStyleVar_WindowBorderSize, 0.0f);
+        igPushStyleVar_Vec2(ImGuiStyleVar_WindowPadding,
+                            (ImVec2_c){ 0.0f, 0.0f });
+
+        ImGuiWindowFlags host_flags = ImGuiWindowFlags_NoTitleBar
+                                    | ImGuiWindowFlags_NoCollapse
+                                    | ImGuiWindowFlags_NoResize
+                                    | ImGuiWindowFlags_NoMove
+                                    | ImGuiWindowFlags_NoBringToFrontOnFocus
+                                    | ImGuiWindowFlags_NoNavFocus
+                                    | ImGuiWindowFlags_NoBackground
+                                    | ImGuiWindowFlags_NoDocking;
+
+        igBegin("##aperture_dockhost", NULL, host_flags);
+        igPopStyleVar(3);
+
+        ImGuiID dockspace_id = igGetID_Str("aperture_dockspace");
+        static bool dock_layout_built = false;
+        if (!dock_layout_built &&
+            igDockBuilderGetNode(dockspace_id) == NULL) {
+            dock_layout_built = true;
+            igDockBuilderAddNode(dockspace_id,
+                                 ImGuiDockNodeFlags_DockSpace);
+            igDockBuilderSetNodeSize(dockspace_id, vp->WorkSize);
+
+            // Left column: Image (top), Histogram (bottom).
+            // Right column: Tools (top), Edits (bottom).
+            // Center stays empty so the canvas / grid render through.
+            ImGuiID center = 0;
+            ImGuiID left   = igDockBuilderSplitNode(dockspace_id,
+                                                    ImGuiDir_Left, 0.18f,
+                                                    NULL, &center);
+            ImGuiID right  = igDockBuilderSplitNode(center,
+                                                    ImGuiDir_Right, 0.25f,
+                                                    NULL, &center);
+
+            ImGuiID left_bot  = 0;
+            ImGuiID left_top  = igDockBuilderSplitNode(left,
+                                                       ImGuiDir_Up, 0.55f,
+                                                       NULL, &left_bot);
+            ImGuiID right_bot = 0;
+            ImGuiID right_top = igDockBuilderSplitNode(right,
+                                                       ImGuiDir_Up, 0.45f,
+                                                       NULL, &right_bot);
+
+            igDockBuilderDockWindow("Image",     left_top);
+            igDockBuilderDockWindow("Histogram", left_bot);
+            igDockBuilderDockWindow("Tools",     right_top);
+            igDockBuilderDockWindow("Edits",     right_bot);
+            igDockBuilderFinish(dockspace_id);
+        }
+        igDockSpace(dockspace_id,
+                    (ImVec2_c){ 0.0f, 0.0f },
+                    ImGuiDockNodeFlags_PassthruCentralNode, NULL);
+        igEnd();
+    }
+
     if (app->show_panels) {
         for (const ap_panel *const *p = ap_panel_registry; *p; p++) {
             const ap_panel *panel = *p;
@@ -1099,9 +1201,9 @@ int ap_app_run_frame(ap_app *app)
     drain_one_completed_job(app);
     draw_loading_overlay(app);
 
-    const ap_edit_state *edit = NULL;
+    const ap_edit_stack *stack = NULL;
     if (app->photo) {
-        edit = ap_photo_edit(app->photo);
+        stack = ap_photo_stack(app->photo);
     }
-    return ap_gpu_render_frame(app->gpu, edit);
+    return ap_gpu_render_frame(app->gpu, stack);
 }

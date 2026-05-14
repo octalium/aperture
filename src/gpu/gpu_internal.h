@@ -80,7 +80,7 @@ int  gpu_swapchain_recreate(struct ap_gpu *g);
 
 int  gpu_frames_create(struct ap_gpu *g);
 void gpu_frames_destroy(struct ap_gpu *g);
-int  gpu_frame_render(struct ap_gpu *g, const ap_edit_state *edit);
+int  gpu_frame_render(struct ap_gpu *g, const ap_edit_stack *stack);
 
 #define VK_CHECK(call)                                                  \
     do {                                                                \

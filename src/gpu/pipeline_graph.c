@@ -14,6 +14,9 @@
 
 typedef struct {
     const ap_module      *module;
+    int                   entry_idx;     // index into the edit_stack, or -1
+                                         // for transport modules (demosaic,
+                                         // encode) inserted by the graph
     VkDescriptorSetLayout dsl;
     VkPipelineLayout      pl;
     VkPipeline            pipeline;
@@ -413,26 +416,75 @@ static int initial_layout_transitions(ap_pipeline_graph *graph)
 ap_pipeline_graph *ap_pipeline_graph_create(ap_gpu *g, ap_texture *input,
                                             int output_width,
                                             int output_height,
-                                            const ap_module *const *modules,
-                                            int module_count,
+                                            const ap_edit_stack *stack,
                                             const ap_raw_metadata *meta)
 {
-    if (!g || !input || !modules || module_count <= 0
-        || output_width <= 0 || output_height <= 0) {
+    if (!g || !input || output_width <= 0 || output_height <= 0) {
         AP_ERROR("ap_pipeline_graph_create: invalid args");
         return NULL;
     }
-    if (module_count > MAX_MODULES) {
-        AP_ERROR("ap_pipeline_graph_create: %d modules exceeds MAX_MODULES (%d)",
-                 module_count, MAX_MODULES);
+
+    // Only Output Transfer is auto-appended by the graph; every other
+    // module (including Demosaic and Color) is a regular user-visible
+    // entry on the stack. Output Transfer's job (linear -> sRGB EOTF)
+    // is a hard requirement of the display surface, so it stays as
+    // transport.
+    //
+    // The downstream modules (Color, Exposure, Tone, Output Transfer)
+    // all expect an RGBA16F input. The graph's source texture is R16
+    // (Bayer). So *something* has to perform the R16 -> RGBA16F step
+    // at the head of the chain. Normally Demosaic does that. When the
+    // user has disabled / removed Demosaic, we insert
+    // `raw_passthrough` — a grayscale R16 -> RGBA16F module — instead.
+    const ap_module *m_out  = ap_module_find("output_transfer");
+    const ap_module *m_pass = ap_module_find("raw_passthrough");
+    if (!m_out || !m_pass) {
+        AP_ERROR("ap_pipeline_graph_create: transport modules missing");
         return NULL;
     }
-    for (int i = 0; i < module_count; i++) {
-        if (!modules[i]) {
-            AP_ERROR("ap_pipeline_graph_create: module[%d] is NULL", i);
-            return NULL;
+
+    const ap_module *chain_modules[MAX_MODULES];
+    int              chain_entry_idx[MAX_MODULES];
+    int              stage_count = 0;
+
+    // Does the stack have any enabled Demosaic entry? If not, we'll
+    // prepend the raw passthrough so format dimensions line up.
+    bool need_passthrough = true;
+    int  n = stack ? ap_edit_stack_count(stack) : 0;
+    for (int i = 0; i < n; i++) {
+        const ap_edit_entry *e = ap_edit_stack_at_const(stack, i);
+        if (e && e->enabled && strcmp(e->module_name, "demosaic") == 0) {
+            need_passthrough = false;
+            break;
         }
     }
+    if (need_passthrough) {
+        chain_modules[stage_count]   = m_pass;
+        chain_entry_idx[stage_count] = -1;
+        stage_count++;
+    }
+
+    for (int i = 0; i < n; i++) {
+        const ap_edit_entry *e = ap_edit_stack_at_const(stack, i);
+        if (!e || !e->enabled) continue;
+        const ap_module *m = ap_module_find(e->module_name);
+        if (!m) {
+            AP_ERROR("ap_pipeline_graph_create: unknown module '%s' at stack[%d]",
+                     e->module_name, i);
+            return NULL;
+        }
+        if (stage_count >= MAX_MODULES - 1) {
+            AP_ERROR("ap_pipeline_graph_create: stack exceeds MAX_MODULES");
+            return NULL;
+        }
+        chain_modules[stage_count]   = m;
+        chain_entry_idx[stage_count] = i;
+        stage_count++;
+    }
+
+    chain_modules[stage_count]   = m_out;
+    chain_entry_idx[stage_count] = -1;
+    stage_count++;
 
     ap_pipeline_graph *graph = calloc(1, sizeof(*graph));
     if (!graph) {
@@ -442,17 +494,18 @@ ap_pipeline_graph *ap_pipeline_graph_create(ap_gpu *g, ap_texture *input,
     graph->gpu    = g;
     graph->width  = output_width;
     graph->height = output_height;
-    graph->stage_count = module_count;
+    graph->stage_count = stage_count;
     if (meta) {
         graph->meta     = *meta;
         graph->has_meta = true;
     }
 
     if (create_buffers(graph, graph->width, graph->height)        < 0) goto fail;
-    if (create_descriptor_pool(graph, module_count)               < 0) goto fail;
+    if (create_descriptor_pool(graph, stage_count)                < 0) goto fail;
 
-    for (int i = 0; i < module_count; i++) {
-        if (create_stage(graph, &graph->stages[i], modules[i])    < 0) goto fail;
+    for (int i = 0; i < stage_count; i++) {
+        if (create_stage(graph, &graph->stages[i], chain_modules[i]) < 0) goto fail;
+        graph->stages[i].entry_idx = chain_entry_idx[i];
     }
     wire_chain(graph, ap_texture_view(input));
 
@@ -551,7 +604,7 @@ static void compute_to_sample_barrier(VkCommandBuffer cmd, VkImage image)
 }
 
 int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
-                             const ap_edit_state *edit)
+                             const ap_edit_stack *stack)
 {
     if (!graph || graph->stage_count == 0) {
         return 0;
@@ -576,7 +629,12 @@ int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
 
         if (m->pack_push) {
             const ap_raw_metadata *meta = graph->has_meta ? &graph->meta : NULL;
-            int rc = m->pack_push(m, edit, meta, push_buf);
+            const float *params = NULL;
+            if (st->entry_idx >= 0 && stack) {
+                const ap_edit_entry *e = ap_edit_stack_at_const(stack, st->entry_idx);
+                if (e) params = e->params;
+            }
+            int rc = m->pack_push(m, params, meta, push_buf);
             if (rc != 0) {
                 continue; // module signaled "skip"
             }

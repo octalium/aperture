@@ -1,14 +1,14 @@
 #version 450
 
-// Stage 0: Bayer demosaic + black-level + WB + camera-RGB → sRGB-linear
-// matrix, with EXIF orientation baked into the input-coordinate transform.
+// Bayer demosaic + black-level normalization, with EXIF orientation baked
+// into the input-coordinate transform. Produces normalized linear
+// camera-space RGB; white balance and the camera-to-sRGB matrix are the
+// job of the Color module further down the chain (when enabled).
 //
 // The shader dispatches at the **display dimensions** (sensor dims swapped
-// for 90° rotations). For each output pixel it maps the output coordinate
-// back to a sensor coordinate using the flip code, then samples the raw
-// R16_UNORM Bayer plane at sensor coordinates and runs a 3x3 neighborhood-
-// average demosaic. The result is written at the output coordinate so the
-// rest of the pipeline sees an upright, display-oriented image.
+// for 90° rotations). Each output pixel maps back to a sensor coordinate
+// using the flip code, samples the raw R16_UNORM Bayer plane, and runs a
+// 3x3 neighborhood-average demosaic.
 //
 // Flip codes (dcraw / LibRaw convention):
 //   0 = no rotation
@@ -24,11 +24,7 @@ layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
 layout(push_constant) uniform PushConstants {
     uvec4 channel_map;        // [c00, c01, c10, c11]
     vec4  black_level;        // R, G, B, G2
-    vec4  wb_mul;             // R, G, B, G2 (G typically = 1.0)
     vec4  white_minus_black;  // (white_level - black_level) per channel
-    vec4  cam_to_srgb_r0;     // matrix row 0 (.xyz)
-    vec4  cam_to_srgb_r1;
-    vec4  cam_to_srgb_r2;
     uvec4 sensor_size_flip;   // .xy = sensor (W, H), .z = flip code, .w = pad
 } pc;
 
@@ -43,24 +39,13 @@ float sample_raw(ivec2 p, ivec2 size)
     return imageLoad(in_image, p).r * 65535.0;
 }
 
-vec3 cam_to_srgb_mul(vec3 cam)
-{
-    return vec3(
-        dot(pc.cam_to_srgb_r0.xyz, cam),
-        dot(pc.cam_to_srgb_r1.xyz, cam),
-        dot(pc.cam_to_srgb_r2.xyz, cam)
-    );
-}
-
 ivec2 sensor_coord_of(ivec2 out_coord, ivec2 sensor_size, uint flip)
 {
     if (flip == 3u) {
         return sensor_size - ivec2(1) - out_coord;
     } else if (flip == 5u) {
-        // 90° CCW: display (X, Y) ← sensor (W-1-Y, X)
         return ivec2(sensor_size.x - 1 - out_coord.y, out_coord.x);
     } else if (flip == 6u) {
-        // 90° CW:  display (X, Y) ← sensor (Y, H-1-X)
         return ivec2(out_coord.y, sensor_size.y - 1 - out_coord.x);
     }
     return out_coord;
@@ -90,14 +75,11 @@ void main()
             uint  out_ch = (ch == 3u) ? 1u : ch;
             float v      = (raw - pc.black_level[ch])
                          / max(pc.white_minus_black[ch], 1.0);
-            v *= pc.wb_mul[ch];
             sum[out_ch]   += v;
             count[out_ch] += 1.0;
         }
     }
 
     vec3 cam_rgb = sum / max(count, vec3(1.0));
-    vec3 srgb    = cam_to_srgb_mul(cam_rgb);
-
-    imageStore(out_image, out_coord, vec4(srgb, 1.0));
+    imageStore(out_image, out_coord, vec4(cam_rgb, 1.0));
 }
