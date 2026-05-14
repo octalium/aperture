@@ -5,8 +5,10 @@
 #include "io/raw.h"
 #include "library/library.h"
 #include "modules/module.h"
+#include "photo/thumbnail.h"
 #include "sidecar/sidecar.h"
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -167,6 +169,27 @@ ap_photo *ap_photo_open(ap_gpu *g, const char *path)
     return ap_photo_open_with_raw(g, path, &raw);
 }
 
+// Read back the rendered display image and write it to the
+// edit-render thumbnail cache. Must run after the sidecar save so
+// the cache's mtime is >= the sidecar's (ap_thumbnail_cache_valid
+// compares the two). Synchronous GPU readback; the caller has
+// already idled the device by the time close runs.
+static void write_thumbnail_cache(ap_photo *photo)
+{
+    if (!photo || !photo->path || !photo->graph) return;
+    int w = ap_pipeline_graph_output_width(photo->graph);
+    int h = ap_pipeline_graph_output_height(photo->graph);
+    if (w <= 0 || h <= 0) return;
+
+    size_t bytes = (size_t)w * (size_t)h * 4u;
+    uint8_t *rgba = malloc(bytes);
+    if (!rgba) return;
+    if (ap_pipeline_graph_readback(photo->graph, rgba, bytes) == 0) {
+        ap_thumbnail_cache_write(photo->path, rgba, w, h);
+    }
+    free(rgba);
+}
+
 void ap_photo_close(ap_photo *photo)
 {
     if (!photo) return;
@@ -177,6 +200,10 @@ void ap_photo_close(ap_photo *photo)
                             photo->respect_orientation) != 0) {
             AP_WARN("photo: failed to save sidecar for %s", photo->path);
         }
+        // Then snapshot the rendered output to the thumbnail cache so
+        // the library reflects the edits. Sidecar first, cache second
+        // — the validity check is an mtime comparison.
+        write_thumbnail_cache(photo);
     }
 
     if (photo->graph) {

@@ -351,13 +351,26 @@ void ap_app_close_photo(ap_app *app)
     }
 
     ap_app_wait_idle(app);
+    int closed_idx = app->photo_library_idx;
     ap_canvas_set_input(app->canvas, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
     ap_gpu_set_graph(app->gpu, NULL);
+    // ap_photo_close saves the sidecar then writes the edit-render
+    // thumbnail cache for this photo.
     ap_photo_close(app->photo);
     app->photo = NULL;
     app->photo_library_idx = -1;
     app->mode  = AP_MODE_LIBRARY;
     bind_mode_view(app);
+
+    // The photo we just edited now has a fresh edit-render cache.
+    // Drop its stale grid thumbnail (reset the descriptor slot to
+    // the placeholder) and invalidate the library cache so the pump
+    // re-decodes it from disk.
+    if (app->library && app->grid && closed_idx >= 0) {
+        ap_grid_set_thumbnail(app->grid, closed_idx,
+                              VK_NULL_HANDLE, VK_NULL_HANDLE);
+        ap_library_invalidate_thumbnail(app->library, closed_idx);
+    }
 }
 
 ap_photo *ap_app_photo(ap_app *app)

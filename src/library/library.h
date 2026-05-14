@@ -103,6 +103,12 @@ void ap_library_set_thumbnail(ap_library *lib, int index, ap_thumbnail *t);
 // or how decoding happens - callers drive a per-frame pump.
 int  ap_library_pending_thumbnail_idx(const ap_library *lib);
 
+// Drop the cached thumbnail for the n-th photo and rewind the
+// decode cursor so the pump re-decodes it. Used after a photo is
+// edited + closed so the grid picks up its freshly-rendered
+// edit-cache thumbnail.
+void ap_library_invalidate_thumbnail(ap_library *lib, int index);
+
 #ifdef __cplusplus
 }
 #endif

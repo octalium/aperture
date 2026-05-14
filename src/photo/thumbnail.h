@@ -3,6 +3,8 @@
 
 #include "gpu/gpu.h"
 
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <vulkan/vulkan.h>
 
@@ -12,11 +14,34 @@ extern "C" {
 
 typedef struct ap_thumbnail ap_thumbnail;
 
-// CPU-only part: open the raw, extract the embedded preview, decode
-// to a freshly malloc'd RGBA8 buffer. Safe to run from any thread -
-// no GPU access. Caller frees `*out_pixels`. Returns 0 on success.
+// CPU-only part: produce an RGBA8 thumbnail buffer for the raw at
+// `path`, safe to run from any thread. Prefers the edit-render
+// cache (a JPEG of the photo run through its actual edit stack,
+// written by ap_thumbnail_cache_write when a photo is closed) and
+// falls back to the camera's embedded preview when no fresh cache
+// exists. Caller frees `*out_pixels`. Returns 0 on success.
 int ap_thumbnail_decode_cpu(const char *path,
                             uint8_t **out_pixels, int *out_w, int *out_h);
+
+// ----- edit-render thumbnail cache --------------------------------
+//
+// `<app_root>/thumbs/<hash-of-abspath>.jpg` — a small JPEG of the
+// photo rendered through its current edit stack, so the library
+// grid reflects edits instead of the camera's embedded preview.
+
+// Build the cache path for `source_path`. Returns 0 on success.
+int  ap_thumbnail_cache_path(const char *source_path,
+                             char *out, size_t out_len);
+
+// True when a cache file exists and is at least as new as the
+// photo's `.aperture` sidecar — i.e. it reflects the current edits.
+bool ap_thumbnail_cache_valid(const char *source_path);
+
+// Downsample the supplied full-resolution RGBA8 buffer, JPEG-encode
+// it, and write it to the cache path atomically. Returns 0 on
+// success. Called on the GPU thread after a pipeline-graph readback.
+int  ap_thumbnail_cache_write(const char *source_path,
+                              const uint8_t *rgba, int width, int height);
 
 // GPU-only part: upload an RGBA8 buffer (sRGB-encoded - bytes from
 // decode_cpu are already that) as a SAMPLED-only texture. Must run

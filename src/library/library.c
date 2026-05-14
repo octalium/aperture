@@ -803,3 +803,14 @@ int ap_library_pending_thumbnail_idx(const ap_library *lib)
     }
     return -1;
 }
+
+void ap_library_invalidate_thumbnail(ap_library *lib, int index)
+{
+    if (!lib || !lib->thumbs || index < 0 || index >= lib->photo_count) return;
+    if (lib->thumbs[index]) {
+        ap_thumbnail_destroy(lib->thumbs[index]);
+        lib->thumbs[index] = NULL;
+    }
+    // Rewind the cursor so the per-frame pump revisits this slot.
+    if (lib->thumb_cursor > index) lib->thumb_cursor = index;
+}

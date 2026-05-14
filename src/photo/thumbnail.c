@@ -1,15 +1,24 @@
+#define _GNU_SOURCE
+
 #include "thumbnail.h"
 
+#include "app/root.h"
 #include "core/log.h"
 #include "gpu/texture.h"
+#include "output/jpeg.h"
 
 #include <libraw/libraw.h>
 
 #include <jpeglib.h>
 #include <setjmp.h>
 
+#include <errno.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 struct ap_thumbnail {
     ap_texture *tex;
@@ -285,12 +294,77 @@ static int bitmap_to_rgba(const libraw_processed_image_t *img,
     return 0;
 }
 
+// Read a whole file into a freshly malloc'd buffer. Caller frees.
+static int read_file(const char *path, uint8_t **out, size_t *out_size)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
+    long sz = ftell(f);
+    if (sz <= 0) { fclose(f); return -1; }
+    rewind(f);
+    uint8_t *buf = malloc((size_t)sz);
+    if (!buf) { fclose(f); return -1; }
+    size_t got = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    if (got != (size_t)sz) { free(buf); return -1; }
+    *out = buf;
+    *out_size = (size_t)sz;
+    return 0;
+}
+
+// Decode the edit-render cache JPEG for `path`, if a fresh one
+// exists. Returns 0 and fills the out-params on success; -1 when
+// there's no usable cache (caller falls back to the embedded
+// preview).
+static int decode_cache_jpeg(const char *path,
+                             uint8_t **out_pixels, int *out_w, int *out_h)
+{
+    if (!ap_thumbnail_cache_valid(path)) return -1;
+
+    char cache_path[4096];
+    if (ap_thumbnail_cache_path(path, cache_path, sizeof(cache_path)) != 0) {
+        return -1;
+    }
+    uint8_t *jpeg = NULL;
+    size_t   jpeg_size = 0;
+    if (read_file(cache_path, &jpeg, &jpeg_size) != 0) return -1;
+
+    // The cache JPEG is already at thumbnail size — decode_jpeg_to_rgba
+    // leaves it alone (DCT scale stays 1), and we still box-resample
+    // for the rare case it's slightly over the target.
+    uint8_t *rgba = NULL;
+    int w = 0, h = 0;
+    int rc = decode_jpeg_to_rgba(jpeg, jpeg_size, &rgba, &w, &h);
+    free(jpeg);
+    if (rc != 0) return -1;
+
+    uint8_t *small = NULL;
+    int sw = 0, sh = 0;
+    rc = downsample_rgba(rgba, w, h, &small, &sw, &sh);
+    free(rgba);
+    if (rc != 0) return -1;
+
+    *out_pixels = small;
+    *out_w = sw;
+    *out_h = sh;
+    return 0;
+}
+
 int ap_thumbnail_decode_cpu(const char *path,
                             uint8_t **out_pixels, int *out_w, int *out_h)
 {
     if (!path || !out_pixels || !out_w || !out_h) {
         AP_ERROR("ap_thumbnail_decode_cpu: invalid args");
         return -1;
+    }
+
+    // Edit-render cache takes precedence — it's what the photo
+    // actually looks like through its stack. The cache JPEG is
+    // already EXIF-oriented (it was rendered from the upright
+    // pipeline output), so no rotate step here.
+    if (decode_cache_jpeg(path, out_pixels, out_w, out_h) == 0) {
+        return 0;
     }
 
     libraw_data_t *raw = libraw_init(0);
@@ -418,4 +492,101 @@ int ap_thumbnail_width(const ap_thumbnail *t)
 int ap_thumbnail_height(const ap_thumbnail *t)
 {
     return t ? ap_texture_height(t->tex) : 0;
+}
+
+// ----- edit-render thumbnail cache ------------------------------------
+
+// djb2 over the absolute path. Collisions are astronomically
+// unlikely for a photo library and a stale-cache hit just means one
+// wrong thumbnail until the photo is reopened — not a correctness
+// hazard worth a heavier hash.
+static uint64_t hash_path(const char *s)
+{
+    uint64_t h = 5381;
+    for (; *s; s++) {
+        h = ((h << 5) + h) + (uint64_t)(unsigned char)*s;
+    }
+    return h;
+}
+
+int ap_thumbnail_cache_path(const char *source_path, char *out, size_t out_len)
+{
+    if (!source_path || !out || out_len == 0) return -1;
+    if (ap_app_root_ensure() < 0) return -1;
+
+    char sub[128];
+    snprintf(sub, sizeof(sub), "thumbs/%016llx.jpg",
+             (unsigned long long)hash_path(source_path));
+    return ap_app_root_join(sub, out, out_len);
+}
+
+bool ap_thumbnail_cache_valid(const char *source_path)
+{
+    if (!source_path) return false;
+
+    char cache_path[4096];
+    if (ap_thumbnail_cache_path(source_path, cache_path, sizeof(cache_path)) != 0) {
+        return false;
+    }
+    struct stat cache_st;
+    if (stat(cache_path, &cache_st) != 0) return false;
+
+    // The cache is fresh only if it's at least as new as the photo's
+    // edit sidecar. No sidecar means the photo was never edited — the
+    // cache (if any) is stale relative to nothing, so fall back to
+    // the embedded preview.
+    char sidecar_path[4096];
+    int n = snprintf(sidecar_path, sizeof(sidecar_path),
+                     "%s.aperture", source_path);
+    if (n < 0 || (size_t)n >= sizeof(sidecar_path)) return false;
+
+    struct stat side_st;
+    if (stat(sidecar_path, &side_st) != 0) return false;
+
+    return cache_st.st_mtime >= side_st.st_mtime;
+}
+
+int ap_thumbnail_cache_write(const char *source_path,
+                             const uint8_t *rgba, int width, int height)
+{
+    if (!source_path || !rgba || width <= 0 || height <= 0) return -1;
+
+    char cache_path[4096];
+    if (ap_thumbnail_cache_path(source_path, cache_path, sizeof(cache_path)) != 0) {
+        return -1;
+    }
+    // Make sure <app_root>/thumbs exists.
+    {
+        char dir[4096];
+        if (ap_app_root_join("thumbs", dir, sizeof(dir)) == 0) {
+            mkdir(dir, 0755); // ignore EEXIST
+        }
+    }
+
+    uint8_t *small = NULL;
+    int sw = 0, sh = 0;
+    if (downsample_rgba(rgba, width, height, &small, &sw, &sh) != 0) {
+        return -1;
+    }
+
+    char tmp_path[4112];
+    int n = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", cache_path);
+    if (n < 0 || (size_t)n >= sizeof(tmp_path)) {
+        free(small);
+        return -1;
+    }
+
+    int rc = ap_export_jpeg(small, sw, sh, tmp_path, 88);
+    free(small);
+    if (rc != 0) {
+        unlink(tmp_path);
+        return -1;
+    }
+    if (rename(tmp_path, cache_path) != 0) {
+        AP_ERROR("thumb cache: rename(%s -> %s): %s",
+                 tmp_path, cache_path, strerror(errno));
+        unlink(tmp_path);
+        return -1;
+    }
+    return 0;
 }
