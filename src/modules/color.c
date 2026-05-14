@@ -43,9 +43,13 @@ static int color_pack_push(const ap_module *self,
 // User-visible but presently parameter-less: the WB multipliers and
 // camera-to-sRGB matrix are determined by the raw's metadata. Disable
 // in the edit stack to see uncorrected camera-space RGB.
+//
+// Future shape: an algorithm selector here ("As Shot WB",
+// "Custom WB", "Reference Profile X", ...) lands as a slot param +
+// a render_params dropdown. Today there's only one implementation.
 const ap_module module_color = {
     .name           = "color",
-    .display_name   = "Color",
+    .display_name   = "Camera Profile",
     .category       = AP_MODULE_COLOR,
     .user_visible   = true,
     .spv_data       = color_comp_spv,

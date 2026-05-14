@@ -292,13 +292,13 @@ static void histogram_window(ap_photo *photo)
 
 // ---- per-entry config windows ---------------------------------------
 
-static bool config_window(ap_app *app, ap_photo *photo,
-                          ap_edit_stack *stack, int idx)
+static void config_window(ap_photo *photo, ap_edit_stack *stack, int idx)
 {
+    (void)photo;
     ap_edit_entry *e = ap_edit_stack_at(stack, idx);
-    if (!e->show_config) return false;
+    if (!e->show_config) return;
     const ap_module *m = ap_module_find(e->module_name);
-    if (!m) return false;
+    if (!m) return;
 
     char label_buf[AP_EDIT_DISPLAY_LEN];
     const char *display = ap_edit_stack_label_at(stack, idx,
@@ -318,32 +318,20 @@ static bool config_window(ap_app *app, ap_photo *photo,
                        (ImVec2_c){ 0.5f, 0.5f });
 
     bool open = true;
-    bool changed = false;
 
     igPushID_Int(idx);
     if (igBegin(title, &open, ImGuiWindowFlags_AlwaysAutoResize)) {
         if (igSmallButton("Reset")) {
+            // Param change only - flows to the GPU via push
+            // constants on the next record. No graph rebuild needed.
             ap_edit_stack_reset(stack, idx);
-            changed = true;
         }
         igSameLine(0.0f, -1.0f);
         igTextDisabled("double-click a value to reset it");
         igSeparator();
 
         if (m->render_params) {
-            // Capture the pre-render snapshot, render, and compare so
-            // a slider drag rebuilds the graph (params change but
-            // pixels need re-dispatch).
-            float before[AP_EDIT_PARAMS_SLOTS];
-            memcpy(before, e->params, sizeof(before));
             m->render_params(m, e->params);
-            // Per-slot double-click reset: ImGui doesn't expose a
-            // "was this specific item double-clicked" lookup after
-            // the fact, so each module's render_params is expected to
-            // check itself via igIsItemHovered + igIsMouseDoubleClicked
-            // (see exposure.c / tone.c). The whole-entry reset above
-            // is the catch-all.
-            if (memcmp(before, e->params, sizeof(before)) != 0) changed = true;
         } else {
             igTextDisabled("(no parameters)");
         }
@@ -352,16 +340,13 @@ static bool config_window(ap_app *app, ap_photo *photo,
     igPopID();
 
     if (!open) e->show_config = false;
-    if (changed) rebuild_after_change(app, photo);
-    return changed;
 }
 
-static void entry_config_windows(ap_app *app, ap_photo *photo,
-                                 ap_edit_stack *stack)
+static void entry_config_windows(ap_photo *photo, ap_edit_stack *stack)
 {
     int n = ap_edit_stack_count(stack);
     for (int i = 0; i < n; i++) {
-        config_window(app, photo, stack, i);
+        config_window(photo, stack, i);
     }
 }
 
@@ -378,7 +363,7 @@ static void photo_edit_draw(ap_app *app)
     tools_window(app, photo, stack);
     image_window(app, photo);
     histogram_window(photo);
-    entry_config_windows(app, photo, stack);
+    entry_config_windows(photo, stack);
 }
 
 const ap_panel panel_photo_edit = {

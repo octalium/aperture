@@ -39,6 +39,11 @@ static int demosaic_pack_push(const ap_module *self,
     return 0;
 }
 
+// Future shape: an algorithm slot param exposes a dropdown
+// ("Bilinear 3x3", "Malvar-He-Cutler", "AHD", ...) that selects
+// between alternate compute shaders. Today only the 3x3 bilinear
+// variant ships; render_params stays NULL until there's a choice
+// to make.
 const ap_module module_demosaic = {
     .name         = "demosaic",
     .display_name = "Demosaic",
