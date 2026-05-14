@@ -22,15 +22,21 @@
 #include <string.h>
 
 // Decode-on-worker job for one thumbnail. Submitter (main thread)
-// allocates and fills `path` + `idx`; worker fills `rgba` / `w` / `h`
-// / `ok`; main thread polls completed jobs, uploads to GPU, frees.
+// fills `path` + `idx`, and — when the library has a fresh
+// edit-render blob for this photo — `cache_jpeg` / `cache_jpeg_size`.
+// The worker decodes the cache blob if present (preferred), else the
+// camera's embedded preview from `path`. It fills `rgba` / `w` / `h`
+// / `ok`; the main thread polls completed jobs, uploads to GPU, and
+// frees both buffers.
 typedef struct {
-    ap_work_item base;
-    char         path[4096];
-    int          idx;
-    uint8_t     *rgba;
-    int          w, h;
-    int          ok;
+    ap_work_item   base;
+    char           path[4096];
+    int            idx;
+    unsigned char *cache_jpeg;       // edit-render blob, or NULL
+    size_t         cache_jpeg_size;
+    uint8_t       *rgba;
+    int            w, h;
+    int            ok;
 } thumb_job;
 
 // Raw-load-on-worker job for an interactive photo open. Submitter
@@ -180,6 +186,7 @@ static void discard_completed_item(ap_app *app, ap_work_item *it)
     if (it->run == thumb_job_run) {
         thumb_job *j = (thumb_job *)it;
         if (app->thumb_inflight > 0) app->thumb_inflight--;
+        free(j->cache_jpeg);
         free(j->rgba);
         free(j);
     } else if (it->run == photo_open_job_run) {
@@ -352,20 +359,35 @@ void ap_app_close_photo(ap_app *app)
 
     ap_app_wait_idle(app);
     int closed_idx = app->photo_library_idx;
+
+    // Snapshot the rendered output to an edit-render JPEG while the
+    // graph is still alive. Stored into the library db after close
+    // (which saves the sidecar) so the blob's updated_at >= the
+    // sidecar's mtime — the freshness comparison the decode path uses.
+    unsigned char *thumb_jpeg = NULL;
+    size_t         thumb_size = 0;
+    bool have_thumb = (closed_idx >= 0 && app->library &&
+                       ap_photo_encode_thumbnail(app->photo,
+                                                 &thumb_jpeg, &thumb_size) == 0);
+
     ap_canvas_set_input(app->canvas, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
     ap_gpu_set_graph(app->gpu, NULL);
-    // ap_photo_close saves the sidecar then writes the edit-render
-    // thumbnail cache for this photo.
     ap_photo_close(app->photo);
     app->photo = NULL;
     app->photo_library_idx = -1;
     app->mode  = AP_MODE_LIBRARY;
     bind_mode_view(app);
 
-    // The photo we just edited now has a fresh edit-render cache.
+    if (have_thumb) {
+        ap_library_store_thumbnail(app->library, closed_idx,
+                                   thumb_jpeg, thumb_size);
+        free(thumb_jpeg);
+    }
+
+    // The photo we just edited now has a fresh edit-render blob.
     // Drop its stale grid thumbnail (reset the descriptor slot to
-    // the placeholder) and invalidate the library cache so the pump
-    // re-decodes it from disk.
+    // the placeholder) and invalidate the in-memory cache so the
+    // pump re-decodes it from the db.
     if (app->library && app->grid && closed_idx >= 0) {
         ap_grid_set_thumbnail(app->grid, closed_idx,
                               VK_NULL_HANDLE, VK_NULL_HANDLE);
@@ -712,12 +734,23 @@ static void draw_grid_labels(ap_app *app)
 static void thumb_job_run(ap_work_item *self)
 {
     thumb_job *j = (thumb_job *)self;
-    j->ok = (ap_thumbnail_decode_cpu(j->path, &j->rgba, &j->w, &j->h) == 0);
+    if (j->cache_jpeg) {
+        // Edit-render blob from the library db — what the photo
+        // actually looks like through its stack.
+        j->ok = (ap_thumbnail_decode_jpeg(j->cache_jpeg, j->cache_jpeg_size,
+                                          &j->rgba, &j->w, &j->h) == 0);
+    } else {
+        // Fallback: camera's embedded preview.
+        j->ok = (ap_thumbnail_decode_cpu(j->path, &j->rgba, &j->w, &j->h) == 0);
+    }
 }
 
 // Submit decode jobs while the pool has headroom and the library
 // still has un-decoded photos. Each submission heap-allocates a
-// thumb_job that the worker fills in.
+// thumb_job that the worker fills in. The library db is consulted
+// (cheap indexed SELECT, main thread) for a fresh edit-render blob;
+// when present it's handed to the worker, otherwise the worker
+// falls back to the embedded preview.
 static void submit_pending_thumbs(ap_app *app)
 {
     if (!app->library || !app->workers) return;
@@ -734,6 +767,10 @@ static void submit_pending_thumbs(ap_app *app)
             free(j);
             continue;
         }
+        // Prefer the persisted edit-render blob; NULL out-params on
+        // miss so the worker uses the embedded-preview path.
+        ap_library_thumbnail_blob(app->library, idx,
+                                  &j->cache_jpeg, &j->cache_jpeg_size);
         ap_worker_pool_submit(app->workers, &j->base);
         app->thumb_inflight++;
     }
@@ -753,6 +790,7 @@ static void handle_thumb_complete(ap_app *app, thumb_job *j)
                                   ap_thumbnail_sampler(t));
         }
     }
+    free(j->cache_jpeg);
     free(j->rgba);
     free(j);
 }

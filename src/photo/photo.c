@@ -169,41 +169,38 @@ ap_photo *ap_photo_open(ap_gpu *g, const char *path)
     return ap_photo_open_with_raw(g, path, &raw);
 }
 
-// Read back the rendered display image and write it to the
-// edit-render thumbnail cache. Must run after the sidecar save so
-// the cache's mtime is >= the sidecar's (ap_thumbnail_cache_valid
-// compares the two). Synchronous GPU readback; the caller has
-// already idled the device by the time close runs.
-static void write_thumbnail_cache(ap_photo *photo)
+int ap_photo_encode_thumbnail(ap_photo *photo,
+                              unsigned char **out_jpeg, size_t *out_size)
 {
-    if (!photo || !photo->path || !photo->graph) return;
+    if (!photo || !photo->graph || !out_jpeg || !out_size) return -1;
     int w = ap_pipeline_graph_output_width(photo->graph);
     int h = ap_pipeline_graph_output_height(photo->graph);
-    if (w <= 0 || h <= 0) return;
+    if (w <= 0 || h <= 0) return -1;
 
     size_t bytes = (size_t)w * (size_t)h * 4u;
     uint8_t *rgba = malloc(bytes);
-    if (!rgba) return;
-    if (ap_pipeline_graph_readback(photo->graph, rgba, bytes) == 0) {
-        ap_thumbnail_cache_write(photo->path, rgba, w, h);
+    if (!rgba) return -1;
+    int rc = ap_pipeline_graph_readback(photo->graph, rgba, bytes);
+    if (rc == 0) {
+        rc = ap_thumbnail_encode_jpeg(rgba, w, h, out_jpeg, out_size);
     }
     free(rgba);
+    return rc;
 }
 
 void ap_photo_close(ap_photo *photo)
 {
     if (!photo) return;
 
-    // Persist current edit state before tearing down.
+    // Persist current edit state before tearing down. The edit-render
+    // thumbnail blob is the app's job — it owns the library handle
+    // and stores it via ap_library_store_thumbnail before calling
+    // close.
     if (photo->path) {
         if (ap_sidecar_save(photo->path, &photo->stack,
                             photo->respect_orientation) != 0) {
             AP_WARN("photo: failed to save sidecar for %s", photo->path);
         }
-        // Then snapshot the rendered output to the thumbnail cache so
-        // the library reflects the edits. Sidecar first, cache second
-        // — the validity check is an mtime comparison.
-        write_thumbnail_cache(photo);
     }
 
     if (photo->graph) {

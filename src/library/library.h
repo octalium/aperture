@@ -109,6 +109,27 @@ int  ap_library_pending_thumbnail_idx(const ap_library *lib);
 // edit-cache thumbnail.
 void ap_library_invalidate_thumbnail(ap_library *lib, int index);
 
+// ----- edit-render thumbnail blobs (persisted in the library db) -----
+//
+// The `thumbnails` table stores a small JPEG of each photo rendered
+// through its edit stack. These survive across sessions and are the
+// preferred source for grid thumbnails; the camera's embedded
+// preview is the fallback when no fresh blob exists.
+
+// Fetch the n-th photo's edit-render JPEG if it's fresh — i.e. the
+// stored render is at least as new as the photo's `.aperture`
+// sidecar. On success allocates `*out_jpeg` (caller frees) and
+// returns 0. Returns -1 when there's no row, the render is stale,
+// or the sidecar is gone.
+int  ap_library_thumbnail_blob(const ap_library *lib, int index,
+                               unsigned char **out_jpeg, size_t *out_size);
+
+// Upsert the n-th photo's edit-render JPEG, stamping updated_at to
+// now. Call this *after* the photo's sidecar has been written so
+// the freshness comparison holds. Returns 0 on success.
+int  ap_library_store_thumbnail(ap_library *lib, int index,
+                                const unsigned char *jpeg, size_t size);
+
 #ifdef __cplusplus
 }
 #endif
