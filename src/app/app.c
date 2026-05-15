@@ -305,6 +305,9 @@ static void install_loaded_photo(ap_app *app, photo_open_job *j)
                         ap_pipeline_graph_output_sampler(graph),
                         ap_pipeline_graph_output_width(graph),
                         ap_pipeline_graph_output_height(graph));
+    // Fresh photo - reset the canvas view. set_input itself preserves
+    // zoom/pan now so edits don't snap the view back.
+    ap_canvas_reset_view(app->canvas);
     app->mode = AP_MODE_PHOTO;
     bind_mode_view(app);
 }
@@ -873,7 +876,7 @@ static void draw_menubar(ap_app *app)
     if (igBeginMenu("View", true)) {
         bool show = app->show_panels;
         const char *panels_sc =
-            (app->mode == AP_MODE_PHOTO) ? "Space" : "Ctrl+Space";
+            (app->mode == AP_MODE_PHOTO) ? "Space" : NULL;
         if (igMenuItem_BoolPtr("Show Panels", panels_sc, &show, true)) {
             app->show_panels = show;
         }
@@ -1021,16 +1024,14 @@ static void drive_global_hotkeys(ap_app *app)
     ImGuiIO *io = igGetIO_Nil();
     if (!io) return;
 
-    // Panel-visibility toggle. In photo mode a bare Space does it -
-    // the canvas owns the keyboard and Space is otherwise idle there.
-    // Ctrl+Space stays as the global form because library mode binds
-    // bare Space to "open selected photo". The WantTextInput guard
-    // keeps text fields (the rename box, etc.) typeable.
-    bool space = igIsKeyPressed_Bool(ImGuiKey_Space, false);
-    bool toggle_panels =
-        (io->KeyCtrl && space) ||
-        (app->mode == AP_MODE_PHOTO && !io->WantTextInput && space);
-    if (toggle_panels) {
+    // Bare Space in photo mode toggles panel visibility. The canvas
+    // owns the keyboard there and Space is otherwise idle. Library
+    // mode has no shortcut - bare Space there is "open selected
+    // photo" and the View menu still has a clickable toggle. The
+    // WantTextInput guard keeps text fields (the rename box, etc.)
+    // typeable.
+    if (app->mode == AP_MODE_PHOTO && !io->WantTextInput
+        && igIsKeyPressed_Bool(ImGuiKey_Space, false)) {
         app->show_panels = !app->show_panels;
     }
     if (igIsKeyPressed_Bool(ImGuiKey_F11, false)) {

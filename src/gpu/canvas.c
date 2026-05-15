@@ -282,9 +282,11 @@ void ap_canvas_set_input(ap_canvas *canvas,
     canvas->has_input    = true;
     canvas->image_width  = image_width;
     canvas->image_height = image_height;
-    canvas->zoom         = AP_CANVAS_DEFAULT_ZOOM;
-    canvas->pan_x        = 0.0f;
-    canvas->pan_y        = 0.0f;
+    // Note: view state (zoom/pan) is intentionally preserved across
+    // input rebinds. Graph rebuilds on edit-stack changes go through
+    // here every time, and the user's zoom/pan should not snap back
+    // to the default on each edit. Call ap_canvas_reset_view at the
+    // genuine "new photo" sites instead.
 }
 
 static float fit_scale_for(int img_w, int img_h, int win_w, int win_h)
