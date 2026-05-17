@@ -5,8 +5,10 @@
 #include "io/raw.h"
 #include "library/library.h"
 #include "modules/module.h"
+#include "photo/thumbnail.h"
 #include "sidecar/sidecar.h"
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -167,11 +169,33 @@ ap_photo *ap_photo_open(ap_gpu *g, const char *path)
     return ap_photo_open_with_raw(g, path, &raw);
 }
 
+int ap_photo_encode_thumbnail(ap_photo *photo,
+                              unsigned char **out_jpeg, size_t *out_size)
+{
+    if (!photo || !photo->graph || !out_jpeg || !out_size) return -1;
+    int w = ap_pipeline_graph_output_width(photo->graph);
+    int h = ap_pipeline_graph_output_height(photo->graph);
+    if (w <= 0 || h <= 0) return -1;
+
+    size_t bytes = (size_t)w * (size_t)h * 4u;
+    uint8_t *rgba = malloc(bytes);
+    if (!rgba) return -1;
+    int rc = ap_pipeline_graph_readback(photo->graph, rgba, bytes);
+    if (rc == 0) {
+        rc = ap_thumbnail_encode_jpeg(rgba, w, h, out_jpeg, out_size);
+    }
+    free(rgba);
+    return rc;
+}
+
 void ap_photo_close(ap_photo *photo)
 {
     if (!photo) return;
 
-    // Persist current edit state before tearing down.
+    // Persist current edit state before tearing down. The edit-render
+    // thumbnail blob is the app's job — it owns the library handle
+    // and stores it via ap_library_store_thumbnail before calling
+    // close.
     if (photo->path) {
         if (ap_sidecar_save(photo->path, &photo->stack,
                             photo->respect_orientation) != 0) {

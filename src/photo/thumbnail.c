@@ -2,12 +2,14 @@
 
 #include "core/log.h"
 #include "gpu/texture.h"
+#include "output/jpeg.h"
 
 #include <libraw/libraw.h>
 
 #include <jpeglib.h>
 #include <setjmp.h>
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -283,6 +285,49 @@ static int bitmap_to_rgba(const libraw_processed_image_t *img,
     *out_w = w;
     *out_h = h;
     return 0;
+}
+
+int ap_thumbnail_decode_jpeg(const uint8_t *jpeg, size_t jpeg_size,
+                             uint8_t **out_pixels, int *out_w, int *out_h)
+{
+    if (!jpeg || jpeg_size == 0 || !out_pixels || !out_w || !out_h) {
+        AP_ERROR("ap_thumbnail_decode_jpeg: invalid args");
+        return -1;
+    }
+    // The blob is already at (or near) thumbnail size, so the DCT
+    // scale stays at 1; the box-resample is a safety net for the
+    // rare case it's slightly over the target.
+    uint8_t *rgba = NULL;
+    int w = 0, h = 0;
+    if (decode_jpeg_to_rgba(jpeg, jpeg_size, &rgba, &w, &h) != 0) return -1;
+
+    uint8_t *small = NULL;
+    int sw = 0, sh = 0;
+    int rc = downsample_rgba(rgba, w, h, &small, &sw, &sh);
+    free(rgba);
+    if (rc != 0) return -1;
+
+    *out_pixels = small;
+    *out_w = sw;
+    *out_h = sh;
+    return 0;
+}
+
+int ap_thumbnail_encode_jpeg(const uint8_t *rgba, int width, int height,
+                             uint8_t **out_jpeg, size_t *out_size)
+{
+    if (!rgba || width <= 0 || height <= 0 || !out_jpeg || !out_size) {
+        AP_ERROR("ap_thumbnail_encode_jpeg: invalid args");
+        return -1;
+    }
+    uint8_t *small = NULL;
+    int sw = 0, sh = 0;
+    if (downsample_rgba(rgba, width, height, &small, &sw, &sh) != 0) {
+        return -1;
+    }
+    int rc = ap_export_jpeg_mem(small, sw, sh, 88, out_jpeg, out_size);
+    free(small);
+    return rc;
 }
 
 int ap_thumbnail_decode_cpu(const char *path,

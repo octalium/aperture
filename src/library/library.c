@@ -418,7 +418,17 @@ static const char *LIBRARY_SCHEMA_SQL =
     "    capture_time INTEGER,"
     "    added_at     INTEGER NOT NULL"
     ");"
-    "CREATE INDEX IF NOT EXISTS idx_photos_capture_time ON photos(capture_time);";
+    "CREATE INDEX IF NOT EXISTS idx_photos_capture_time ON photos(capture_time);"
+    // Edit-render thumbnail cache. Keyed by the photo's relative path
+    // (same key the in-memory photo list uses). `jpeg` is a small
+    // JPEG of the photo rendered through its edit stack; `updated_at`
+    // is when it was rendered, compared against the .aperture
+    // sidecar's mtime to decide freshness.
+    "CREATE TABLE IF NOT EXISTS thumbnails ("
+    "    path       TEXT PRIMARY KEY,"
+    "    jpeg       BLOB NOT NULL,"
+    "    updated_at INTEGER NOT NULL"
+    ");";
 
 static int exec_simple(sqlite3 *db, const char *sql)
 {
@@ -802,4 +812,91 @@ int ap_library_pending_thumbnail_idx(const ap_library *lib)
         if (!m->thumbs[idx]) return idx;
     }
     return -1;
+}
+
+void ap_library_invalidate_thumbnail(ap_library *lib, int index)
+{
+    if (!lib || !lib->thumbs || index < 0 || index >= lib->photo_count) return;
+    if (lib->thumbs[index]) {
+        ap_thumbnail_destroy(lib->thumbs[index]);
+        lib->thumbs[index] = NULL;
+    }
+    // Rewind the cursor so the per-frame pump revisits this slot.
+    if (lib->thumb_cursor > index) lib->thumb_cursor = index;
+}
+
+int ap_library_thumbnail_blob(const ap_library *lib, int index,
+                              unsigned char **out_jpeg, size_t *out_size)
+{
+    if (!lib || !out_jpeg || !out_size) return -1;
+    if (index < 0 || index >= lib->photo_count) return -1;
+
+    // Freshness gate: the render must be at least as new as the
+    // photo's edit sidecar. No sidecar -> nothing to be fresh
+    // against -> fall back to the embedded preview.
+    char abs[4096];
+    if (ap_library_photo_absolute_path(lib, index, abs, sizeof(abs)) != 0) {
+        return -1;
+    }
+    char sidecar[4096];
+    int n = snprintf(sidecar, sizeof(sidecar), "%s.aperture", abs);
+    if (n < 0 || (size_t)n >= sizeof(sidecar)) return -1;
+    struct stat side_st;
+    if (stat(sidecar, &side_st) != 0) return -1;
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(lib->db,
+            "SELECT jpeg, updated_at FROM thumbnails WHERE path = ?;",
+            -1, &stmt, NULL) != SQLITE_OK) {
+        AP_ERROR("library: prepare thumb select: %s", sqlite3_errmsg(lib->db));
+        return -1;
+    }
+    sqlite3_bind_text(stmt, 1, lib->photo_paths[index], -1, SQLITE_STATIC);
+
+    int rc = -1;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        int64_t updated_at = sqlite3_column_int64(stmt, 1);
+        if (updated_at >= (int64_t)side_st.st_mtime) {
+            const void *blob = sqlite3_column_blob(stmt, 0);
+            int          len = sqlite3_column_bytes(stmt, 0);
+            if (blob && len > 0) {
+                unsigned char *copy = malloc((size_t)len);
+                if (copy) {
+                    memcpy(copy, blob, (size_t)len);
+                    *out_jpeg = copy;
+                    *out_size = (size_t)len;
+                    rc = 0;
+                }
+            }
+        }
+    }
+    sqlite3_finalize(stmt);
+    return rc;
+}
+
+int ap_library_store_thumbnail(ap_library *lib, int index,
+                               const unsigned char *jpeg, size_t size)
+{
+    if (!lib || !jpeg || size == 0) return -1;
+    if (index < 0 || index >= lib->photo_count) return -1;
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(lib->db,
+            "INSERT INTO thumbnails(path, jpeg, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(path) DO UPDATE SET "
+            "    jpeg = excluded.jpeg, updated_at = excluded.updated_at;",
+            -1, &stmt, NULL) != SQLITE_OK) {
+        AP_ERROR("library: prepare thumb upsert: %s", sqlite3_errmsg(lib->db));
+        return -1;
+    }
+    sqlite3_bind_text(stmt, 1, lib->photo_paths[index], -1, SQLITE_STATIC);
+    sqlite3_bind_blob(stmt, 2, jpeg, (int)size, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 3, (int64_t)time(NULL));
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        AP_ERROR("library: thumb upsert step: %s", sqlite3_errstr(rc));
+        return -1;
+    }
+    return 0;
 }
