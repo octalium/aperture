@@ -34,6 +34,10 @@ typedef struct {
     int            idx;
     unsigned char *cache_jpeg;       // edit-render blob, or NULL
     size_t         cache_jpeg_size;
+    uint64_t       gen;              // app->thumb_load_gen at submit;
+                                     // stale jobs (e.g. after a library
+                                     // thumbnail-mode toggle) are
+                                     // discarded on completion.
     uint8_t       *rgba;
     int            w, h;
     int            ok;
@@ -86,10 +90,20 @@ struct ap_app {
     bool             photo_loading;
     char             loading_path[4096];
     uint64_t         photo_load_gen;
+    uint64_t         thumb_load_gen;       // bumped on library
+                                           // thumbnail-mode toggle so
+                                           // in-flight thumb_jobs
+                                           // submitted in the prior
+                                           // mode are discarded on
+                                           // completion.
     int              export_inflight;
 
     // Workspace chrome
     bool             show_panels;          // Tab to toggle
+    bool             show_rendered_thumbnails; // library grid: edit
+                                               // renders (default) vs
+                                               // camera-embedded
+                                               // previews.
     bool             open_library_modal;   // File -> Open Library
     char             open_library_input[4096];
     bool             rename_library_modal; // Library indicator -> Rename
@@ -128,6 +142,7 @@ ap_app *ap_app_create(int width, int height, const char *title)
     }
     app->mode = AP_MODE_LIBRARY;
     app->show_panels = true;
+    app->show_rendered_thumbnails = true;
     app->photo_library_idx = -1;
 
     app->gpu = ap_gpu_create(width, height, title);
@@ -801,24 +816,53 @@ static void submit_pending_thumbs(ap_app *app)
         if (!j) return;
         j->base.run = thumb_job_run;
         j->idx = idx;
+        j->gen = app->thumb_load_gen;
         if (ap_library_photo_absolute_path(app->library, idx,
                                            j->path, sizeof(j->path)) != 0) {
             free(j);
             continue;
         }
-        // Prefer the persisted edit-render blob; NULL out-params on
-        // miss so the worker uses the embedded-preview path.
-        ap_library_thumbnail_blob(app->library, idx,
-                                  &j->cache_jpeg, &j->cache_jpeg_size);
+        // In rendered mode prefer the persisted edit-render blob; NULL
+        // out-params on miss so the worker uses the embedded-preview
+        // path. In camera-preview mode skip the lookup entirely so the
+        // worker always uses the embedded preview.
+        if (app->show_rendered_thumbnails) {
+            ap_library_thumbnail_blob(app->library, idx,
+                                      &j->cache_jpeg, &j->cache_jpeg_size);
+        }
         ap_worker_pool_submit(app->workers, &j->base);
         app->thumb_inflight++;
+    }
+}
+
+// Flip the library grid between rendered (edit-render db blobs, with
+// embedded-preview fallback) and camera-embedded previews. Bumps the
+// thumb load gen so any thumb_jobs still in flight from the previous
+// mode are discarded on completion, then drops every cached thumbnail
+// so the pump re-decodes the whole grid under the new mode.
+static void toggle_rendered_thumbnails(ap_app *app)
+{
+    if (!app) return;
+    app->show_rendered_thumbnails = !app->show_rendered_thumbnails;
+    app->thumb_load_gen++;
+    if (!app->library) return;
+    int n = ap_library_photo_count(app->library);
+    for (int i = 0; i < n; i++) {
+        if (app->grid) {
+            ap_grid_set_thumbnail(app->grid, i,
+                                  VK_NULL_HANDLE, VK_NULL_HANDLE);
+        }
+        ap_library_invalidate_thumbnail(app->library, i);
     }
 }
 
 static void handle_thumb_complete(ap_app *app, thumb_job *j)
 {
     if (app->thumb_inflight > 0) app->thumb_inflight--;
-    if (app->library && app->grid && j->ok && j->rgba
+    // Discard jobs submitted before the last thumbnail-mode toggle:
+    // their pixels reflect the old mode (rendered vs camera preview).
+    bool stale = (j->gen != app->thumb_load_gen);
+    if (!stale && app->library && app->grid && j->ok && j->rgba
         && j->idx >= 0 && j->idx < ap_library_photo_count(app->library))
     {
         ap_thumbnail *t = ap_thumbnail_upload(app->gpu, j->rgba, j->w, j->h);
@@ -982,6 +1026,13 @@ static void draw_menubar(ap_app *app)
                 ap_app_rebuild_photo_graph(app);
             }
         }
+        if (app->mode == AP_MODE_LIBRARY && app->library) {
+            bool rendered = app->show_rendered_thumbnails;
+            if (igMenuItem_BoolPtr("Show Rendered Thumbnails", "`",
+                                   &rendered, true)) {
+                toggle_rendered_thumbnails(app);
+            }
+        }
         igEndMenu();
     }
 
@@ -1123,10 +1174,18 @@ static void drive_global_hotkeys(ap_app *app)
     if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_E, false) && app->photo) {
         trigger_quick_export(app);
     }
-    if (igIsKeyPressed_Bool(ImGuiKey_GraveAccent, false) && app->photo
+    if (igIsKeyPressed_Bool(ImGuiKey_GraveAccent, false)
         && !io->WantTextInput) {
-        ap_photo_set_view_raw(app->photo, !ap_photo_view_raw(app->photo));
-        ap_app_rebuild_photo_graph(app);
+        // Same key, two contexts: photo mode toggles the per-photo
+        // View Raw bypass; library mode toggles between rendered and
+        // camera-preview grid thumbnails. Photo mode wins when a
+        // photo is open.
+        if (app->photo) {
+            ap_photo_set_view_raw(app->photo, !ap_photo_view_raw(app->photo));
+            ap_app_rebuild_photo_graph(app);
+        } else if (app->mode == AP_MODE_LIBRARY && app->library) {
+            toggle_rendered_thumbnails(app);
+        }
     }
     if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_0, false)) {
         if (app->mode == AP_MODE_PHOTO) {
