@@ -1,7 +1,6 @@
 #include "panels.h"
 
 #include "edit/stack.h"
-#include "gpu/canvas.h"
 #include "modules/module.h"
 #include "photo/photo.h"
 
@@ -25,16 +24,15 @@
 // or whatever the user renamed it to). show_config is in-memory
 // only.
 
+// Any structural change to the edit stack (add / remove / move /
+// enable / disable) needs the pipeline graph rebuilt. ap_app owns
+// that - it has to re-point the GPU's current-graph pointer *and*
+// the canvas binding, both of which referenced the now-freed old
+// graph. Doing only the canvas rebind here was a use-after-free.
 static void rebuild_after_change(ap_app *app, ap_photo *photo)
 {
-    ap_app_wait_idle(app);
-    if (ap_photo_rebuild_graph(photo) != 0) return;
-    ap_pipeline_graph *graph = ap_photo_graph(photo);
-    ap_canvas_set_input(ap_app_canvas(app),
-                        ap_pipeline_graph_output_view(graph),
-                        ap_pipeline_graph_output_sampler(graph),
-                        ap_pipeline_graph_output_width(graph),
-                        ap_pipeline_graph_output_height(graph));
+    (void)photo;
+    ap_app_rebuild_photo_graph(app);
 }
 
 // ---- Edits window ---------------------------------------------------
@@ -236,10 +234,7 @@ static void tools_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
         if (igSelectable_Bool(m->display_name, false,
                               ImGuiSelectableFlags_AllowDoubleClick,
                               (ImVec2_c){ 0.0f, 0.0f })) {
-            int idx = ap_edit_stack_add(stack, m->name);
-            if (idx >= 0) {
-                ap_edit_entry *e = ap_edit_stack_at(stack, idx);
-                e->show_config = true;
+            if (ap_edit_stack_add(stack, m->name) >= 0) {
                 added = true;
             }
         }

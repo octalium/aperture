@@ -297,12 +297,27 @@ static void photo_open_job_run(ap_work_item *self)
     j->ok = (ap_raw_load(j->path, &j->raw) == 0);
 }
 
+// Release the currently-open photo's GPU resources and free it,
+// without touching navigation state (mode, library index). Both the
+// user-facing close and the prev/next photo swap go through this; the
+// swap path must keep photo_library_idx so navigation can continue.
+static void release_photo(ap_app *app)
+{
+    if (!app->photo) return;
+    ap_app_wait_idle(app);
+    ap_canvas_set_input(app->canvas, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
+    ap_gpu_set_graph(app->gpu, NULL);
+    ap_photo_close(app->photo);
+    app->photo = NULL;
+}
+
 static void install_loaded_photo(ap_app *app, photo_open_job *j)
 {
-    ap_app_close_photo(app);
+    release_photo(app);
     app->photo = ap_photo_open_with_raw(app->gpu, j->path, &j->raw);
     if (!app->photo) {
         AP_ERROR("photo: build from raw failed for %s", j->path);
+        ap_app_close_photo(app);
         return;
     }
     ap_pipeline_graph *graph = ap_photo_graph(app->photo);
@@ -312,6 +327,9 @@ static void install_loaded_photo(ap_app *app, photo_open_job *j)
                         ap_pipeline_graph_output_sampler(graph),
                         ap_pipeline_graph_output_width(graph),
                         ap_pipeline_graph_output_height(graph));
+    // Fresh photo - reset the canvas view. set_input itself preserves
+    // zoom/pan now so edits don't snap the view back.
+    ap_canvas_reset_view(app->canvas);
     app->mode = AP_MODE_PHOTO;
     bind_mode_view(app);
 }
@@ -351,29 +369,19 @@ void ap_app_close_photo(ap_app *app)
         app->loading_path[0] = '\0';
     }
 
-    if (!app->photo) {
-        if (app->mode == AP_MODE_PHOTO) app->mode = AP_MODE_LIBRARY;
-        bind_mode_view(app);
-        return;
-    }
-
-    ap_app_wait_idle(app);
     int closed_idx = app->photo_library_idx;
 
     // Snapshot the rendered output to an edit-render JPEG while the
     // graph is still alive. Stored into the library db after close
     // (which saves the sidecar) so the blob's updated_at >= the
-    // sidecar's mtime — the freshness comparison the decode path uses.
+    // sidecar's mtime - the freshness comparison the decode path uses.
     unsigned char *thumb_jpeg = NULL;
     size_t         thumb_size = 0;
-    bool have_thumb = (closed_idx >= 0 && app->library &&
+    bool have_thumb = (closed_idx >= 0 && app->photo && app->library &&
                        ap_photo_encode_thumbnail(app->photo,
                                                  &thumb_jpeg, &thumb_size) == 0);
 
-    ap_canvas_set_input(app->canvas, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
-    ap_gpu_set_graph(app->gpu, NULL);
-    ap_photo_close(app->photo);
-    app->photo = NULL;
+    release_photo(app);
     app->photo_library_idx = -1;
     app->mode  = AP_MODE_LIBRARY;
     bind_mode_view(app);
@@ -403,6 +411,32 @@ ap_photo *ap_app_photo(ap_app *app)
 ap_canvas *ap_app_canvas(ap_app *app)
 {
     return app ? app->canvas : NULL;
+}
+
+void ap_app_rebuild_photo_graph(ap_app *app)
+{
+    if (!app || !app->photo) return;
+
+    // Idle the device first - the old graph's images may still be in
+    // flight. ap_photo_rebuild_graph then destroys the old graph and
+    // builds a new one from the current edit stack.
+    ap_app_wait_idle(app);
+    if (ap_photo_rebuild_graph(app->photo) != 0) {
+        AP_ERROR("app: photo graph rebuild failed");
+        return;
+    }
+
+    // Both the GPU's current-graph pointer and the canvas binding
+    // referenced the *old* graph that rebuild just freed. Re-point
+    // both at the new one - missing either is a use-after-free the
+    // next time a frame is recorded.
+    ap_pipeline_graph *graph = ap_photo_graph(app->photo);
+    ap_gpu_set_graph(app->gpu, graph);
+    ap_canvas_set_input(app->canvas,
+                        ap_pipeline_graph_output_view(graph),
+                        ap_pipeline_graph_output_sampler(graph),
+                        ap_pipeline_graph_output_width(graph),
+                        ap_pipeline_graph_output_height(graph));
 }
 
 bool ap_app_photo_loading(const ap_app *app)
@@ -521,7 +555,12 @@ static void drive_canvas_input(ap_app *app)
         return;
     }
 
-    if (!io->WantCaptureKeyboard) {
+    // Prev/next photo. Gate on WantTextInput, not WantCaptureKeyboard:
+    // the always-present docked panels keep WantCaptureKeyboard true,
+    // which would block navigation entirely. WantTextInput is only
+    // set while an actual text field (e.g. the rename box) is active,
+    // which is the one case where arrows should be left to ImGui.
+    if (!io->WantTextInput) {
         if (igIsKeyPressed_Bool(ImGuiKey_RightArrow, true)) {
             navigate_library_relative(app, +1);
             return;
@@ -923,7 +962,9 @@ static void draw_menubar(ap_app *app)
 
     if (igBeginMenu("View", true)) {
         bool show = app->show_panels;
-        if (igMenuItem_BoolPtr("Show Panels", "Ctrl+Space", &show, true)) {
+        const char *panels_sc =
+            (app->mode == AP_MODE_PHOTO) ? "Space" : NULL;
+        if (igMenuItem_BoolPtr("Show Panels", panels_sc, &show, true)) {
             app->show_panels = show;
         }
         if (igMenuItem_Bool("Fullscreen", "F11",
@@ -938,14 +979,7 @@ static void draw_menubar(ap_app *app)
             bool view_raw = ap_photo_view_raw(app->photo);
             if (igMenuItem_Bool("View Raw", "`", view_raw, true)) {
                 ap_photo_set_view_raw(app->photo, !view_raw);
-                ap_app_wait_idle(app);
-                ap_photo_rebuild_graph(app->photo);
-                ap_pipeline_graph *graph = ap_photo_graph(app->photo);
-                ap_canvas_set_input(app->canvas,
-                                    ap_pipeline_graph_output_view(graph),
-                                    ap_pipeline_graph_output_sampler(graph),
-                                    ap_pipeline_graph_output_width(graph),
-                                    ap_pipeline_graph_output_height(graph));
+                ap_app_rebuild_photo_graph(app);
             }
         }
         igEndMenu();
@@ -1070,10 +1104,14 @@ static void drive_global_hotkeys(ap_app *app)
     ImGuiIO *io = igGetIO_Nil();
     if (!io) return;
 
-    // Ctrl+Space toggles panel visibility. Ctrl-modified so it
-    // doesn't conflict with widget focus / text input, and doesn't
-    // need the WantCaptureKeyboard guard the way bare Tab did.
-    if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_Space, false)) {
+    // Bare Space in photo mode toggles panel visibility. The canvas
+    // owns the keyboard there and Space is otherwise idle. Library
+    // mode has no shortcut - bare Space there is "open selected
+    // photo" and the View menu still has a clickable toggle. The
+    // WantTextInput guard keeps text fields (the rename box, etc.)
+    // typeable.
+    if (app->mode == AP_MODE_PHOTO && !io->WantTextInput
+        && igIsKeyPressed_Bool(ImGuiKey_Space, false)) {
         app->show_panels = !app->show_panels;
     }
     if (igIsKeyPressed_Bool(ImGuiKey_F11, false)) {
@@ -1086,16 +1124,9 @@ static void drive_global_hotkeys(ap_app *app)
         trigger_quick_export(app);
     }
     if (igIsKeyPressed_Bool(ImGuiKey_GraveAccent, false) && app->photo
-        && !io->WantCaptureKeyboard) {
+        && !io->WantTextInput) {
         ap_photo_set_view_raw(app->photo, !ap_photo_view_raw(app->photo));
-        ap_app_wait_idle(app);
-        ap_photo_rebuild_graph(app->photo);
-        ap_pipeline_graph *graph = ap_photo_graph(app->photo);
-        ap_canvas_set_input(app->canvas,
-                            ap_pipeline_graph_output_view(graph),
-                            ap_pipeline_graph_output_sampler(graph),
-                            ap_pipeline_graph_output_width(graph),
-                            ap_pipeline_graph_output_height(graph));
+        ap_app_rebuild_photo_graph(app);
     }
     if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_0, false)) {
         if (app->mode == AP_MODE_PHOTO) {

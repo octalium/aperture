@@ -10,6 +10,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Default user-zoom when a photo binds (1.0 = fit-to-window). Slightly
+// under 1.0 leaves a margin around the image instead of butting it
+// against the viewport edges.
+#define AP_CANVAS_DEFAULT_ZOOM 0.9f
+
 typedef struct {
     float image_size_px[2];
     float window_size_px[2];
@@ -221,7 +226,7 @@ ap_canvas *ap_canvas_create(ap_gpu *g)
     }
     canvas->gpu          = g;
     canvas->color_format = g->swapchain_format;
-    canvas->zoom         = 1.0f;
+    canvas->zoom         = AP_CANVAS_DEFAULT_ZOOM;
 
     if (create_descriptor(canvas) < 0) goto fail;
     if (create_pipeline(canvas)   < 0) goto fail;
@@ -277,9 +282,11 @@ void ap_canvas_set_input(ap_canvas *canvas,
     canvas->has_input    = true;
     canvas->image_width  = image_width;
     canvas->image_height = image_height;
-    canvas->zoom         = 1.0f;
-    canvas->pan_x        = 0.0f;
-    canvas->pan_y        = 0.0f;
+    // Note: view state (zoom/pan) is intentionally preserved across
+    // input rebinds. Graph rebuilds on edit-stack changes go through
+    // here every time, and the user's zoom/pan should not snap back
+    // to the default on each edit. Call ap_canvas_reset_view at the
+    // genuine "new photo" sites instead.
 }
 
 static float fit_scale_for(int img_w, int img_h, int win_w, int win_h)
@@ -295,7 +302,7 @@ static float fit_scale_for(int img_w, int img_h, int win_w, int win_h)
 void ap_canvas_reset_view(ap_canvas *canvas)
 {
     if (!canvas) return;
-    canvas->zoom  = 1.0f;
+    canvas->zoom  = AP_CANVAS_DEFAULT_ZOOM;
     canvas->pan_x = 0.0f;
     canvas->pan_y = 0.0f;
 }

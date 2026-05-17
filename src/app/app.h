@@ -51,6 +51,13 @@ bool      ap_app_photo_loading(const ap_app *app);
 typedef struct ap_canvas ap_canvas;
 ap_canvas *ap_app_canvas(ap_app *app);
 
+// Rebuild the open photo's pipeline graph from its current edit
+// stack and re-point everything that referenced the old graph (the
+// GPU's current-graph pointer + the canvas binding). Panels call
+// this after any structural edit-stack change; the View Raw toggle
+// calls it too. No-op when no photo is open.
+void ap_app_rebuild_photo_graph(ap_app *app);
+
 // Synchronous GPU readback + asynchronous JPEG encode+write. Returns
 // 0 if the readback succeeded and the encode job was queued.
 int       ap_app_request_jpeg_export(ap_app *app, ap_photo *photo,
