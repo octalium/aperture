@@ -236,10 +236,7 @@ static void tools_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
         if (igSelectable_Bool(m->display_name, false,
                               ImGuiSelectableFlags_AllowDoubleClick,
                               (ImVec2_c){ 0.0f, 0.0f })) {
-            int idx = ap_edit_stack_add(stack, m->name);
-            if (idx >= 0) {
-                ap_edit_entry *e = ap_edit_stack_at(stack, idx);
-                e->show_config = true;
+            if (ap_edit_stack_add(stack, m->name) >= 0) {
                 added = true;
             }
         }
