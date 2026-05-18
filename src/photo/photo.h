@@ -8,6 +8,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -51,13 +52,14 @@ void ap_photo_set_respect_orientation(ap_photo *photo, bool yes);
 // success; the photo's previous graph is destroyed first.
 int ap_photo_rebuild_graph(ap_photo *photo);
 
-// Read back the rendered display image and JPEG-encode a small
-// thumbnail of it into a freshly malloc'd buffer (caller frees).
-// The app stores this in the library db as the photo's edit-render
-// thumbnail. Synchronous GPU readback — call on the GPU thread with
-// the device already idle. Returns 0 on success.
-int ap_photo_encode_thumbnail(ap_photo *photo,
-                              unsigned char **out_jpeg, size_t *out_size);
+// Synchronous GPU readback of the rendered display image to a
+// freshly malloc'd RGBA8 buffer (caller frees). Used by the
+// photo-close path to snapshot pixels while the graph is alive;
+// the downsample + JPEG encode + library db store happen off the
+// GPU thread on a worker. Call on the GPU thread. Returns 0 on
+// success.
+int ap_photo_readback_rgba(ap_photo *photo,
+                           uint8_t **out_rgba, int *out_w, int *out_h);
 
 // "View Raw" mode: when on, the graph is rebuilt with an empty
 // stack — every user edit is bypassed and only the raw_passthrough
