@@ -5,6 +5,7 @@
 #include "gpu/gpu.h"
 #include "gpu/pipeline_graph.h"
 #include "io/raw.h"
+#include "photo/metadata.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -72,6 +73,20 @@ void ap_photo_set_view_raw(ap_photo *photo, bool yes);
 int         ap_photo_width(const ap_photo *photo);
 int         ap_photo_height(const ap_photo *photo);
 const char *ap_photo_path(const ap_photo *photo);
+
+// Per-field metadata accessors. The "effective" value is the user's
+// override when set, otherwise the value the loader read from the
+// file. `is_user` tells the panel whether to enable the per-field
+// reset button. set_user marks the field overridden (even with an
+// empty string, which means "user explicitly blanked it"); reset
+// clears the override and reverts to the file value.
+const char *ap_photo_metadata_value(const ap_photo *photo, ap_meta_field f);
+const char *ap_photo_metadata_file_value(const ap_photo *photo,
+                                         ap_meta_field f);
+bool        ap_photo_metadata_is_user(const ap_photo *photo, ap_meta_field f);
+void        ap_photo_metadata_set_user(ap_photo *photo, ap_meta_field f,
+                                       const char *value);
+void        ap_photo_metadata_reset(ap_photo *photo, ap_meta_field f);
 
 #ifdef __cplusplus
 }

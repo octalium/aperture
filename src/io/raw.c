@@ -1,11 +1,104 @@
 #include "raw.h"
 
 #include "core/log.h"
+#include "photo/metadata.h"
 
 #include <libraw/libraw.h>
 
+#include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+// Format `value` as %g into the metadata slot. Suffix appended when
+// the value is finite and nonzero; otherwise the slot is left empty
+// so the UI shows "not in file" instead of "0mm" / "f/0" / etc.
+static void set_numeric(ap_photo_metadata *m, ap_meta_field f,
+                        double value, const char *suffix)
+{
+    if (!isfinite(value) || value <= 0.0) return;
+    char buf[AP_META_VALUE_LEN];
+    snprintf(buf, sizeof(buf), "%g%s", value, suffix ? suffix : "");
+    ap_photo_metadata_set(m, f, buf);
+}
+
+// Shutter in seconds -> conventional form. <1s renders as the
+// reciprocal fraction ("1/250"), >=1s as a plain seconds string
+// ("2s"). Cameras don't actually shoot 0.997s, but if a third-party
+// raw reports it the printf below keeps two sig figs.
+static void set_shutter(ap_photo_metadata *m, double seconds)
+{
+    if (!isfinite(seconds) || seconds <= 0.0) return;
+    char buf[AP_META_VALUE_LEN];
+    if (seconds < 1.0) {
+        snprintf(buf, sizeof(buf), "1/%g", 1.0 / seconds);
+    } else {
+        snprintf(buf, sizeof(buf), "%gs", seconds);
+    }
+    ap_photo_metadata_set(m, AP_META_SHUTTER, buf);
+}
+
+// LibRaw gives GPS as Deg/Min/Sec floats + a hemisphere ref char
+// ('N'/'S'/'E'/'W'). Render as signed decimal degrees with the
+// ref appended for unambiguous parsing.
+static void set_gps_degree(ap_photo_metadata *m, ap_meta_field f,
+                           const float dms[3], char ref)
+{
+    double d = dms[0] + dms[1] / 60.0 + dms[2] / 3600.0;
+    if (!isfinite(d) || d == 0.0) return;
+    char buf[AP_META_VALUE_LEN];
+    snprintf(buf, sizeof(buf), "%.6f %c", d, ref ? ref : '?');
+    ap_photo_metadata_set(m, f, buf);
+}
+
+static void extract_metadata(libraw_data_t *raw, ap_photo_metadata *m)
+{
+    ap_photo_metadata_clear(m);
+
+    // ISO 8601-ish "YYYY-MM-DD HH:MM:SS" (local time as recorded).
+    if (raw->other.timestamp != 0) {
+        struct tm tm_v;
+        time_t ts = raw->other.timestamp;
+        if (gmtime_r(&ts, &tm_v)) {
+            char buf[AP_META_VALUE_LEN];
+            strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_v);
+            ap_photo_metadata_set(m, AP_META_DATETIME, buf);
+        }
+    }
+
+    ap_photo_metadata_set(m, AP_META_CAMERA_MAKE,  raw->idata.make);
+    ap_photo_metadata_set(m, AP_META_CAMERA_MODEL, raw->idata.model);
+    ap_photo_metadata_set(m, AP_META_LENS_MAKE,    raw->lens.LensMake);
+    ap_photo_metadata_set(m, AP_META_LENS_MODEL,   raw->lens.Lens);
+
+    set_numeric(m, AP_META_FOCAL_LEN, raw->other.focal_len,   "mm");
+    set_numeric(m, AP_META_APERTURE,  raw->other.aperture,    "");
+    set_shutter(m, raw->other.shutter);
+    set_numeric(m, AP_META_ISO,       raw->other.iso_speed,   "");
+
+    // Aperture conventionally rendered with the "f/" prefix.
+    const char *ap_str = ap_photo_metadata_get(m, AP_META_APERTURE);
+    if (ap_str && ap_str[0]) {
+        char buf[AP_META_VALUE_LEN];
+        snprintf(buf, sizeof(buf), "f/%s", ap_str);
+        ap_photo_metadata_set(m, AP_META_APERTURE, buf);
+    }
+
+    if (raw->other.parsed_gps.gpsparsed) {
+        set_gps_degree(m, AP_META_GPS_LAT,
+                       raw->other.parsed_gps.latitude,
+                       raw->other.parsed_gps.latref);
+        set_gps_degree(m, AP_META_GPS_LON,
+                       raw->other.parsed_gps.longitude,
+                       raw->other.parsed_gps.longref);
+        set_numeric(m, AP_META_GPS_ALT,
+                    raw->other.parsed_gps.altitude, "m");
+    }
+
+    ap_photo_metadata_set(m, AP_META_ARTIST,      raw->other.artist);
+    ap_photo_metadata_set(m, AP_META_DESCRIPTION, raw->other.desc);
+}
 
 int ap_raw_load(const char *path, ap_raw_image *out)
 {
@@ -135,6 +228,8 @@ int ap_raw_load(const char *path, ap_raw_image *out)
             }
         }
     }
+
+    extract_metadata(raw, &out->file_meta);
 
     AP_INFO("loaded raw: %s (%dx%d, %s %s)",
             path, vis_w, vis_h,

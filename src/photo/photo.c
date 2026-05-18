@@ -31,6 +31,14 @@ struct ap_photo {
     ap_edit_stack stack;
     bool          respect_orientation;
     bool          view_raw;        // bypass user stack at graph build
+
+    // Metadata: file_meta is what the loader extracted from the raw
+    // file; user_meta is the per-field overlay persisted in the
+    // sidecar. user_set marks which fields the overlay defines.
+    // Display merges them (overlay wins when set, file otherwise).
+    ap_photo_metadata file_meta;
+    ap_photo_metadata user_meta;
+    bool              user_set[AP_META_FIELD_COUNT];
 };
 
 static char *strdup_or_null(const char *s)
@@ -122,8 +130,11 @@ ap_photo *ap_photo_open_with_raw(ap_gpu *g, const char *path,
     }
     photo->respect_orientation = true;
     ap_edit_stack_init(&photo->stack);
+    ap_photo_metadata_clear(&photo->user_meta);
+    for (int i = 0; i < AP_META_FIELD_COUNT; i++) photo->user_set[i] = false;
 
-    if (ap_sidecar_load(path, &photo->stack, &photo->respect_orientation) == 0) {
+    if (ap_sidecar_load(path, &photo->stack, &photo->respect_orientation,
+                        &photo->user_meta, photo->user_set) == 0) {
         AP_INFO("photo: loaded sidecar for %s", path);
     } else {
         // First open of this photo (or schema mismatch). Seed the
@@ -143,6 +154,7 @@ ap_photo *ap_photo_open_with_raw(ap_gpu *g, const char *path,
     photo->display_w = raw->width;
     photo->display_h = raw->height;
     photo->meta      = raw->meta;
+    photo->file_meta = raw->file_meta;
     ap_raw_image_free(raw);
 
     if (rebuild_graph(photo) < 0) {
@@ -199,7 +211,8 @@ void ap_photo_close(ap_photo *photo)
     // close.
     if (photo->path) {
         if (ap_sidecar_save(photo->path, &photo->stack,
-                            photo->respect_orientation) != 0) {
+                            photo->respect_orientation,
+                            &photo->user_meta, photo->user_set) != 0) {
             AP_WARN("photo: failed to save sidecar for %s", photo->path);
         }
     }
@@ -236,6 +249,43 @@ void ap_photo_set_respect_orientation(ap_photo *photo, bool yes)
 {
     if (!photo) return;
     photo->respect_orientation = yes;
+}
+
+const char *ap_photo_metadata_value(const ap_photo *photo, ap_meta_field f)
+{
+    if (!photo || f < 0 || f >= AP_META_FIELD_COUNT) return "";
+    if (photo->user_set[f]) {
+        return ap_photo_metadata_get(&photo->user_meta, f);
+    }
+    return ap_photo_metadata_get(&photo->file_meta, f);
+}
+
+const char *ap_photo_metadata_file_value(const ap_photo *photo,
+                                         ap_meta_field f)
+{
+    if (!photo || f < 0 || f >= AP_META_FIELD_COUNT) return "";
+    return ap_photo_metadata_get(&photo->file_meta, f);
+}
+
+bool ap_photo_metadata_is_user(const ap_photo *photo, ap_meta_field f)
+{
+    if (!photo || f < 0 || f >= AP_META_FIELD_COUNT) return false;
+    return photo->user_set[f];
+}
+
+void ap_photo_metadata_set_user(ap_photo *photo, ap_meta_field f,
+                                const char *value)
+{
+    if (!photo || f < 0 || f >= AP_META_FIELD_COUNT) return;
+    ap_photo_metadata_set(&photo->user_meta, f, value);
+    photo->user_set[f] = true;
+}
+
+void ap_photo_metadata_reset(ap_photo *photo, ap_meta_field f)
+{
+    if (!photo || f < 0 || f >= AP_META_FIELD_COUNT) return;
+    ap_photo_metadata_set(&photo->user_meta, f, "");
+    photo->user_set[f] = false;
 }
 
 bool ap_photo_view_raw(const ap_photo *photo)

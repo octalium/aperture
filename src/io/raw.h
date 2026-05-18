@@ -1,6 +1,8 @@
 #ifndef APERTURE_IO_RAW_H
 #define APERTURE_IO_RAW_H
 
+#include "photo/metadata.h"
+
 #include <stdint.h>
 
 // Per-image metadata that downstream stages consume independently of the
@@ -35,12 +37,14 @@ typedef struct {
 } ap_raw_metadata;
 
 typedef struct {
-    uint16_t       *bayer;          // raw Bayer plane, bayer_width × bayer_height
-    int             bayer_width;    // sensor visible region (matches `bayer`)
-    int             bayer_height;
-    int             width;          // display dimensions (post-orientation)
-    int             height;
-    ap_raw_metadata meta;
+    uint16_t          *bayer;        // raw Bayer plane, bayer_width × bayer_height
+    int                bayer_width;  // sensor visible region (matches `bayer`)
+    int                bayer_height;
+    int                width;        // display dimensions (post-orientation)
+    int                height;
+    ap_raw_metadata    meta;         // pipeline-side metadata (CFA, WB, ...)
+    ap_photo_metadata  file_meta;    // display-side metadata extracted from
+                                     // the file (camera, lens, exposure, ...)
 } ap_raw_image;
 
 int  ap_raw_load(const char *path, ap_raw_image *out);
