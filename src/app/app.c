@@ -61,8 +61,25 @@ typedef struct {
     char         out_path[4096];
 } export_job;
 
+// Edit-render thumbnail encode job. Main thread does the sync GPU
+// readback in ap_app_close_photo, then submits this so the downsample
+// + libjpeg encode happen off the GPU thread - ESC returns to the
+// grid immediately. The completion handler stores the JPEG blob to
+// the library db and invalidates the affected grid cell so the
+// thumbnail pump re-decodes the new render.
+typedef struct {
+    ap_work_item   base;
+    uint8_t       *rgba;        // owned by the job, freed in handler
+    int            width, height;
+    int            idx;         // library index of the closed photo
+    unsigned char *jpeg;        // filled by run; freed in handler
+    size_t         jpeg_size;
+    int            ok;
+} thumb_encode_job;
+
 // Forward decls of run-fn pointers (used to dispatch on completion).
 static void thumb_job_run(ap_work_item *self);
+static void thumb_encode_job_run(ap_work_item *self);
 static void photo_open_job_run(ap_work_item *self);
 static void export_job_run(ap_work_item *self);
 
@@ -197,6 +214,11 @@ static void discard_completed_item(ap_app *app, ap_work_item *it)
         export_job *j = (export_job *)it;
         if (app->export_inflight > 0) app->export_inflight--;
         free(j->rgba);
+        free(j);
+    } else if (it->run == thumb_encode_job_run) {
+        thumb_encode_job *j = (thumb_encode_job *)it;
+        free(j->rgba);
+        free(j->jpeg);
         free(j);
     } else {
         AP_WARN("worker: unknown completed run-fn at discard, leaking item");
@@ -371,36 +393,37 @@ void ap_app_close_photo(ap_app *app)
 
     int closed_idx = app->photo_library_idx;
 
-    // Snapshot the rendered output to an edit-render JPEG while the
-    // graph is still alive. Stored into the library db after close
-    // (which saves the sidecar) so the blob's updated_at >= the
-    // sidecar's mtime - the freshness comparison the decode path uses.
-    unsigned char *thumb_jpeg = NULL;
-    size_t         thumb_size = 0;
-    bool have_thumb = (closed_idx >= 0 && app->photo && app->library &&
-                       ap_photo_encode_thumbnail(app->photo,
-                                                 &thumb_jpeg, &thumb_size) == 0);
+    // Sync GPU readback of the rendered output while the graph is
+    // still alive. The downsample + libjpeg encode + db store happen
+    // on a worker so the return to library mode is immediate; the
+    // affected grid cell refreshes when the worker completes.
+    uint8_t *thumb_rgba = NULL;
+    int      thumb_w = 0, thumb_h = 0;
+    bool have_rgba = (closed_idx >= 0 && app->photo && app->library &&
+                      ap_photo_readback_rgba(app->photo,
+                                             &thumb_rgba,
+                                             &thumb_w, &thumb_h) == 0);
 
     release_photo(app);
     app->photo_library_idx = -1;
     app->mode  = AP_MODE_LIBRARY;
     bind_mode_view(app);
 
-    if (have_thumb) {
-        ap_library_store_thumbnail(app->library, closed_idx,
-                                   thumb_jpeg, thumb_size);
-        free(thumb_jpeg);
+    if (have_rgba) {
+        thumb_encode_job *j = calloc(1, sizeof(*j));
+        if (j) {
+            j->base.run = thumb_encode_job_run;
+            j->rgba     = thumb_rgba;
+            j->width    = thumb_w;
+            j->height   = thumb_h;
+            j->idx      = closed_idx;
+            thumb_rgba  = NULL;
+            ap_worker_pool_submit(app->workers, &j->base);
+        } else {
+            AP_ERROR("close_photo: thumb_encode job alloc failed");
+        }
     }
-
-    // The photo we just edited now has a fresh edit-render blob.
-    // Drop its stale grid thumbnail (reset the descriptor slot to
-    // the placeholder) and invalidate the in-memory cache so the
-    // pump re-decodes it from the db.
-    if (app->library && app->grid && closed_idx >= 0) {
-        ap_grid_set_thumbnail(app->grid, closed_idx,
-                              VK_NULL_HANDLE, VK_NULL_HANDLE);
-        ap_library_invalidate_thumbnail(app->library, closed_idx);
-    }
+    free(thumb_rgba); // NULL after submit; non-NULL only on alloc failure
 }
 
 ap_photo *ap_app_photo(ap_app *app)
@@ -868,6 +891,33 @@ static void handle_export_complete(ap_app *app, export_job *j)
     free(j);
 }
 
+static void thumb_encode_job_run(ap_work_item *self)
+{
+    thumb_encode_job *j = (thumb_encode_job *)self;
+    j->ok = (ap_thumbnail_encode_jpeg(j->rgba, j->width, j->height,
+                                      &j->jpeg, &j->jpeg_size) == 0);
+}
+
+static void handle_thumb_encode_complete(ap_app *app, thumb_encode_job *j)
+{
+    if (j->ok && j->jpeg && j->jpeg_size > 0 && app->library
+        && j->idx >= 0 && j->idx < ap_library_photo_count(app->library))
+    {
+        ap_library_store_thumbnail(app->library, j->idx, j->jpeg, j->jpeg_size);
+        // Drop the grid cell back to the placeholder and invalidate
+        // the in-memory cache so the pump re-decodes from the new
+        // db blob.
+        if (app->grid) {
+            ap_grid_set_thumbnail(app->grid, j->idx,
+                                  VK_NULL_HANDLE, VK_NULL_HANDLE);
+        }
+        ap_library_invalidate_thumbnail(app->library, j->idx);
+    }
+    free(j->rgba);
+    free(j->jpeg);
+    free(j);
+}
+
 // Pop one completed work item per frame and dispatch on its run-fn.
 // Pool poll is non-blocking - when nothing's ready, this is a no-op.
 static void drain_one_completed_job(ap_app *app)
@@ -881,6 +931,8 @@ static void drain_one_completed_job(ap_app *app)
         handle_photo_open_complete(app, (photo_open_job *)it);
     } else if (it->run == export_job_run) {
         handle_export_complete(app, (export_job *)it);
+    } else if (it->run == thumb_encode_job_run) {
+        handle_thumb_encode_complete(app, (thumb_encode_job *)it);
     } else {
         AP_WARN("worker: unknown completed run-fn, leaking item");
     }
