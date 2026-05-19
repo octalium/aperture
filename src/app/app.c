@@ -2,6 +2,7 @@
 
 #include "app.h"
 
+#include "app/layout_profiles.h"
 #include "core/log.h"
 #include "core/worker.h"
 #include "gpu/canvas.h"
@@ -125,6 +126,8 @@ struct ap_app {
     char             open_library_input[4096];
     bool             rename_library_modal; // Library indicator -> Rename
     char             rename_library_input[128];
+    bool             save_layout_modal;    // View -> Layout -> Save Current As
+    char             save_layout_input[AP_LAYOUT_NAME_LEN];
     bool             quit_requested;
 };
 
@@ -200,6 +203,10 @@ ap_app *ap_app_create(int width, int height, const char *title)
             ap_gpu_toggle_fullscreen(app->gpu);
         }
     }
+
+    // Load the active layout profile, if any. ImGui's IniFilename
+    // is NULL (see imgui_bridge.cpp); this is the explicit load.
+    ap_layout_init();
 
     install_signal_handlers();
     return app;
@@ -1192,6 +1199,40 @@ static void draw_menubar(ap_app *app)
                 toggle_rendered_thumbnails(app);
             }
         }
+        igSeparator();
+
+        // Layout submenu: pick / save / reset named profiles.
+        // ImGui auto-persist is off; this is the explicit surface.
+        if (igBeginMenu("Layout", true)) {
+            const char *active = ap_layout_active_name();
+            char names[AP_LAYOUT_MAX_ENUM][AP_LAYOUT_NAME_LEN];
+            int n = ap_layout_list(names, AP_LAYOUT_MAX_ENUM);
+            if (n <= 0) {
+                igMenuItem_Bool("(no saved layouts)", NULL, false, false);
+            } else {
+                for (int i = 0; i < n; i++) {
+                    bool checked = (strcmp(active, names[i]) == 0);
+                    if (igMenuItem_Bool(names[i], NULL, checked, true)
+                        && !checked) {
+                        ap_layout_set_active(names[i]);
+                    }
+                }
+            }
+            igSeparator();
+            if (igMenuItem_Bool("Save Current As...", NULL, false, true)) {
+                app->save_layout_modal = true;
+                app->save_layout_input[0] = '\0';
+            }
+            if (igMenuItem_Bool("Reset to Active Profile", NULL,
+                                false, active && active[0])) {
+                ap_layout_reload_active();
+            }
+            if (igMenuItem_Bool("Reset to Defaults", NULL, false, true)) {
+                ap_layout_reset_to_default();
+            }
+            igEndMenu();
+        }
+
         igEndMenu();
     }
 
@@ -1309,6 +1350,36 @@ static void draw_rename_library_modal(ap_app *app)
     igEndPopup();
 }
 
+static void draw_save_layout_modal(ap_app *app)
+{
+    if (app->save_layout_modal) {
+        igOpenPopup_Str("Save Layout As", 0);
+        app->save_layout_modal = false;
+    }
+    if (!igBeginPopupModal("Save Layout As", NULL, 0)) return;
+
+    igText("Name for the layout:");
+    igSetNextItemWidth(260.0f);
+    igInputText("##layout_name", app->save_layout_input,
+                sizeof(app->save_layout_input), 0, NULL, NULL);
+
+    bool name_ok = app->save_layout_input[0] != '\0';
+    if (!name_ok) igBeginDisabled(true);
+    bool submit = igButton("Save", (ImVec2_c){ 120.0f, 0.0f });
+    if (!name_ok) igEndDisabled();
+    igSameLine(0.0f, -1.0f);
+    bool cancel = igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f });
+
+    if (submit && name_ok) {
+        if (ap_layout_save_current_as(app->save_layout_input) == 0) {
+            igCloseCurrentPopup();
+        }
+    } else if (cancel) {
+        igCloseCurrentPopup();
+    }
+    igEndPopup();
+}
+
 static void drive_global_hotkeys(ap_app *app)
 {
     ImGuiIO *io = igGetIO_Nil();
@@ -1406,6 +1477,7 @@ int ap_app_run_frame(ap_app *app)
     draw_menubar(app);
     draw_open_library_modal(app);
     draw_rename_library_modal(app);
+    draw_save_layout_modal(app);
     drive_global_hotkeys(app);
 
     // Full-viewport invisible host window owns the dockspace that
@@ -1440,6 +1512,15 @@ int ap_app_run_frame(ap_app *app)
 
         ImGuiID dockspace_id = igGetID_Str("aperture_dockspace");
         static bool dock_layout_built = false;
+        // Reset-to-defaults trips the rebuild flag in layout_profiles;
+        // pull it down here so the builder runs again on the next
+        // frame and produces the default layout from scratch.
+        if (ap_layout_consume_rebuild_request()) {
+            if (igDockBuilderGetNode(dockspace_id)) {
+                igDockBuilderRemoveNode(dockspace_id);
+            }
+            dock_layout_built = false;
+        }
         if (!dock_layout_built &&
             igDockBuilderGetNode(dockspace_id) == NULL) {
             dock_layout_built = true;

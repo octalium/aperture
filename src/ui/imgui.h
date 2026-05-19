@@ -38,6 +38,14 @@ void ap_imgui_discard_frame(void);
 uint64_t ap_imgui_register_texture(VkSampler sampler, VkImageView view, VkImageLayout layout);
 void     ap_imgui_unregister_texture(uint64_t tex_id);
 
+// Layout profile IO. The layout-profiles subsystem owns the chosen
+// path; the bridge just forwards to ImGui's explicit Load/Save APIs.
+// ap_imgui_clear_settings wipes runtime layout state (used before
+// re-running the dock builder for "reset to defaults").
+void ap_imgui_load_layout(const char *path);
+void ap_imgui_save_layout(const char *path);
+void ap_imgui_clear_settings(void);
+
 #ifdef __cplusplus
 }
 #endif

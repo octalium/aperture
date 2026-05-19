@@ -47,6 +47,11 @@ extern "C" bool ap_imgui_init(GLFWwindow *window,
     ImGuiIO &io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    // Disable ImGui's auto-load/auto-save. Layouts live as named
+    // profiles managed by src/app/layout_profiles.c; user drags
+    // during a session don't persist unless the user explicitly
+    // saves them as a profile. See issue #102.
+    io.IniFilename = nullptr;
 
     ImGui::StyleColorsDark();
 
@@ -136,4 +141,26 @@ extern "C" void ap_imgui_unregister_texture(uint64_t tex_id)
     }
     VkDescriptorSet ds = reinterpret_cast<VkDescriptorSet>(tex_id);
     ImGui_ImplVulkan_RemoveTexture(ds);
+}
+
+extern "C" void ap_imgui_load_layout(const char *path)
+{
+    if (!path) return;
+    ImGui::LoadIniSettingsFromDisk(path);
+}
+
+extern "C" void ap_imgui_save_layout(const char *path)
+{
+    if (!path) return;
+    ImGui::SaveIniSettingsToDisk(path);
+}
+
+// cimgui exposes the runtime-clear helper as the flat `igClearIniSettings`;
+// the upstream C++ binding doesn't ship it under the `ImGui::` namespace
+// in this header, so reach for the flat symbol directly.
+extern "C" void igClearIniSettings(void);
+
+extern "C" void ap_imgui_clear_settings(void)
+{
+    igClearIniSettings();
 }
