@@ -6,6 +6,7 @@ aperture_sources += files(
   'raw_passthrough.c',
   'registry.c',
   'saturation.c',
+  'sharpen.c',
   'tone.c',
   'vignette.c',
   'wb.c',

@@ -1,0 +1,46 @@
+#version 450
+
+// Capture sharpening as a 3x3 single-pass unsharp mask approximation.
+// out = in + amount * (in - blurred), gated by a magnitude
+// threshold so flat patches don't amplify noise. v1 ships this
+// single-pass form; #120 tracks the proper two-pass separable
+// Gaussian variant once #107's multi-shader scaffold is fully wired.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D in_image;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
+
+layout(push_constant) uniform PushConstants {
+    float amount;
+    float threshold;
+} pc;
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(in_image);
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    vec3 sum = vec3(0.0);
+    int taps = 0;
+    // 3x3 box; clamp to edges so border pixels still get a valid
+    // mean rather than reading off the image.
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            ivec2 p = clamp(coord + ivec2(dx, dy),
+                            ivec2(0), size - 1);
+            sum += imageLoad(in_image, p).rgb;
+            taps++;
+        }
+    }
+    vec3 blurred = sum / float(taps);
+
+    vec4 c   = imageLoad(in_image, coord);
+    vec3 hp  = c.rgb - blurred;
+    float mag = length(hp);
+    float gate = step(pc.threshold, mag);
+
+    c.rgb = c.rgb + gate * pc.amount * hp;
+    imageStore(out_image, coord, c);
+}
