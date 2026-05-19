@@ -19,6 +19,11 @@
 
 static char     g_buffers[AP_META_FIELD_COUNT][AP_META_VALUE_LEN];
 static char     g_status[128] = {0};
+// Off by default — reached via Edit > Metadata (or the title-bar X
+// to hide). The pointer is wired into ap_panel below so the registry
+// runner skips draws while hidden and the Edit menu drives the same
+// flag.
+static bool     g_visible = false;
 
 static void clear_buffers(void)
 {
@@ -30,7 +35,11 @@ static void library_metadata_draw(ap_app *app)
     ap_library *lib = ap_app_library(app);
     if (!lib) return;
 
-    if (!igBegin("Bulk Metadata", NULL, 0)) {
+    // ##library disambiguates from the per-photo Metadata window
+    // (src/panels/photo_metadata.c), which shares the visible title.
+    // The two never coexist (mode-gated), but ImGui would still hash
+    // them to the same ID and share size/position/dock state.
+    if (!igBegin("Metadata##library", &g_visible, 0)) {
         igEnd();
         return;
     }
@@ -100,7 +109,9 @@ static void library_metadata_draw(ap_app *app)
 }
 
 const ap_panel panel_library_metadata = {
-    .name = "library_metadata",
-    .mode = AP_MODE_LIBRARY,
-    .draw = library_metadata_draw,
+    .name       = "library_metadata",
+    .mode       = AP_MODE_LIBRARY,
+    .draw       = library_metadata_draw,
+    .visible    = &g_visible,
+    .menu_label = "Metadata",
 };

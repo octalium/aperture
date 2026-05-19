@@ -18,6 +18,13 @@ struct ap_panel {
     const char       *name;
     ap_mode           mode;
     ap_panel_draw_fn  draw;
+    // Optional. When non-NULL, the registry runner only invokes `draw`
+    // while `*visible` is true, and the menubar's Edit menu shows a
+    // checkable toggle bound to the same address (using `menu_label`).
+    // Panels passing this should also pass the same pointer to
+    // `igBegin` as the second argument so the title-bar X stays in sync.
+    bool             *visible;
+    const char       *menu_label;
 };
 
 // NULL-terminated array of registered panels. Defined in

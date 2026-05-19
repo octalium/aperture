@@ -1098,6 +1098,29 @@ static void draw_menubar(ap_app *app)
         igEndMenu();
     }
 
+    // Edit menu: visibility toggles for every registered panel that
+    // opted into the optional-panel pattern (panels.h: `visible` +
+    // `menu_label`). Shown only when at least one matching panel
+    // exists for the current mode — otherwise we'd render an empty
+    // dropdown.
+    bool any_optional = false;
+    for (const ap_panel *const *p = ap_panel_registry; *p; p++) {
+        const ap_panel *panel = *p;
+        if (!panel->menu_label || !panel->visible) continue;
+        if (panel->mode != AP_MODE_ANY && panel->mode != app->mode) continue;
+        any_optional = true;
+        break;
+    }
+    if (any_optional && igBeginMenu("Edit", true)) {
+        for (const ap_panel *const *p = ap_panel_registry; *p; p++) {
+            const ap_panel *panel = *p;
+            if (!panel->menu_label || !panel->visible) continue;
+            if (panel->mode != AP_MODE_ANY && panel->mode != app->mode) continue;
+            igMenuItem_BoolPtr(panel->menu_label, NULL, panel->visible, true);
+        }
+        igEndMenu();
+    }
+
     if (igBeginMenu("View", true)) {
         bool show = app->show_panels;
         const char *panels_sc =
@@ -1417,10 +1440,10 @@ int ap_app_run_frame(ap_app *app)
     if (app->show_panels) {
         for (const ap_panel *const *p = ap_panel_registry; *p; p++) {
             const ap_panel *panel = *p;
-            if (panel->mode == AP_MODE_ANY || panel->mode == app->mode) {
-                if (panel->draw) {
-                    panel->draw(app);
-                }
+            if (panel->mode != AP_MODE_ANY && panel->mode != app->mode) continue;
+            if (panel->visible && !*panel->visible) continue;
+            if (panel->draw) {
+                panel->draw(app);
             }
         }
     }
