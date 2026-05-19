@@ -1,0 +1,46 @@
+#version 450
+
+// Filmic tone curve — Uncharted 2 / Hable operator. Smooth S-curve
+// with a long toe + shoulder; common pick for "looks like camera
+// film" stories. v1 exposes a single \`exposure\` pre-multiplier;
+// keeps the curve constants tasteful defaults. More controls
+// (shoulder strength, toe knee, linear white) are future variants.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D in_image;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
+
+layout(push_constant) uniform PushConstants {
+    float exposure;
+} pc;
+
+const float A = 0.15;  // shoulder strength
+const float B = 0.50;  // linear strength
+const float C = 0.10;  // linear angle
+const float D = 0.20;  // toe strength
+const float E = 0.02;  // toe numerator
+const float F = 0.30;  // toe denominator
+const float W = 11.2;  // linear white point
+
+vec3 hable(vec3 x)
+{
+    return ((x * (A * x + C * B) + D * E) /
+            (x * (A * x + B)     + D * F)) - E / F;
+}
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(in_image);
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    vec4 px = imageLoad(in_image, coord);
+    vec3 c  = max(px.rgb * pc.exposure, vec3(0.0));
+
+    vec3 mapped = hable(c);
+    vec3 white_scale = vec3(1.0) / hable(vec3(W));
+    c = clamp(mapped * white_scale, vec3(0.0), vec3(1.0));
+
+    imageStore(out_image, coord, vec4(c, px.a));
+}
