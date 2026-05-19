@@ -575,6 +575,30 @@ ap_library *ap_app_library(ap_app *app)
     return app ? app->library : NULL;
 }
 
+int ap_app_apply_pipeline_to_selection(ap_app *app, int64_t pipeline_id)
+{
+    if (!app || !app->library || !app->grid) return -1;
+
+    int n = ap_library_photo_count(app->library);
+    int wrote = 0;
+    for (int i = 0; i < n; i++) {
+        if (!ap_grid_is_selected(app->grid, i)) continue;
+        // Skip the open photo: rewriting its sidecar would leave the
+        // in-memory stack stale until the user closes + reopens.
+        if (app->photo && i == app->photo_library_idx) continue;
+        if (ap_library_apply_pipeline_to_photo(app->library, i,
+                                               pipeline_id) == 0) {
+            wrote++;
+            // Drop the cached thumbnail so the grid re-decodes against
+            // the new stack on the next pump cycle. The stored
+            // edit-render blob's freshness check already handles the
+            // sidecar-mtime side.
+            ap_library_invalidate_thumbnail(app->library, i);
+        }
+    }
+    return wrote;
+}
+
 int ap_app_apply_metadata_to_selection(ap_app *app,
                                        const ap_photo_metadata *patch,
                                        const bool patch_set[AP_META_FIELD_COUNT])
@@ -1475,10 +1499,11 @@ int ap_app_run_frame(ap_app *app)
             igDockBuilderDockWindow("Histogram",         right_top);
             igDockBuilderDockWindow("Tools",             right_mid);
             igDockBuilderDockWindow("Edits",             right_bot);
-            // Library-mode bulk Metadata shares the bottom-right slot
+            // Library-mode bulk panels share the bottom-right slot
             // with Edits. They're mode-gated, so only one tab renders
             // at a time and the slot reads cleanly in either mode.
-            igDockBuilderDockWindow("Metadata##library", right_bot);
+            igDockBuilderDockWindow("Metadata##library",  right_bot);
+            igDockBuilderDockWindow("Pipelines##library", right_bot);
             igDockBuilderFinish(dockspace_id);
         }
         igDockSpace(dockspace_id,

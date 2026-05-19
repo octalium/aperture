@@ -4,6 +4,7 @@
 #include "photo/metadata.h"
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -79,6 +80,13 @@ ap_library *ap_app_library(ap_app *app);
 int ap_app_apply_metadata_to_selection(ap_app *app,
                                        const ap_photo_metadata *patch,
                                        const bool patch_set[AP_META_FIELD_COUNT]);
+
+// Replace the edit stack of every selected photo with the contents
+// of the named pipeline. Skips the currently-open photo to avoid
+// desyncing its in-memory stack from the sidecar; reopening the
+// photo picks up the rewritten stack. Returns the number written,
+// or -1 on error.
+int ap_app_apply_pipeline_to_selection(ap_app *app, int64_t pipeline_id);
 
 #ifdef __cplusplus
 }

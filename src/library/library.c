@@ -1311,6 +1311,36 @@ static void seed_default_stack(ap_edit_stack *stack)
     ap_pipeline_apply_default_to_stack(stack);
 }
 
+int ap_library_apply_pipeline_to_photo(ap_library *lib, int index,
+                                       int64_t pipeline_id)
+{
+    if (!lib || index < 0 || index >= lib->photo_count) return -1;
+
+    ap_edit_stack new_stack;
+    if (ap_pipeline_apply_to_stack(pipeline_id, &new_stack) != 0) return -1;
+
+    char path[4096];
+    if (ap_library_photo_absolute_path(lib, index, path, sizeof(path)) != 0) {
+        return -1;
+    }
+
+    // Load to preserve everything other than the stack — orientation
+    // toggle, per-field metadata overrides. If no sidecar exists yet,
+    // the loader's defaults are fine; we just write the new stack on
+    // top of them.
+    ap_edit_stack existing_stack;
+    ap_edit_stack_init(&existing_stack);
+    bool respect_orientation = true;
+    ap_photo_metadata user_meta;
+    ap_photo_metadata_clear(&user_meta);
+    bool user_set[AP_META_FIELD_COUNT] = {0};
+    ap_sidecar_load(path, &existing_stack, &respect_orientation,
+                    &user_meta, user_set);
+
+    return ap_sidecar_save(path, &new_stack, respect_orientation,
+                           &user_meta, user_set);
+}
+
 int ap_library_apply_metadata_patch(ap_library *lib, int index,
                                     const ap_photo_metadata *patch,
                                     const bool patch_set[AP_META_FIELD_COUNT])
