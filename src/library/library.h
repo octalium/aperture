@@ -1,6 +1,7 @@
 #ifndef APERTURE_LIBRARY_H
 #define APERTURE_LIBRARY_H
 
+#include "edit/stack.h"
 #include "photo/metadata.h"
 
 #include <stdbool.h>
@@ -29,20 +30,54 @@ int ap_registry_list(ap_registry_entry *out, int max);
 
 // ----- pipelines (app-wide, registry db) -----
 
-#define AP_PIPELINE_MAX_MODULES 16
-#define AP_PIPELINE_NAME_LEN    64
-#define AP_PIPELINE_MODULE_LEN  32
+#define AP_PIPELINE_NAME_LEN 64
 
+// A pipeline is a named, ordered list of edit-stack entries
+// (module + params + enabled + display_name). The on-disk shape
+// reuses the sidecar's `[[edit]]` TOML serialization — see
+// edit/stack_toml.h — so the same stack round-trips between sidecar
+// and pipeline row.
 typedef struct {
-    int64_t id;
-    char    name[AP_PIPELINE_NAME_LEN];
-    char    modules[AP_PIPELINE_MAX_MODULES][AP_PIPELINE_MODULE_LEN];
-    int     module_count;
+    int64_t       id;
+    char          name[AP_PIPELINE_NAME_LEN];
+    ap_edit_stack stack;
 } ap_pipeline_def;
 
 // Fetch the app-wide default pipeline. The registry is created and
 // the default row seeded if either is missing. Returns 0 on success.
 int ap_pipeline_get_default(ap_pipeline_def *out);
+
+// Fetch a pipeline by id. Returns 0 on success, -1 if not found.
+int ap_pipeline_get(int64_t id, ap_pipeline_def *out);
+
+// List up to `max` pipelines, ordered by name. Returns the number
+// written, or -1 on error.
+int ap_pipeline_list(ap_pipeline_def *out, int max);
+
+// Create a new pipeline with the given name and stack contents.
+// On success writes the new row's id to `*out_id` and returns 0.
+// Returns -1 on failure (name collision, db error, ...).
+int ap_pipeline_create(const char *name, const ap_edit_stack *stack,
+                       int64_t *out_id);
+
+// Update an existing pipeline's name and/or stack. Pass NULL for
+// either to leave it untouched. Returns 0 on success.
+int ap_pipeline_update(int64_t id, const char *name,
+                       const ap_edit_stack *stack);
+
+// Delete a pipeline by id. Returns 0 on success, -1 on failure. The
+// default pipeline is protected — delete on its id is a no-op.
+int ap_pipeline_delete(int64_t id);
+
+// Replace `out` with a fresh stack assembled from the pipeline's
+// entries (user-visible modules only; transport modules like
+// demosaic are managed by the graph). Preserves the pipeline's
+// params, display_name, and enabled flags. Returns 0 on success.
+int ap_pipeline_apply_to_stack(int64_t pipeline_id, ap_edit_stack *out);
+
+// Convenience wrapper around ap_pipeline_apply_to_stack for the
+// app-wide default. Used by the photo-open + sidecar fallback paths.
+int ap_pipeline_apply_default_to_stack(ap_edit_stack *out);
 
 // ----- app-wide key/value settings (registry db) -----
 
@@ -77,6 +112,17 @@ const char *ap_library_name(const ap_library *lib);
 // Persist a new display name on the library's registry row. Pass an
 // empty string (or NULL) to clear. Returns 0 on success.
 int         ap_library_set_name(ap_library *lib, const char *name);
+
+// Per-library default pipeline. The pointer is stored in the
+// per-library db's settings table; the registry default is the
+// fallback when the per-library pointer is unset or the referenced
+// pipeline no longer exists. Returns the pipeline id (>0) on
+// success, or 0 if no pipeline is found (caller falls back).
+int64_t     ap_library_default_pipeline_id(const ap_library *lib);
+
+// Persist the per-library default pipeline id. Pass 0 to clear so
+// the library reverts to the registry default. Returns 0 on success.
+int         ap_library_set_default_pipeline_id(ap_library *lib, int64_t id);
 
 // Relative path of the n-th photo (n in [0, count)). Owned by the
 // library; valid until close.

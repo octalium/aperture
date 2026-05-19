@@ -3,6 +3,7 @@
 #include "sidecar.h"
 
 #include "core/log.h"
+#include "edit/stack_toml.h"
 #include "modules/module.h"
 
 #include <toml.h>
@@ -31,14 +32,6 @@ static int sidecar_path(const char *source_path, char *out, size_t out_len)
     return 0;
 }
 
-static int read_double(toml_table_t *t, const char *key, double *out)
-{
-    toml_datum_t v = toml_double_in(t, key);
-    if (!v.ok) return -1;
-    *out = v.u.d;
-    return 0;
-}
-
 static int read_int(toml_table_t *t, const char *key, int64_t *out)
 {
     toml_datum_t v = toml_int_in(t, key);
@@ -51,35 +44,6 @@ static const char *read_string(toml_table_t *t, const char *key)
 {
     toml_datum_t v = toml_string_in(t, key);
     return v.ok ? v.u.s : NULL;
-}
-
-// Load a single [[edit]] table row into the stack.
-static void load_edit_entry(toml_table_t *t, ap_edit_stack *stack)
-{
-    const char *module_name = read_string(t, "module");
-    if (!module_name) return;
-    int idx = ap_edit_stack_add(stack, module_name);
-    if (idx < 0) return;
-    ap_edit_entry *e = ap_edit_stack_at(stack, idx);
-    const ap_module *m = ap_module_find(module_name);
-
-    int64_t i = 0;
-    if (read_int(t, "enabled", &i) == 0) e->enabled = i != 0;
-    const char *display = read_string(t, "name");
-    if (display && *display) {
-        snprintf(e->display_name, sizeof(e->display_name), "%s", display);
-    }
-
-    if (m && m->params_names) {
-        for (int s = 0; s < m->params_count; s++) {
-            const char *name = m->params_names[s];
-            if (!name) continue;
-            double d = 0.0;
-            if (read_double(t, name, &d) == 0) {
-                e->params[s] = (float)d;
-            }
-        }
-    }
 }
 
 int ap_sidecar_load(const char *source_path, ap_edit_stack *stack,
@@ -114,16 +78,8 @@ int ap_sidecar_load(const char *source_path, ap_edit_stack *stack,
         }
     }
 
-    ap_edit_stack_init(stack);
-
     toml_array_t *arr = toml_array_in(root, "edit");
-    if (arr) {
-        int nrows = toml_array_nelem(arr);
-        for (int r = 0; r < nrows; r++) {
-            toml_table_t *t = toml_table_at(arr, r);
-            if (t) load_edit_entry(t, stack);
-        }
-    }
+    ap_edit_stack_read_toml_array(arr, stack);
 
     if (user_meta) ap_photo_metadata_clear(user_meta);
     if (user_set) {
@@ -203,34 +159,10 @@ int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
         "# Aperture per-photo sidecar.\n"
         "\n"
         "[aperture]\n"
-        "respect_orientation = %d\n",
+        "respect_orientation = %d\n\n",
         respect_orientation ? 1 : 0) < 0) goto io_fail;
 
-    int count = ap_edit_stack_count(stack);
-    for (int i = 0; i < count; i++) {
-        const ap_edit_entry *e = ap_edit_stack_at_const(stack, i);
-        if (!e) continue;
-        const ap_module *m = ap_module_find(e->module_name);
-        if (fprintf(f,
-            "\n[[edit]]\n"
-            "module  = \"%s\"\n"
-            "enabled = %d\n",
-            e->module_name, e->enabled ? 1 : 0) < 0) goto io_fail;
-        if (e->display_name[0]) {
-            if (fprintf(f, "name    = \"%s\"\n", e->display_name) < 0) {
-                goto io_fail;
-            }
-        }
-        if (m && m->params_names) {
-            for (int s = 0; s < m->params_count; s++) {
-                const char *name = m->params_names[s];
-                if (!name) continue;
-                if (fprintf(f, "%-9s = %g\n", name, (double)e->params[s]) < 0) {
-                    goto io_fail;
-                }
-            }
-        }
-    }
+    if (ap_edit_stack_write_toml(stack, f) != 0) goto io_fail;
 
     // Sparse [metadata] table: only fields the user has overridden.
     if (user_meta && user_set) {
