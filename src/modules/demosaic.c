@@ -1,10 +1,23 @@
 #include "module.h"
 
 #include "demosaic_comp_spv.h"
-
-#include "cimgui.h"
+#include "demosaic_malvar_comp_spv.h"
+#include "demosaic_adaptive_comp_spv.h"
 
 #include <string.h>
+
+// Demosaic. Three single-pass variants, all sharing the same push
+// constants (Bayer pattern, black levels, sensor size + EXIF flip)
+// and the same pack_push — they differ only in the interpolation
+// shader:
+//   0  Bilinear 3x3 — fast, soft, zipper artefacts on fine detail.
+//   1  Malvar 2004  — 5x5 gradient-corrected linear; sharp, cheap.
+//   2  Adaptive     — Hamilton-Adams edge-directed green + colour-
+//                     difference chroma; best edge behaviour.
+//
+// AHD / DCB want a multi-pass pipeline (interpolate both axes, then a
+// homogeneity decision) — that needs multi-dispatch-per-module
+// support and is tracked separately.
 
 typedef struct {
     uint32_t channel_map[4];
@@ -17,16 +30,6 @@ enum { SLOT_ALGO = 0 };
 
 static const float       demosaic_defaults[] = { 0.0f };
 static const char *const demosaic_names[]    = { "algorithm" };
-
-// Algorithm options. The shader is currently bilinear-3x3 only, so
-// the dropdown has a single choice; the slot is plumbed for future
-// alternatives (Malvar-He-Cutler, AHD, ...) to land without a
-// schema change.
-static const char *const demosaic_algorithms[] = {
-    "Bilinear 3x3",
-};
-#define DEMOSAIC_ALGO_COUNT \
-    ((int)(sizeof(demosaic_algorithms) / sizeof(demosaic_algorithms[0])))
 
 static int demosaic_pack_push(const ap_module *self,
                               const float *params,
@@ -56,31 +59,42 @@ static int demosaic_pack_push(const ap_module *self,
     return 0;
 }
 
-static void demosaic_render(const ap_module *self, float *params,
-                          const ap_module_render_ctx *ctx)
-{
-    (void)ctx;
-    (void)self;
-    if (!params) return;
-    int algo = (int)params[SLOT_ALGO];
-    if (algo < 0 || algo >= DEMOSAIC_ALGO_COUNT) algo = 0;
-    if (igCombo_Str_arr("Algorithm", &algo, demosaic_algorithms,
-                        DEMOSAIC_ALGO_COUNT, -1)) {
-        params[SLOT_ALGO] = (float)algo;
-    }
-}
+static const ap_module_variant demosaic_variants[] = {
+    {
+        .display_name = "Bilinear 3x3",
+        .spv_data     = demosaic_comp_spv,
+        .spv_size     = demosaic_comp_spv_size,
+        .push_size    = sizeof(demosaic_push_t),
+        .pack_push    = demosaic_pack_push,
+    },
+    {
+        .display_name = "Malvar 2004",
+        .spv_data     = demosaic_malvar_comp_spv,
+        .spv_size     = demosaic_malvar_comp_spv_size,
+        .push_size    = sizeof(demosaic_push_t),
+        .pack_push    = demosaic_pack_push,
+    },
+    {
+        .display_name = "Adaptive",
+        .spv_data     = demosaic_adaptive_comp_spv,
+        .spv_size     = demosaic_adaptive_comp_spv_size,
+        .push_size    = sizeof(demosaic_push_t),
+        .pack_push    = demosaic_pack_push,
+    },
+};
 
 const ap_module module_demosaic = {
-    .name           = "demosaic",
-    .display_name   = "Demosaic",
-    .category       = AP_MODULE_COLOR,
-    .user_visible   = true,
-    .spv_data       = demosaic_comp_spv,
-    .spv_size       = demosaic_comp_spv_size,
-    .push_size      = sizeof(demosaic_push_t),
-    .pack_push      = demosaic_pack_push,
-    .params_count   = 1,
-    .params_default = demosaic_defaults,
-    .params_names   = demosaic_names,
-    .render_params  = demosaic_render,
+    .name               = "demosaic",
+    .display_name       = "Demosaic",
+    .category           = AP_MODULE_COLOR,
+    .user_visible       = true,
+    .params_count       = 1,
+    .params_default     = demosaic_defaults,
+    .params_names       = demosaic_names,
+    .render_params      = NULL,  // only param is the algorithm — the
+                                 // config window draws that combo.
+    .variant_count      = (int)(sizeof(demosaic_variants) /
+                                sizeof(demosaic_variants[0])),
+    .variants           = demosaic_variants,
+    .variant_param_slot = SLOT_ALGO,
 };
