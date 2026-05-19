@@ -1407,30 +1407,62 @@ int ap_app_run_frame(ap_app *app)
                                  ImGuiDockNodeFlags_DockSpace);
             igDockBuilderSetNodeSize(dockspace_id, vp->WorkSize);
 
-            // Left column: Image (top), Histogram (bottom).
-            // Right column: Tools (top), Edits (bottom).
+            // Default layout. The principle: left column is "what
+            // this is" (per-photo info / library navigation), right
+            // column is "what to do with it" (active controls). Both
+            // generalize across modes — photo-mode panels populate
+            // their slots when photo is open, library-mode panels
+            // populate the same column shapes when in library mode.
+            // ImGui's .ini owns everything past first launch, so the
+            // user can rearrange, float, or close panels freely;
+            // empty dock nodes collapse and the central node grows.
+            //
+            // Left column:
+            //   top    — Image (per-photo settings)
+            //   bottom — Metadata (per-photo, photo mode)
+            // Right column:
+            //   top    — Histogram
+            //   middle — Tools
+            //   bottom — Edits + Metadata##library (tabbed; only one
+            //            draws at a time because they're mode-gated)
             // Center stays empty so the canvas / grid render through.
             ImGuiID center = 0;
             ImGuiID left   = igDockBuilderSplitNode(dockspace_id,
                                                     ImGuiDir_Left, 0.18f,
                                                     NULL, &center);
+            // Pull the right column off the post-left remainder. 0.27
+            // of the remainder ≈ 0.22 of the full window, matching the
+            // hand-tuned width in the user's saved .ini.
             ImGuiID right  = igDockBuilderSplitNode(center,
-                                                    ImGuiDir_Right, 0.25f,
+                                                    ImGuiDir_Right, 0.27f,
                                                     NULL, &center);
 
-            ImGuiID left_bot  = 0;
-            ImGuiID left_top  = igDockBuilderSplitNode(left,
-                                                       ImGuiDir_Up, 0.55f,
-                                                       NULL, &left_bot);
-            ImGuiID right_bot = 0;
-            ImGuiID right_top = igDockBuilderSplitNode(right,
-                                                       ImGuiDir_Up, 0.45f,
-                                                       NULL, &right_bot);
+            ImGuiID left_bot = 0;
+            ImGuiID left_top = igDockBuilderSplitNode(left,
+                                                      ImGuiDir_Up, 0.50f,
+                                                      NULL, &left_bot);
 
-            igDockBuilderDockWindow("Image",     left_top);
-            igDockBuilderDockWindow("Histogram", left_bot);
-            igDockBuilderDockWindow("Tools",     right_top);
-            igDockBuilderDockWindow("Edits",     right_bot);
+            // Right column splits twice: first off Edits at the bottom,
+            // then within the upper half split Histogram (top) /
+            // Tools (middle).
+            ImGuiID right_bot   = 0;
+            ImGuiID right_upper = igDockBuilderSplitNode(right,
+                                                          ImGuiDir_Up, 0.62f,
+                                                          NULL, &right_bot);
+            ImGuiID right_mid = 0;
+            ImGuiID right_top = igDockBuilderSplitNode(right_upper,
+                                                       ImGuiDir_Up, 0.45f,
+                                                       NULL, &right_mid);
+
+            igDockBuilderDockWindow("Image",             left_top);
+            igDockBuilderDockWindow("Metadata",          left_bot);
+            igDockBuilderDockWindow("Histogram",         right_top);
+            igDockBuilderDockWindow("Tools",             right_mid);
+            igDockBuilderDockWindow("Edits",             right_bot);
+            // Library-mode bulk Metadata shares the bottom-right slot
+            // with Edits. They're mode-gated, so only one tab renders
+            // at a time and the slot reads cleanly in either mode.
+            igDockBuilderDockWindow("Metadata##library", right_bot);
             igDockBuilderFinish(dockspace_id);
         }
         igDockSpace(dockspace_id,
