@@ -57,6 +57,20 @@ int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
 int ap_pipeline_graph_readback(ap_pipeline_graph *graph,
                                void *out_pixels, size_t out_size);
 
+// Downsample + readback for the close-path thumbnail. Blits the
+// display image into a pre-allocated thumb image (linear filter -
+// GPU does the downsample) and reads back the small image, dodging
+// the PCIe cost of pulling the full-resolution output. `out_pixels`
+// must hold at least `thumb_width * thumb_height * 4` bytes; the
+// function returns the actual dims in `*out_w` / `*out_h`. Same
+// sRGB-encoded RGBA8 format as the full readback. Synchronous.
+int ap_pipeline_graph_readback_thumb(ap_pipeline_graph *graph,
+                                     void *out_pixels, size_t out_size,
+                                     int *out_w, int *out_h);
+
+int ap_pipeline_graph_thumb_width(const ap_pipeline_graph *graph);
+int ap_pipeline_graph_thumb_height(const ap_pipeline_graph *graph);
+
 // The display image (final output) - for sampling via ImGui or canvas.
 VkImageView   ap_pipeline_graph_output_view(const ap_pipeline_graph *graph);
 VkSampler     ap_pipeline_graph_output_sampler(const ap_pipeline_graph *graph);
