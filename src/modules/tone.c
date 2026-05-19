@@ -131,8 +131,10 @@ static void slider_with_reset(const ap_module *self, float *params,
     }
 }
 
-static void tone_render(const ap_module *self, float *params)
+static void tone_render(const ap_module *self, float *params,
+                          const ap_module_render_ctx *ctx)
 {
+    (void)ctx;
     if (!params) return;
 
     int variant = (int)params[SLOT_ALGO];

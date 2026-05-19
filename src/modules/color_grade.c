@@ -73,8 +73,10 @@ static void rgb_row(const ap_module *self, float *params,
     igPopID();
 }
 
-static void color_grade_render(const ap_module *self, float *params)
+static void color_grade_render(const ap_module *self, float *params,
+                          const ap_module_render_ctx *ctx)
 {
+    (void)ctx;
     if (!params) return;
     rgb_row(self, params, "Lift (shadows)",     SLOT_LIFT_R,  -0.5f, 0.5f);
     rgb_row(self, params, "Gamma (midtones)",   SLOT_GAMMA_R, -1.0f, 1.0f);

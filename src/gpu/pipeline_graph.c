@@ -515,6 +515,12 @@ ap_pipeline_graph *ap_pipeline_graph_create(ap_gpu *g, ap_texture *input,
                      e->module_name, i);
             return NULL;
         }
+        // Metadata-only modules (e.g. Crop — a framing operation the
+        // canvas + export consume, not a pixel stage) carry no shader.
+        // They occupy a stack slot but produce no compute stage.
+        if (!m->spv_data && (m->variant_count == 0 || !m->variants)) {
+            continue;
+        }
         if (stage_count >= MAX_MODULES - 1) {
             AP_ERROR("ap_pipeline_graph_create: stack exceeds MAX_MODULES");
             return NULL;

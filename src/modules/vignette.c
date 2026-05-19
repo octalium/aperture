@@ -39,8 +39,10 @@ static void slider_with_reset(const ap_module *self, float *params,
     }
 }
 
-static void vignette_render(const ap_module *self, float *params)
+static void vignette_render(const ap_module *self, float *params,
+                          const ap_module_render_ctx *ctx)
 {
+    (void)ctx;
     if (!params) return;
     slider_with_reset(self, params, "Amount",   SLOT_AMOUNT,   -1.0f, 1.0f, "%.2f");
     slider_with_reset(self, params, "Midpoint", SLOT_MIDPOINT,  0.0f, 1.0f, "%.2f");

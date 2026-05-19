@@ -42,14 +42,22 @@ typedef int (*ap_module_pack_push_fn)(const ap_module *self,
                                       const ap_raw_metadata *meta,
                                       void *push_out);
 
+// Panel-side context handed to render_params: data the panel knows
+// but the module doesn't carry. Currently the open photo's pixel
+// dimensions — Crop uses them to present its rect in pixels. Grows
+// as more modules want panel context.
+typedef struct {
+    int image_width;
+    int image_height;
+} ap_module_render_ctx;
+
 // Render an ImGui config widget for the module's per-instance
 // parameter slots. Called from the focused-edit panel when the user
-// selects this entry on the stack. NULL for transport modules. When
-// the module declares variants, this function is responsible for
-// drawing the variant combo (typically as ap_module_render_variant_combo
-// at the top of its body) so the user can flip between algorithms.
+// selects this entry on the stack. NULL for transport modules. `ctx`
+// is never NULL — see ap_module_render_ctx.
 typedef void (*ap_module_render_params_fn)(const ap_module *self,
-                                           float *params);
+                                           float *params,
+                                           const ap_module_render_ctx *ctx);
 
 // One algorithm variant. A module either declares `variants[]` here
 // (modern) or fills the legacy single-shader fields below (transport

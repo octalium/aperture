@@ -32,8 +32,10 @@ static int orientation_pack_push(const ap_module *self,
     return 0;
 }
 
-static void orientation_render(const ap_module *self, float *params)
+static void orientation_render(const ap_module *self, float *params,
+                          const ap_module_render_ctx *ctx)
 {
+    (void)ctx;
     if (!params) return;
     igSliderFloat("Angle (°)", &params[SLOT_ANGLE_DEG],
                   -180.0f, 180.0f, "%.1f", 0);

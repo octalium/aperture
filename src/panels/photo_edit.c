@@ -469,7 +469,6 @@ static void histogram_window(ap_photo *photo)
 static void config_window(ap_app *app, ap_photo *photo,
                           ap_edit_stack *stack, int idx)
 {
-    (void)photo;
     ap_edit_entry *e = ap_edit_stack_at(stack, idx);
     if (!e->show_config) return;
     const ap_module *m = ap_module_find(e->module_name);
@@ -529,7 +528,11 @@ static void config_window(ap_app *app, ap_photo *photo,
         igSeparator();
 
         if (m->render_params) {
-            m->render_params(m, e->params);
+            ap_module_render_ctx ctx = {
+                .image_width  = ap_photo_width(photo),
+                .image_height = ap_photo_height(photo),
+            };
+            m->render_params(m, e->params, &ctx);
         } else {
             igTextDisabled("(no parameters)");
         }

@@ -46,8 +46,10 @@ static void slider_with_reset(const ap_module *self, float *params,
     }
 }
 
-static void grain_render(const ap_module *self, float *params)
+static void grain_render(const ap_module *self, float *params,
+                          const ap_module_render_ctx *ctx)
 {
+    (void)ctx;
     if (!params) return;
     slider_with_reset(self, params, "Amount",   SLOT_AMOUNT, 0.0f,  0.5f,  "%.3f");
     slider_with_reset(self, params, "Size",     SLOT_SIZE,   1.0f,  8.0f,  "%.1f");

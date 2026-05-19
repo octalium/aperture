@@ -27,8 +27,10 @@ static int sharpen_pack_push(const ap_module *self,
     return 0;
 }
 
-static void sharpen_render(const ap_module *self, float *params)
+static void sharpen_render(const ap_module *self, float *params,
+                          const ap_module_render_ctx *ctx)
 {
+    (void)ctx;
     if (!params) return;
     igSliderFloat("Amount",    &params[SLOT_AMOUNT],    0.0f, 5.0f,  "%.2f", 0);
     if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {

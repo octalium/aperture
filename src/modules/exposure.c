@@ -91,8 +91,10 @@ static void slider_with_reset(const ap_module *self, float *params,
     }
 }
 
-static void exposure_render(const ap_module *self, float *params)
+static void exposure_render(const ap_module *self, float *params,
+                          const ap_module_render_ctx *ctx)
 {
+    (void)ctx;
     if (!params) return;
     // The algorithm dropdown is drawn centrally by the config window.
     slider_with_reset(self, params, "EV", SLOT_EV, -5.0f, 5.0f, "%.2f");

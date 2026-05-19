@@ -56,8 +56,10 @@ static int demosaic_pack_push(const ap_module *self,
     return 0;
 }
 
-static void demosaic_render(const ap_module *self, float *params)
+static void demosaic_render(const ap_module *self, float *params,
+                          const ap_module_render_ctx *ctx)
 {
+    (void)ctx;
     (void)self;
     if (!params) return;
     int algo = (int)params[SLOT_ALGO];

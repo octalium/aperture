@@ -25,6 +25,14 @@ void ap_canvas_set_input(ap_canvas *canvas,
                          VkImageView view, VkSampler sampler,
                          int image_width, int image_height);
 
+// Restrict the displayed region to a normalized sub-rect of the input
+// image — the "Crop as framing" path. The pipeline still renders the
+// full frame; the canvas fits this sub-rect to the window. Defaults
+// to the full frame (0,0,1,1). Coords are clamped + kept
+// non-degenerate.
+void ap_canvas_set_crop(ap_canvas *canvas,
+                        float x0, float y0, float x1, float y1);
+
 // View-state controls. Pan units are window pixels; zoom is a
 // multiplier on top of fit-to-window (1.0 = fit).
 void  ap_canvas_reset_view(ap_canvas *canvas);

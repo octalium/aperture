@@ -522,6 +522,45 @@ int ap_app_request_jpeg_export(ap_app *app, ap_photo *photo,
         return -1;
     }
 
+    // Crop as framing: the pipeline rendered the full frame; the
+    // export writes only the crop rect. Copy the sub-rect into a
+    // tight buffer when the crop isn't the full frame.
+    {
+        float cx0, cy0, cx1, cy1;
+        ap_photo_crop_rect(photo, &cx0, &cy0, &cx1, &cy1);
+        int crop_x = (int)(cx0 * (float)w + 0.5f);
+        int crop_y = (int)(cy0 * (float)h + 0.5f);
+        int crop_w = (int)((cx1 - cx0) * (float)w + 0.5f);
+        int crop_h = (int)((cy1 - cy0) * (float)h + 0.5f);
+        if (crop_x < 0)         crop_x = 0;
+        if (crop_y < 0)         crop_y = 0;
+        if (crop_x > w - 1)     crop_x = w - 1;
+        if (crop_y > h - 1)     crop_y = h - 1;
+        if (crop_w < 1)         crop_w = 1;
+        if (crop_h < 1)         crop_h = 1;
+        if (crop_x + crop_w > w) crop_w = w - crop_x;
+        if (crop_y + crop_h > h) crop_h = h - crop_y;
+
+        if (crop_w != w || crop_h != h) {
+            size_t cbytes = (size_t)crop_w * (size_t)crop_h * 4u;
+            uint8_t *cropped = malloc(cbytes);
+            if (!cropped) {
+                AP_ERROR("export: out of memory cropping (%zu bytes)", cbytes);
+                free(rgba);
+                return -1;
+            }
+            for (int row = 0; row < crop_h; row++) {
+                memcpy(cropped + (size_t)row * crop_w * 4u,
+                       rgba + ((size_t)(crop_y + row) * w + crop_x) * 4u,
+                       (size_t)crop_w * 4u);
+            }
+            free(rgba);
+            rgba = cropped;
+            w = crop_w;
+            h = crop_h;
+        }
+    }
+
     export_job *j = calloc(1, sizeof(*j));
     if (!j) {
         AP_ERROR("export: job alloc failed");
@@ -1638,6 +1677,20 @@ int ap_app_run_frame(ap_app *app)
     }
     drain_one_completed_job(app);
     draw_loading_overlay(app);
+
+    // Push the active crop rect to the canvas every frame — "crop as
+    // framing": the pipeline renders full-frame, the canvas shows
+    // only the cropped sub-region. Cheap (4 floats); the crop module's
+    // config window may have changed it this frame.
+    if (app->canvas) {
+        if (app->photo) {
+            float cx0, cy0, cx1, cy1;
+            ap_photo_crop_rect(app->photo, &cx0, &cy0, &cx1, &cy1);
+            ap_canvas_set_crop(app->canvas, cx0, cy0, cx1, cy1);
+        } else {
+            ap_canvas_set_crop(app->canvas, 0.0f, 0.0f, 1.0f, 1.0f);
+        }
+    }
 
     const ap_edit_stack *stack = NULL;
     if (app->photo) {

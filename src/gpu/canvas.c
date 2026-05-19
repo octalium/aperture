@@ -16,12 +16,13 @@
 #define AP_CANVAS_DEFAULT_ZOOM 0.9f
 
 typedef struct {
-    float image_size_px[2];
+    float image_size_px[2];   // the *cropped* image's pixel size
     float window_size_px[2];
     float pan_px[2];
     float zoom;
     float fit_scale;
     float bg_color[4];
+    float crop_uv[4];         // .xy = crop origin, .zw = crop size (normalized)
 } canvas_push;
 
 struct ap_canvas {
@@ -37,6 +38,12 @@ struct ap_canvas {
     bool         has_input;
     int          image_width;
     int          image_height;
+
+    // Crop rect (normalized [0,1] of the input image). The canvas
+    // displays only this sub-region; defaults to the full frame.
+    // "Crop as framing" — the pipeline still renders full-frame, the
+    // crop is applied here at presentation time. See src/modules/crop.c.
+    float crop_x0, crop_y0, crop_x1, crop_y1;
 
     float zoom;
     float pan_x;
@@ -227,6 +234,10 @@ ap_canvas *ap_canvas_create(ap_gpu *g)
     canvas->gpu          = g;
     canvas->color_format = g->swapchain_format;
     canvas->zoom         = AP_CANVAS_DEFAULT_ZOOM;
+    canvas->crop_x0      = 0.0f;
+    canvas->crop_y0      = 0.0f;
+    canvas->crop_x1      = 1.0f;
+    canvas->crop_y1      = 1.0f;
 
     if (create_descriptor(canvas) < 0) goto fail;
     if (create_pipeline(canvas)   < 0) goto fail;
@@ -299,6 +310,41 @@ static float fit_scale_for(int img_w, int img_h, int win_w, int win_h)
     return sx < sy ? sx : sy;
 }
 
+static float canvas_clampf(float v, float lo, float hi)
+{
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+// Pixel dimensions of the cropped sub-region the canvas displays.
+// Equals the full image when the crop is the default full frame.
+static void canvas_effective_size(const ap_canvas *canvas,
+                                  int *out_w, int *out_h)
+{
+    float cw = canvas->crop_x1 - canvas->crop_x0;
+    float ch = canvas->crop_y1 - canvas->crop_y0;
+    int w = (int)((float)canvas->image_width  * cw + 0.5f);
+    int h = (int)((float)canvas->image_height * ch + 0.5f);
+    *out_w = w > 0 ? w : 1;
+    *out_h = h > 0 ? h : 1;
+}
+
+void ap_canvas_set_crop(ap_canvas *canvas,
+                        float x0, float y0, float x1, float y1)
+{
+    if (!canvas) return;
+    x0 = canvas_clampf(x0, 0.0f, 1.0f);
+    y0 = canvas_clampf(y0, 0.0f, 1.0f);
+    x1 = canvas_clampf(x1, 0.0f, 1.0f);
+    y1 = canvas_clampf(y1, 0.0f, 1.0f);
+    // Keep the rect non-degenerate.
+    if (x1 - x0 < 1e-4f) x1 = (x0 + 1e-4f < 1.0f) ? x0 + 1e-4f : 1.0f;
+    if (y1 - y0 < 1e-4f) y1 = (y0 + 1e-4f < 1.0f) ? y0 + 1e-4f : 1.0f;
+    canvas->crop_x0 = x0;
+    canvas->crop_y0 = y0;
+    canvas->crop_x1 = x1;
+    canvas->crop_y1 = y1;
+}
+
 void ap_canvas_reset_view(ap_canvas *canvas)
 {
     if (!canvas) return;
@@ -339,8 +385,9 @@ void ap_canvas_set_zoom(ap_canvas *canvas, float zoom,
                         int win_width, int win_height)
 {
     if (!canvas || !canvas->has_input || zoom <= 0.0f) return;
-    float fs = fit_scale_for(canvas->image_width, canvas->image_height,
-                             win_width, win_height);
+    int eff_w, eff_h;
+    canvas_effective_size(canvas, &eff_w, &eff_h);
+    float fs = fit_scale_for(eff_w, eff_h, win_width, win_height);
     if (fs <= 0.0f) return;
     // Caller passes effective scale (e.g. 1.0 = 100%, 0 means fit).
     // Translate to internal user-zoom (relative to fit).
@@ -373,14 +420,19 @@ void ap_canvas_record(ap_canvas *canvas, VkCommandBuffer cmd,
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
+    int eff_w, eff_h;
+    canvas_effective_size(canvas, &eff_w, &eff_h);
+
     canvas_push pc = {
-        .image_size_px  = { (float)canvas->image_width, (float)canvas->image_height },
+        .image_size_px  = { (float)eff_w, (float)eff_h },
         .window_size_px = { (float)win_width, (float)win_height },
         .pan_px         = { canvas->pan_x, canvas->pan_y },
         .zoom           = canvas->zoom,
-        .fit_scale      = fit_scale_for(canvas->image_width, canvas->image_height,
-                                        win_width, win_height),
+        .fit_scale      = fit_scale_for(eff_w, eff_h, win_width, win_height),
         .bg_color       = { 0.10f, 0.10f, 0.10f, 1.0f },
+        .crop_uv        = { canvas->crop_x0, canvas->crop_y0,
+                            canvas->crop_x1 - canvas->crop_x0,
+                            canvas->crop_y1 - canvas->crop_y0 },
     };
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, canvas->pipeline);
