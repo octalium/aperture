@@ -312,7 +312,10 @@ ap_mode ap_app_mode(const ap_app *app)
 static void bind_mode_view(ap_app *app)
 {
     if (!app || !app->gpu) return;
-    if (app->mode == AP_MODE_PHOTO && app->photo) {
+    if (app->mode == AP_MODE_PHOTO) {
+        // Canvas binds whenever we are in photo mode, even before the
+        // photo's pipeline is built. With no input view, ap_canvas_record
+        // early-returns and draw_loading_overlay covers the gap.
         ap_gpu_set_grid(app->gpu, NULL);
         ap_gpu_set_canvas(app->gpu, app->canvas);
     } else {
@@ -389,6 +392,17 @@ int ap_app_open_photo(ap_app *app, const char *path)
     j->gen = app->photo_load_gen;
     snprintf(app->loading_path, sizeof(app->loading_path), "%s", path);
     app->photo_loading = true;
+
+    // Flip into photo mode synchronously so the workspace appears
+    // instantly. The canvas binds with no input until the worker lands
+    // and install_loaded_photo rebinds it to the freshly built pipeline.
+    // draw_loading_overlay covers the gap. If we are already in photo
+    // mode (prev/next nav), the previous photo stays visible until the
+    // new one is installed.
+    if (app->mode != AP_MODE_PHOTO) {
+        app->mode = AP_MODE_PHOTO;
+        bind_mode_view(app);
+    }
 
     ap_worker_pool_submit(app->workers, &j->base);
     return 0;
@@ -933,6 +947,15 @@ static void handle_photo_open_complete(ap_app *app, photo_open_job *j)
         } else {
             AP_ERROR("photo: failed to open %s", j->path);
             ap_raw_image_free(&j->raw);
+            // ap_app_open_photo flipped us to photo mode. With no photo
+            // to install, revert to the library so the user isn't
+            // stranded on a blank canvas. If a previous photo is still
+            // bound (prev/next nav with the new open failing), keep it
+            // visible.
+            if (!app->photo && app->mode == AP_MODE_PHOTO) {
+                app->mode = AP_MODE_LIBRARY;
+                bind_mode_view(app);
+            }
         }
     }
     free(j);
