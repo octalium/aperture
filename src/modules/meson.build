@@ -7,5 +7,6 @@ aperture_sources += files(
   'registry.c',
   'saturation.c',
   'tone.c',
+  'vignette.c',
   'wb.c',
 )

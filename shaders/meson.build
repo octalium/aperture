@@ -9,6 +9,7 @@ shader_sources = [
   'exposure.comp',
   'saturation.comp',
   'tone.comp',
+  'vignette.comp',
   'output_transfer.comp',
   'canvas.vert',
   'canvas.frag',
