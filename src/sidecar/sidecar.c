@@ -83,7 +83,9 @@ static void load_edit_entry(toml_table_t *t, ap_edit_stack *stack)
 }
 
 int ap_sidecar_load(const char *source_path, ap_edit_stack *stack,
-                    bool *respect_orientation)
+                    bool *respect_orientation,
+                    ap_photo_metadata *user_meta,
+                    bool user_set[AP_META_FIELD_COUNT])
 {
     if (!source_path || !stack) return -1;
 
@@ -123,12 +125,61 @@ int ap_sidecar_load(const char *source_path, ap_edit_stack *stack,
         }
     }
 
+    if (user_meta) ap_photo_metadata_clear(user_meta);
+    if (user_set) {
+        for (int i = 0; i < AP_META_FIELD_COUNT; i++) user_set[i] = false;
+    }
+
+    // [metadata] is sparse: only fields the user has overridden are
+    // written. A present key with an empty string is a deliberate
+    // override (the user blanked the field).
+    toml_table_t *metadata = toml_table_in(root, "metadata");
+    if (metadata && user_meta && user_set) {
+        for (int i = 0; i < AP_META_FIELD_COUNT; i++) {
+            const char *key = ap_meta_field_key((ap_meta_field)i);
+            const char *value = read_string(metadata, key);
+            if (value) {
+                ap_photo_metadata_set(user_meta, (ap_meta_field)i, value);
+                user_set[i] = true;
+            }
+        }
+    }
+
     toml_free(root);
     return 0;
 }
 
+// TOML strings have to escape backslash + quote. Conservative writer
+// good enough for the short strings the metadata fields hold; not a
+// general-purpose escaper.
+static int write_escaped_string(FILE *f, const char *s)
+{
+    if (fputc('"', f) == EOF) return -1;
+    for (const char *p = s; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '\\' || c == '"') {
+            if (fputc('\\', f) == EOF) return -1;
+            if (fputc(c, f) == EOF) return -1;
+        } else if (c == '\n') {
+            if (fputs("\\n", f) == EOF) return -1;
+        } else if (c == '\r') {
+            if (fputs("\\r", f) == EOF) return -1;
+        } else if (c == '\t') {
+            if (fputs("\\t", f) == EOF) return -1;
+        } else if (c < 0x20) {
+            // Drop other control chars rather than emit invalid TOML.
+        } else {
+            if (fputc((int)c, f) == EOF) return -1;
+        }
+    }
+    if (fputc('"', f) == EOF) return -1;
+    return 0;
+}
+
 int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
-                    bool respect_orientation)
+                    bool respect_orientation,
+                    const ap_photo_metadata *user_meta,
+                    const bool user_set[AP_META_FIELD_COUNT])
 {
     if (!source_path || !stack) return -1;
 
@@ -177,6 +228,26 @@ int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
                 if (fprintf(f, "%-9s = %g\n", name, (double)e->params[s]) < 0) {
                     goto io_fail;
                 }
+            }
+        }
+    }
+
+    // Sparse [metadata] table: only fields the user has overridden.
+    if (user_meta && user_set) {
+        bool any = false;
+        for (int i = 0; i < AP_META_FIELD_COUNT; i++) {
+            if (user_set[i]) { any = true; break; }
+        }
+        if (any) {
+            if (fprintf(f, "\n[metadata]\n") < 0) goto io_fail;
+            for (int i = 0; i < AP_META_FIELD_COUNT; i++) {
+                if (!user_set[i]) continue;
+                const char *key = ap_meta_field_key((ap_meta_field)i);
+                const char *val = ap_photo_metadata_get(user_meta,
+                                                        (ap_meta_field)i);
+                if (fprintf(f, "%s = ", key) < 0) goto io_fail;
+                if (write_escaped_string(f, val ? val : "") != 0) goto io_fail;
+                if (fputc('\n', f) == EOF) goto io_fail;
             }
         }
     }
