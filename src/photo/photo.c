@@ -91,18 +91,12 @@ static int rebuild_graph(ap_photo *photo)
     return 0;
 }
 
-// Seed the stack with the entries from the registry's default
-// pipeline, skipping any transport modules (demosaic / encode) that
-// the graph manages itself.
+// Seed the stack from the registry's default pipeline. User-visible
+// modules only (transport modules like demosaic/encode are managed by
+// the graph). Param defaults come from each module's params_default.
 static void seed_stack_from_default(ap_edit_stack *stack)
 {
-    ap_pipeline_def def;
-    if (ap_pipeline_get_default(&def) != 0) return;
-    for (int i = 0; i < def.module_count; i++) {
-        const ap_module *m = ap_module_find(def.modules[i]);
-        if (!m || !m->user_visible) continue;
-        ap_edit_stack_add(stack, def.modules[i]);
-    }
+    ap_pipeline_apply_default_to_stack(stack);
 }
 
 ap_photo *ap_photo_open_with_raw(ap_gpu *g, const char *path,

@@ -5,11 +5,13 @@
 #include "app/root.h"
 #include "core/log.h"
 #include "edit/stack.h"
+#include "edit/stack_toml.h"
 #include "modules/module.h"
 #include "photo/thumbnail.h"
 #include "sidecar/sidecar.h"
 
 #include <sqlite3.h>
+#include <toml.h>
 
 #include <dirent.h>
 #include <errno.h>
@@ -58,9 +60,9 @@ static const char *REGISTRY_SCHEMA_SQL =
     "    created_at INTEGER NOT NULL"
     ");"
     "CREATE TABLE IF NOT EXISTS pipelines ("
-    "    id      INTEGER PRIMARY KEY,"
-    "    name    TEXT NOT NULL UNIQUE,"
-    "    modules TEXT NOT NULL"
+    "    id         INTEGER PRIMARY KEY,"
+    "    name       TEXT NOT NULL UNIQUE,"
+    "    definition TEXT NOT NULL"
     ");"
     "CREATE TABLE IF NOT EXISTS settings ("
     "    key   TEXT PRIMARY KEY,"
@@ -81,13 +83,14 @@ static void backfill_name_column(sqlite3 *reg)
     sqlite3_free(err);
 }
 
-// Comma-separated module names - order matters; resolved via
-// ap_module_find when a photo opens. Kept as a single TEXT column
-// rather than a join table for v1 simplicity.
-static const char *DEFAULT_PIPELINE_NAME    = "default";
 // Baseline edits for a fresh photo. Output Transfer is auto-appended
 // by the pipeline graph; everything else is on the user-facing stack.
-static const char *DEFAULT_PIPELINE_MODULES = "demosaic,wb,profile";
+// The pipeline `definition` column stores these (and any user-defined
+// pipelines) as the same `[[edit]]` TOML the sidecar uses.
+static const char *DEFAULT_PIPELINE_NAME = "default";
+static const char *DEFAULT_PIPELINE_MODULES[] = {
+    "demosaic", "wb", "profile", NULL,
+};
 
 static int gen_uuid_v4(char buf[37])
 {
@@ -116,23 +119,134 @@ static int gen_uuid_v4(char buf[37])
     return 0;
 }
 
-static int seed_default_pipeline(sqlite3 *reg)
+// Build a freshly-initialized stack containing the baseline modules.
+// Each entry takes the module's default params via ap_edit_stack_add.
+static int build_default_stack(ap_edit_stack *out)
 {
-    // Always overwrite the default row. The default reflects the
-    // current build's baseline edits; user-defined pipelines (when we
-    // add them) will live under different names.
-    sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(reg,
-            "INSERT INTO pipelines(name, modules) VALUES (?, ?) "
-            "ON CONFLICT(name) DO UPDATE SET modules = excluded.modules;",
-            -1, &stmt, NULL) != SQLITE_OK) {
-        AP_ERROR("registry: prepare seed: %s", sqlite3_errmsg(reg));
+    ap_edit_stack_init(out);
+    for (int i = 0; DEFAULT_PIPELINE_MODULES[i]; i++) {
+        if (ap_edit_stack_add(out, DEFAULT_PIPELINE_MODULES[i]) < 0) {
+            AP_ERROR("registry: cannot add default module '%s' to stack",
+                     DEFAULT_PIPELINE_MODULES[i]);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+// Render a stack to a TOML `[[edit]]`-array string via open_memstream.
+// Caller owns *out_buf; *out_len excludes the terminating NUL.
+static int stack_to_toml_string(const ap_edit_stack *stack,
+                                char **out_buf, size_t *out_len)
+{
+    *out_buf = NULL;
+    *out_len = 0;
+    char  *buf = NULL;
+    size_t len = 0;
+    FILE *mf = open_memstream(&buf, &len);
+    if (!mf) {
+        AP_ERROR("pipeline: open_memstream: %s", strerror(errno));
         return -1;
     }
-    sqlite3_bind_text(stmt, 1, DEFAULT_PIPELINE_NAME,    -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 2, DEFAULT_PIPELINE_MODULES, -1, SQLITE_STATIC);
+    if (ap_edit_stack_write_toml(stack, mf) != 0) {
+        fclose(mf);
+        free(buf);
+        return -1;
+    }
+    if (fclose(mf) != 0) {
+        free(buf);
+        AP_ERROR("pipeline: fclose memstream: %s", strerror(errno));
+        return -1;
+    }
+    *out_buf = buf;
+    *out_len = len;
+    return 0;
+}
+
+// Reverse direction: parse a TOML definition blob into a stack.
+// Empty or NULL produces an empty stack. Returns 0 on success.
+static int stack_from_toml_string(const char *toml_str, ap_edit_stack *out)
+{
+    if (!out) return -1;
+    ap_edit_stack_init(out);
+    if (!toml_str || !*toml_str) return 0;
+    // toml_parse() mutates its input; copy first.
+    size_t n   = strlen(toml_str);
+    char  *buf = malloc(n + 1);
+    if (!buf) return -1;
+    memcpy(buf, toml_str, n + 1);
+    char errbuf[256] = {0};
+    toml_table_t *root = toml_parse(buf, errbuf, sizeof(errbuf));
+    free(buf);
+    if (!root) {
+        AP_WARN("pipeline: parse definition: %s", errbuf);
+        return -1;
+    }
+    toml_array_t *arr = toml_array_in(root, "edit");
+    int rc = ap_edit_stack_read_toml_array(arr, out);
+    toml_free(root);
+    return rc;
+}
+
+// Pre-existing dbs may have a pipelines table with the old
+// (modules TEXT) shape. We own this schema end-to-end and the only
+// data in the table is the default seed, so the cheapest "migration"
+// is to drop the old table and let CREATE TABLE IF NOT EXISTS rebuild
+// on the new shape. Detection: probe pragma_table_info for the
+// `definition` column.
+static int migrate_pipelines_shape(sqlite3 *reg)
+{
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(reg,
+        "SELECT COUNT(*) FROM pragma_table_info('pipelines') "
+        "WHERE name = 'definition';",
+        -1, &st, NULL);
+    if (rc != SQLITE_OK) {
+        // Table absent altogether (fresh db) — fine, CREATE handles it.
+        return 0;
+    }
+    int has_def = 0;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        has_def = sqlite3_column_int(st, 0);
+    }
+    sqlite3_finalize(st);
+    if (has_def) return 0;
+
+    char *err = NULL;
+    rc = sqlite3_exec(reg, "DROP TABLE IF EXISTS pipelines;", NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        AP_WARN("registry: drop legacy pipelines table: %s",
+                err ? err : "(no message)");
+    }
+    sqlite3_free(err);
+    return 0;
+}
+
+static int seed_default_pipeline(sqlite3 *reg)
+{
+    // Always overwrite the default row: the default reflects the
+    // current build's baseline edits, not user state.
+    ap_edit_stack stack;
+    if (build_default_stack(&stack) != 0) return -1;
+
+    char  *toml_buf = NULL;
+    size_t toml_len = 0;
+    if (stack_to_toml_string(&stack, &toml_buf, &toml_len) != 0) return -1;
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(reg,
+            "INSERT INTO pipelines(name, definition) VALUES (?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET definition = excluded.definition;",
+            -1, &stmt, NULL) != SQLITE_OK) {
+        AP_ERROR("registry: prepare seed: %s", sqlite3_errmsg(reg));
+        free(toml_buf);
+        return -1;
+    }
+    sqlite3_bind_text(stmt, 1, DEFAULT_PIPELINE_NAME, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, toml_buf, (int)toml_len, SQLITE_TRANSIENT);
     int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
+    free(toml_buf);
     if (rc != SQLITE_DONE) {
         AP_ERROR("registry: seed default pipeline: %s", sqlite3_errstr(rc));
         return -1;
@@ -155,6 +269,10 @@ static int registry_open(sqlite3 **out_db)
         if (reg) sqlite3_close(reg);
         return -1;
     }
+
+    // Drop the legacy `pipelines.modules` shape *before* re-running
+    // CREATE TABLE IF NOT EXISTS so the new schema can build cleanly.
+    migrate_pipelines_shape(reg);
 
     char *err = NULL;
     if (sqlite3_exec(reg, REGISTRY_SCHEMA_SQL, NULL, NULL, &err) != SQLITE_OK) {
@@ -230,38 +348,15 @@ static int registry_resolve_id(const char *abs_path, char id_out[37])
     return 0;
 }
 
-static int parse_module_list(const char *src, ap_pipeline_def *out)
+// Materialize one SELECT row (id, name, definition) into a def.
+static int row_to_def(sqlite3_stmt *stmt, ap_pipeline_def *out)
 {
-    out->module_count = 0;
-    int slot = 0;
-    int col  = 0;
-    for (const char *p = src; ; p++) {
-        if (*p == ',' || *p == '\0') {
-            if (slot >= AP_PIPELINE_MAX_MODULES) {
-                AP_ERROR("pipeline: too many modules (max %d)",
-                         AP_PIPELINE_MAX_MODULES);
-                return -1;
-            }
-            if (col >= AP_PIPELINE_MODULE_LEN) {
-                AP_ERROR("pipeline: module name too long (max %d)",
-                         AP_PIPELINE_MODULE_LEN - 1);
-                return -1;
-            }
-            out->modules[slot][col] = '\0';
-            if (col > 0) slot++;
-            col = 0;
-            if (*p == '\0') break;
-        } else {
-            if (col + 1 >= AP_PIPELINE_MODULE_LEN) {
-                AP_ERROR("pipeline: module name too long (max %d)",
-                         AP_PIPELINE_MODULE_LEN - 1);
-                return -1;
-            }
-            out->modules[slot][col++] = *p;
-        }
-    }
-    out->module_count = slot;
-    return 0;
+    memset(out, 0, sizeof(*out));
+    out->id = sqlite3_column_int64(stmt, 0);
+    const char *name = (const char *)sqlite3_column_text(stmt, 1);
+    const char *def  = (const char *)sqlite3_column_text(stmt, 2);
+    snprintf(out->name, sizeof(out->name), "%s", name ? name : "");
+    return stack_from_toml_string(def, &out->stack);
 }
 
 int ap_pipeline_get_default(ap_pipeline_def *out)
@@ -274,9 +369,9 @@ int ap_pipeline_get_default(ap_pipeline_def *out)
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(reg,
-            "SELECT id, name, modules FROM pipelines WHERE name = ?;",
+            "SELECT id, name, definition FROM pipelines WHERE name = ?;",
             -1, &stmt, NULL) != SQLITE_OK) {
-        AP_ERROR("pipeline: prepare select: %s", sqlite3_errmsg(reg));
+        AP_ERROR("pipeline: prepare select default: %s", sqlite3_errmsg(reg));
         sqlite3_close(reg);
         return -1;
     }
@@ -289,14 +384,236 @@ int ap_pipeline_get_default(ap_pipeline_def *out)
         sqlite3_close(reg);
         return -1;
     }
-    out->id = sqlite3_column_int64(stmt, 0);
-    const char *name    = (const char *)sqlite3_column_text(stmt, 1);
-    const char *modules = (const char *)sqlite3_column_text(stmt, 2);
-    snprintf(out->name, sizeof(out->name), "%s", name ? name : "");
-    int parse_rc = modules ? parse_module_list(modules, out) : -1;
+    int load_rc = row_to_def(stmt, out);
     sqlite3_finalize(stmt);
     sqlite3_close(reg);
-    return parse_rc;
+    return load_rc;
+}
+
+int ap_pipeline_get(int64_t id, ap_pipeline_def *out)
+{
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+
+    sqlite3 *reg = NULL;
+    if (registry_open(&reg) < 0) return -1;
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(reg,
+            "SELECT id, name, definition FROM pipelines WHERE id = ?;",
+            -1, &stmt, NULL) != SQLITE_OK) {
+        AP_ERROR("pipeline: prepare select id: %s", sqlite3_errmsg(reg));
+        sqlite3_close(reg);
+        return -1;
+    }
+    sqlite3_bind_int64(stmt, 1, id);
+
+    int rc = sqlite3_step(stmt);
+    int load_rc = -1;
+    if (rc == SQLITE_ROW) {
+        load_rc = row_to_def(stmt, out);
+    }
+    sqlite3_finalize(stmt);
+    sqlite3_close(reg);
+    return load_rc;
+}
+
+int ap_pipeline_list(ap_pipeline_def *out, int max)
+{
+    if (!out || max <= 0) return 0;
+
+    sqlite3 *reg = NULL;
+    if (registry_open(&reg) < 0) return -1;
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(reg,
+            "SELECT id, name, definition FROM pipelines ORDER BY name COLLATE NOCASE;",
+            -1, &stmt, NULL) != SQLITE_OK) {
+        AP_ERROR("pipeline: prepare list: %s", sqlite3_errmsg(reg));
+        sqlite3_close(reg);
+        return -1;
+    }
+    int n = 0;
+    while (n < max && sqlite3_step(stmt) == SQLITE_ROW) {
+        if (row_to_def(stmt, &out[n]) == 0) n++;
+    }
+    sqlite3_finalize(stmt);
+    sqlite3_close(reg);
+    return n;
+}
+
+int ap_pipeline_create(const char *name, const ap_edit_stack *stack,
+                       int64_t *out_id)
+{
+    if (!name || !*name || !stack) return -1;
+
+    char  *toml_buf = NULL;
+    size_t toml_len = 0;
+    if (stack_to_toml_string(stack, &toml_buf, &toml_len) != 0) return -1;
+
+    sqlite3 *reg = NULL;
+    if (registry_open(&reg) < 0) { free(toml_buf); return -1; }
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(reg,
+            "INSERT INTO pipelines(name, definition) VALUES (?, ?);",
+            -1, &stmt, NULL) != SQLITE_OK) {
+        AP_ERROR("pipeline: prepare insert: %s", sqlite3_errmsg(reg));
+        sqlite3_close(reg);
+        free(toml_buf);
+        return -1;
+    }
+    sqlite3_bind_text(stmt, 1, name,     -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, toml_buf, (int)toml_len, SQLITE_TRANSIENT);
+
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        AP_ERROR("pipeline: insert step: %s", sqlite3_errstr(rc));
+        sqlite3_close(reg);
+        free(toml_buf);
+        return -1;
+    }
+    if (out_id) *out_id = sqlite3_last_insert_rowid(reg);
+    sqlite3_close(reg);
+    free(toml_buf);
+    return 0;
+}
+
+int ap_pipeline_update(int64_t id, const char *name,
+                       const ap_edit_stack *stack)
+{
+    if (id <= 0) return -1;
+    if (!name && !stack) return 0;  // nothing to change
+
+    sqlite3 *reg = NULL;
+    if (registry_open(&reg) < 0) return -1;
+
+    char  *toml_buf = NULL;
+    size_t toml_len = 0;
+    if (stack) {
+        if (stack_to_toml_string(stack, &toml_buf, &toml_len) != 0) {
+            sqlite3_close(reg);
+            return -1;
+        }
+    }
+
+    // Build the right statement based on which fields are present.
+    const char *sql = NULL;
+    if (name && stack) {
+        sql = "UPDATE pipelines SET name = ?, definition = ? WHERE id = ?;";
+    } else if (name) {
+        sql = "UPDATE pipelines SET name = ? WHERE id = ?;";
+    } else {
+        sql = "UPDATE pipelines SET definition = ? WHERE id = ?;";
+    }
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(reg, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        AP_ERROR("pipeline: prepare update: %s", sqlite3_errmsg(reg));
+        sqlite3_close(reg);
+        free(toml_buf);
+        return -1;
+    }
+    int col = 1;
+    if (name) sqlite3_bind_text(stmt, col++, name, -1, SQLITE_STATIC);
+    if (stack) sqlite3_bind_text(stmt, col++, toml_buf, (int)toml_len, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, col, id);
+
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    sqlite3_close(reg);
+    free(toml_buf);
+    if (rc != SQLITE_DONE) {
+        AP_ERROR("pipeline: update step: %s", sqlite3_errstr(rc));
+        return -1;
+    }
+    return 0;
+}
+
+int ap_pipeline_delete(int64_t id)
+{
+    if (id <= 0) return -1;
+
+    sqlite3 *reg = NULL;
+    if (registry_open(&reg) < 0) return -1;
+
+    // The default pipeline is protected: it's the user-invisible
+    // seed of every fresh photo's stack.
+    sqlite3_stmt *guard = NULL;
+    if (sqlite3_prepare_v2(reg,
+            "SELECT 1 FROM pipelines WHERE id = ? AND name = ?;",
+            -1, &guard, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(guard, 1, id);
+        sqlite3_bind_text(guard, 2, DEFAULT_PIPELINE_NAME, -1, SQLITE_STATIC);
+        bool is_default = (sqlite3_step(guard) == SQLITE_ROW);
+        sqlite3_finalize(guard);
+        if (is_default) {
+            AP_WARN("pipeline: refusing to delete the default pipeline");
+            sqlite3_close(reg);
+            return -1;
+        }
+    }
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(reg,
+            "DELETE FROM pipelines WHERE id = ?;",
+            -1, &stmt, NULL) != SQLITE_OK) {
+        AP_ERROR("pipeline: prepare delete: %s", sqlite3_errmsg(reg));
+        sqlite3_close(reg);
+        return -1;
+    }
+    sqlite3_bind_int64(stmt, 1, id);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    sqlite3_close(reg);
+    if (rc != SQLITE_DONE) {
+        AP_ERROR("pipeline: delete step: %s", sqlite3_errstr(rc));
+        return -1;
+    }
+    return 0;
+}
+
+// Replace the contents of `out` with the pipeline's stack, filtering
+// to user-visible modules (transport modules like demosaic are graph-
+// managed) and preserving params + display_name + enabled.
+static void copy_pipeline_to_stack(const ap_pipeline_def *def,
+                                   ap_edit_stack *out)
+{
+    ap_edit_stack_init(out);
+    int count = ap_edit_stack_count(&def->stack);
+    for (int i = 0; i < count; i++) {
+        const ap_edit_entry *e = ap_edit_stack_at_const(&def->stack, i);
+        if (!e) continue;
+        const ap_module *m = ap_module_find(e->module_name);
+        if (!m || !m->user_visible) continue;
+        int idx = ap_edit_stack_add(out, e->module_name);
+        if (idx < 0) continue;
+        ap_edit_entry *dst = ap_edit_stack_at(out, idx);
+        if (!dst) continue;
+        memcpy(dst->params, e->params, sizeof(dst->params));
+        snprintf(dst->display_name, sizeof(dst->display_name),
+                 "%s", e->display_name);
+        dst->enabled = e->enabled;
+    }
+}
+
+int ap_pipeline_apply_to_stack(int64_t pipeline_id, ap_edit_stack *out)
+{
+    if (!out) return -1;
+    ap_pipeline_def def;
+    if (ap_pipeline_get(pipeline_id, &def) != 0) return -1;
+    copy_pipeline_to_stack(&def, out);
+    return 0;
+}
+
+int ap_pipeline_apply_default_to_stack(ap_edit_stack *out)
+{
+    if (!out) return -1;
+    ap_pipeline_def def;
+    if (ap_pipeline_get_default(&def) != 0) return -1;
+    copy_pipeline_to_stack(&def, out);
+    return 0;
 }
 
 int ap_settings_get(const char *key, char *out, size_t out_len)
@@ -431,6 +748,14 @@ static const char *LIBRARY_SCHEMA_SQL =
     "    path       TEXT PRIMARY KEY,"
     "    jpeg       BLOB NOT NULL,"
     "    updated_at INTEGER NOT NULL"
+    ");"
+    // Per-library settings as opaque key/value strings. The `schema`
+    // table above carries db-version metadata; this one is for
+    // user-facing settings the library tracks (e.g. the per-library
+    // default pipeline id).
+    "CREATE TABLE IF NOT EXISTS settings ("
+    "    key   TEXT PRIMARY KEY,"
+    "    value TEXT NOT NULL"
     ");";
 
 static int exec_simple(sqlite3 *db, const char *sql)
@@ -762,6 +1087,79 @@ int ap_library_set_name(ap_library *lib, const char *name)
     return 0;
 }
 
+// Per-library settings live in the per-library db's `settings` table;
+// the key namespace is internal and not part of any public schema.
+static const char *LIB_SETTING_DEFAULT_PIPELINE = "default_pipeline_id";
+
+int64_t ap_library_default_pipeline_id(const ap_library *lib)
+{
+    if (!lib || !lib->db) return 0;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(lib->db,
+            "SELECT value FROM settings WHERE key = ?;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return 0;
+    }
+    sqlite3_bind_text(st, 1, LIB_SETTING_DEFAULT_PIPELINE,
+                      -1, SQLITE_STATIC);
+    int64_t id = 0;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        const char *v = (const char *)sqlite3_column_text(st, 0);
+        if (v) id = (int64_t)strtoll(v, NULL, 10);
+    }
+    sqlite3_finalize(st);
+
+    // Validate against the registry: if the pointed-to pipeline was
+    // deleted, drop the stale pointer (caller falls back to the
+    // app-wide default).
+    if (id > 0) {
+        ap_pipeline_def probe;
+        if (ap_pipeline_get(id, &probe) != 0) {
+            return 0;
+        }
+    }
+    return id;
+}
+
+int ap_library_set_default_pipeline_id(ap_library *lib, int64_t id)
+{
+    if (!lib || !lib->db) return -1;
+    if (id == 0) {
+        // Clear: delete the setting row.
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(lib->db,
+                "DELETE FROM settings WHERE key = ?;",
+                -1, &st, NULL) != SQLITE_OK) {
+            AP_ERROR("library: prepare clear default pipeline: %s",
+                     sqlite3_errmsg(lib->db));
+            return -1;
+        }
+        sqlite3_bind_text(st, 1, LIB_SETTING_DEFAULT_PIPELINE,
+                          -1, SQLITE_STATIC);
+        int rc = sqlite3_step(st);
+        sqlite3_finalize(st);
+        return (rc == SQLITE_DONE) ? 0 : -1;
+    }
+
+    char value[32];
+    snprintf(value, sizeof(value), "%lld", (long long)id);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(lib->db,
+            "INSERT INTO settings(key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
+            -1, &st, NULL) != SQLITE_OK) {
+        AP_ERROR("library: prepare set default pipeline: %s",
+                 sqlite3_errmsg(lib->db));
+        return -1;
+    }
+    sqlite3_bind_text(st, 1, LIB_SETTING_DEFAULT_PIPELINE,
+                      -1, SQLITE_STATIC);
+    sqlite3_bind_text(st, 2, value, -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
 int ap_library_photo_count(const ap_library *lib)
 {
     return lib ? lib->photo_count : 0;
@@ -904,19 +1302,13 @@ int ap_library_store_thumbnail(ap_library *lib, int index,
     return 0;
 }
 
-// Seed the stack with the registry default pipeline's user-visible
-// modules. Mirrors what photo.c does when opening a photo that has
-// no sidecar. Used so bulk metadata writes don't strip a photo's
-// edits when the sidecar didn't exist before the write.
+// Seed the stack with the registry default pipeline. Mirrors what
+// photo.c does on photo-open without a sidecar. Used so bulk metadata
+// writes don't strip a photo's edits when the sidecar didn't exist
+// before the write.
 static void seed_default_stack(ap_edit_stack *stack)
 {
-    ap_pipeline_def def;
-    if (ap_pipeline_get_default(&def) != 0) return;
-    for (int i = 0; i < def.module_count; i++) {
-        const ap_module *m = ap_module_find(def.modules[i]);
-        if (!m || !m->user_visible) continue;
-        ap_edit_stack_add(stack, def.modules[i]);
-    }
+    ap_pipeline_apply_default_to_stack(stack);
 }
 
 int ap_library_apply_metadata_patch(ap_library *lib, int index,
