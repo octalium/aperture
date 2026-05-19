@@ -16,6 +16,7 @@ shader_sources = [
   'saturation.comp',
   'sharpen.comp',
   'tone.comp',
+  'tone_filmic.comp',
   'vignette.comp',
   'output_transfer.comp',
   'canvas.vert',
