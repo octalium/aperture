@@ -236,6 +236,29 @@ int                ap_photo_width(const ap_photo *photo)   { return photo->width
 int                ap_photo_height(const ap_photo *photo)  { return photo->height; }
 const char        *ap_photo_path(const ap_photo *photo)    { return photo->path; }
 
+void ap_photo_crop_rect(const ap_photo *photo,
+                        float *x0, float *y0, float *x1, float *y1)
+{
+    // Default: the full frame.
+    float r[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+    if (photo) {
+        int n = ap_edit_stack_count(&photo->stack);
+        for (int i = 0; i < n; i++) {
+            const ap_edit_entry *e = ap_edit_stack_at_const(&photo->stack, i);
+            if (!e || !e->enabled) continue;
+            if (strcmp(e->module_name, "crop") != 0) continue;
+            // Crop params: slots 0..3 = x0, y0, x1, y1. See
+            // src/modules/crop.c — that's the on-disk contract.
+            for (int s = 0; s < 4; s++) r[s] = e->params[s];
+            break;
+        }
+    }
+    if (x0) *x0 = r[0];
+    if (y0) *y0 = r[1];
+    if (x1) *x1 = r[2];
+    if (y1) *y1 = r[3];
+}
+
 bool ap_photo_respect_orientation(const ap_photo *photo)
 {
     return photo ? photo->respect_orientation : true;

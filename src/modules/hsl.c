@@ -82,8 +82,10 @@ static void band_row(const ap_module *self, float *params, int band)
     igPopID();
 }
 
-static void hsl_render(const ap_module *self, float *params)
+static void hsl_render(const ap_module *self, float *params,
+                          const ap_module_render_ctx *ctx)
 {
+    (void)ctx;
     if (!params) return;
     for (int i = 0; i < N_BANDS; i++) band_row(self, params, i);
     igTextDisabled("H = hue shift, S = saturation scale, L = luma offset");

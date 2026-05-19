@@ -43,8 +43,10 @@ static void slider_with_reset(const ap_module *self, float *params,
     }
 }
 
-static void denoise_render(const ap_module *self, float *params)
+static void denoise_render(const ap_module *self, float *params,
+                          const ap_module_render_ctx *ctx)
 {
+    (void)ctx;
     if (!params) return;
     slider_with_reset(self, params, "Strength", SLOT_STRENGTH, 0.0f, 0.20f, "%.4f");
     slider_with_reset(self, params, "Radius",   SLOT_RADIUS,   1.0f, 4.0f,  "%.1f");

@@ -27,8 +27,10 @@ static int saturation_pack_push(const ap_module *self,
     return 0;
 }
 
-static void saturation_render(const ap_module *self, float *params)
+static void saturation_render(const ap_module *self, float *params,
+                          const ap_module_render_ctx *ctx)
 {
+    (void)ctx;
     if (!params) return;
     igSliderFloat("Saturation", &params[SLOT_SAT], -1.0f, 1.0f, "%.2f", 0);
     if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
