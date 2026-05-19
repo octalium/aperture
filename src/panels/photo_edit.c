@@ -6,7 +6,10 @@
 
 #include "cimgui.h"
 
+#include <math.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // Photo-mode workspace:
@@ -274,14 +277,150 @@ static void image_window(ap_app *app, ap_photo *photo)
 
 // ---- Histogram window -----------------------------------------------
 
+// CPU-sampled 256-bin RGB histogram of the rendered display image. The
+// readback path is the same one the photo-close thumbnail uses
+// (ap_photo_readback_rgba → thumb image), so this is cheap: a few
+// hundred KB and ~75 K bin increments per recompute.
+//
+// Recomputes when the photo pointer or its pipeline graph pointer
+// changes — i.e. photo open / close / swap and structural pipeline
+// rebuilds. The change is detected this frame and the actual readback
+// is deferred to the next frame so the GPU has finished recording +
+// running the new graph at least once; otherwise the readback would
+// pull whatever stale pixels happen to sit in the new display image.
+//
+// Slider-only edits (push-constant updates with no graph rebuild) do
+// not move the histogram in v1 — the issue's stated trade-off. A
+// follow-up can promote this to a GPU compute pass that writes to a
+// persistent storage buffer for true per-frame updates.
+
+#define HIST_BINS 256
+
+static struct {
+    const ap_photo          *photo;
+    const ap_pipeline_graph *graph;
+    uint32_t                 bins[3][HIST_BINS];
+    uint32_t                 max_bin;
+    bool                     valid;
+    bool                     pending;
+} g_hist;
+
+static bool g_hist_log_scale = false;
+
+static void histogram_recompute(ap_photo *photo)
+{
+    g_hist.valid = false;
+
+    uint8_t *rgba = NULL;
+    int      w    = 0;
+    int      h    = 0;
+    if (ap_photo_readback_rgba(photo, &rgba, &w, &h) != 0) {
+        return;
+    }
+
+    memset(g_hist.bins, 0, sizeof(g_hist.bins));
+    int n = w * h;
+    for (int i = 0; i < n; i++) {
+        g_hist.bins[0][rgba[i * 4 + 0]]++;
+        g_hist.bins[1][rgba[i * 4 + 1]]++;
+        g_hist.bins[2][rgba[i * 4 + 2]]++;
+    }
+    free(rgba);
+
+    uint32_t mx = 0;
+    for (int c = 0; c < 3; c++) {
+        for (int b = 0; b < HIST_BINS; b++) {
+            if (g_hist.bins[c][b] > mx) mx = g_hist.bins[c][b];
+        }
+    }
+    g_hist.max_bin = mx;
+    g_hist.valid   = (mx > 0);
+}
+
+static float bin_height(uint32_t count, uint32_t max_bin)
+{
+    if (max_bin == 0) return 0.0f;
+    if (g_hist_log_scale) {
+        // log1p so empty bins still map to 0. Normalise by log1p(max).
+        float denom = log1pf((float)max_bin);
+        if (denom <= 0.0f) return 0.0f;
+        return log1pf((float)count) / denom;
+    }
+    return (float)count / (float)max_bin;
+}
+
 static void histogram_window(ap_photo *photo)
 {
-    (void)photo;
     if (!igBegin("Histogram", NULL, 0)) {
         igEnd();
         return;
     }
-    igTextDisabled("(coming soon: live histogram from the rendered image)");
+
+    ap_pipeline_graph *graph = ap_photo_graph(photo);
+    if (photo != g_hist.photo || graph != g_hist.graph) {
+        g_hist.photo   = photo;
+        g_hist.graph   = graph;
+        g_hist.valid   = false;
+        g_hist.pending = true;
+    } else if (g_hist.pending) {
+        // The graph pointer was new last frame; by now the renderer
+        // has recorded + submitted at least one frame against it, so
+        // the display image holds the pixels we want to sample.
+        histogram_recompute(photo);
+        g_hist.pending = false;
+    }
+
+    igCheckbox("log scale", &g_hist_log_scale);
+
+    ImVec2_c origin = igGetCursorScreenPos();
+    ImVec2_c avail  = igGetContentRegionAvail();
+    float plot_w = avail.x;
+    float plot_h = avail.y;
+    if (plot_w < 64.0f) plot_w = 64.0f;
+    if (plot_h < 60.0f) plot_h = 60.0f;
+
+    ImDrawList *dl = igGetWindowDrawList();
+    ImVec2_c tl = origin;
+    ImVec2_c br = { origin.x + plot_w, origin.y + plot_h };
+    ImDrawList_AddRectFilled(dl, tl, br, 0xFF101418, 0.0f, 0);
+
+    if (g_hist.valid) {
+        // Channel colors are ABGR-packed; alpha 0x80 lets overlapping
+        // channels mix visually.
+        const uint32_t colors[3] = {
+            0x800000FF, // R
+            0x8000FF00, // G
+            0x80FF0000, // B
+        };
+
+        // One vertical line per bin per channel. The line covers the
+        // full bin width so adjacent bins read as a continuous curve
+        // even when the plot is narrower than 256 px.
+        float x_step = plot_w / (float)HIST_BINS;
+        for (int b = 0; b < HIST_BINS; b++) {
+            float x0 = origin.x + (float)b * x_step;
+            float x1 = origin.x + (float)(b + 1) * x_step;
+            float cx = 0.5f * (x0 + x1);
+            for (int c = 0; c < 3; c++) {
+                float t = bin_height(g_hist.bins[c][b], g_hist.max_bin);
+                if (t <= 0.0f) continue;
+                float y = origin.y + plot_h - t * plot_h;
+                ImDrawList_AddLine(dl,
+                                   (ImVec2_c){ cx, origin.y + plot_h },
+                                   (ImVec2_c){ cx, y },
+                                   colors[c], 1.0f);
+            }
+        }
+    } else {
+        const char *msg = g_hist.pending ? "rendering..." : "(no data)";
+        ImVec2_c text_pos = { origin.x + 8.0f, origin.y + 8.0f };
+        ImDrawList_AddText_Vec2(dl, text_pos, 0xFF888888, msg, NULL);
+    }
+
+    // Reserve layout space so igEnd / surrounding widgets see the
+    // plot's footprint.
+    igDummy((ImVec2_c){ plot_w, plot_h });
+
     igEnd();
 }
 
