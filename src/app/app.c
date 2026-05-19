@@ -797,7 +797,9 @@ static void draw_grid_labels(ap_app *app)
     int win_w = (int)io->DisplaySize.x;
     int win_h = (int)io->DisplaySize.y;
 
-    ImDrawList *dl = igGetForegroundDrawList_ViewportPtr(NULL);
+    // Background draw list — labels belong to the grid layer, behind
+    // any docked panels. Foreground would paint over the panel chrome.
+    ImDrawList *dl = igGetBackgroundDrawList(NULL);
     if (!dl) return;
 
     const float band_h = 18.0f;
