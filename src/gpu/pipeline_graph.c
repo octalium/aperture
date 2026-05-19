@@ -11,6 +11,9 @@
 
 #define WORKGROUP_SIZE 16
 #define MAX_MODULES    16
+// A multi-pass module expands into several stages, so the stage array
+// needs headroom over the chain-module count.
+#define MAX_STAGES     32
 
 // Max long edge of the GPU-side thumb image. The close path blits the
 // rendered output into here (linear filter, basically free on the GPU)
@@ -19,17 +22,22 @@
 // so the JPEG encoder's CPU downsample step becomes a no-op copy.
 #define THUMB_MAX_EDGE 384
 
+// One compute dispatch. A single-pass module is one stage; a
+// multi-pass variant expands into several. read0 -> binding 0,
+// write -> binding 1, read1 (aux) -> binding 2.
 typedef struct {
-    const ap_module      *module;
-    ap_module_active      active;        // resolved variant or legacy fields
-    int                   entry_idx;     // index into the edit_stack, or -1
-                                         // for transport modules (demosaic,
-                                         // encode) inserted by the graph
-    VkDescriptorSetLayout dsl;
-    VkPipelineLayout      pl;
-    VkPipeline            pipeline;
-    VkDescriptorSet       ds;
-    VkImage               output_image; // for the post-dispatch barrier target
+    const ap_module       *module;       // for diagnostics
+    int                    entry_idx;    // edit-stack index, or -1
+    size_t                 push_size;
+    ap_module_pack_push_fn pack_push;
+    VkDescriptorSetLayout  dsl;
+    VkPipelineLayout       pl;
+    VkPipeline             pipeline;
+    VkDescriptorSet        ds;
+    VkImageView            read0_view;
+    VkImageView            read1_view;
+    VkImageView            write_view;
+    VkImage                write_image;  // post-dispatch barrier target
 } graph_stage;
 
 struct ap_pipeline_graph {
@@ -50,6 +58,14 @@ struct ap_pipeline_graph {
     VkDeviceMemory stage_b_memory;
     VkImageView    stage_b_view;
 
+    // Scratch buffers for multi-pass modules' intermediates.
+    // scratch_count is the max any one module needs; modules run
+    // sequentially so the pool is shared.
+    int            scratch_count;
+    VkImage        scratch_image[AP_MODULE_MAX_SCRATCH];
+    VkDeviceMemory scratch_memory[AP_MODULE_MAX_SCRATCH];
+    VkImageView    scratch_view[AP_MODULE_MAX_SCRATCH];
+
     VkImage        display_image;
     VkDeviceMemory display_memory;
     VkImageView    display_view_unorm;
@@ -66,7 +82,7 @@ struct ap_pipeline_graph {
     int            thumb_height;
 
     int          stage_count;
-    graph_stage  stages[MAX_MODULES];
+    graph_stage  stages[MAX_STAGES];
 };
 
 static int find_memory_type(VkPhysicalDevice phys, uint32_t type_bits,
@@ -188,6 +204,21 @@ static int create_buffers(ap_pipeline_graph *graph, int width, int height)
                     VK_FORMAT_R16G16B16A16_SFLOAT, 0,
                     &graph->stage_b_view) < 0) return -1;
 
+    // Scratch buffers for multi-pass modules (graph->scratch_count set
+    // by the caller before create_buffers). Same RGBA16F format as the
+    // ping-pong working buffers.
+    for (int i = 0; i < graph->scratch_count; i++) {
+        if (create_image(graph->gpu->device, graph->gpu->physical, width, height,
+                         VK_FORMAT_R16G16B16A16_SFLOAT,
+                         VK_IMAGE_USAGE_STORAGE_BIT,
+                         0, NULL, 0,
+                         &graph->scratch_image[i],
+                         &graph->scratch_memory[i]) < 0) return -1;
+        if (create_view(graph->gpu->device, graph->scratch_image[i],
+                        VK_FORMAT_R16G16B16A16_SFLOAT, 0,
+                        &graph->scratch_view[i]) < 0) return -1;
+    }
+
     VkFormat display_view_formats[2] = {
         VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB,
     };
@@ -246,15 +277,16 @@ static int create_buffers(ap_pipeline_graph *graph, int width, int height)
     return 0;
 }
 
-static int create_descriptor_pool(ap_pipeline_graph *graph, int module_count)
+static int create_descriptor_pool(ap_pipeline_graph *graph, int stage_count)
 {
+    // Three storage-image bindings per stage (read0, write, aux read).
     VkDescriptorPoolSize pool_size = {
         .type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-        .descriptorCount = (uint32_t)(module_count * 2),
+        .descriptorCount = (uint32_t)(stage_count * 3),
     };
     VkDescriptorPoolCreateInfo pci = {
         .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .maxSets       = (uint32_t)module_count,
+        .maxSets       = (uint32_t)stage_count,
         .poolSizeCount = 1,
         .pPoolSizes    = &pool_size,
     };
@@ -266,54 +298,58 @@ static int create_descriptor_pool(ap_pipeline_graph *graph, int module_count)
     return 0;
 }
 
+// Build the Vulkan state for one stage. The stage's module / push /
+// pack_push and its three image views must already be filled in by
+// the chain assembly. Binding layout: 0 = read0, 1 = write,
+// 2 = read1 (aux). A single-pass stage sets read1 == read0.
 static int create_stage(ap_pipeline_graph *graph, graph_stage *st,
-                        const ap_module *module,
-                        const ap_module_active *active)
+                        const uint32_t *spv_data, size_t spv_size)
 {
-    st->module = module;
-    st->active = *active;
+    const char *name = st->module ? st->module->name : "?";
 
-    VkDescriptorSetLayoutBinding bindings[2] = {
+    VkDescriptorSetLayoutBinding bindings[3] = {
         { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
           .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
         { .binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
           .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
+        { .binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+          .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
     };
     VkDescriptorSetLayoutCreateInfo dslci = {
         .sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 2,
+        .bindingCount = 3,
         .pBindings    = bindings,
     };
     if (vkCreateDescriptorSetLayout(graph->gpu->device, &dslci, NULL, &st->dsl) != VK_SUCCESS) {
-        AP_ERROR("graph: %s: descriptor set layout failed", module->name);
+        AP_ERROR("graph: %s: descriptor set layout failed", name);
         return -1;
     }
 
     VkPushConstantRange push = {
         .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
         .offset     = 0,
-        .size       = (uint32_t)active->push_size,
+        .size       = (uint32_t)st->push_size,
     };
     VkPipelineLayoutCreateInfo plci = {
         .sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .setLayoutCount         = 1,
         .pSetLayouts            = &st->dsl,
-        .pushConstantRangeCount = active->push_size > 0 ? 1u : 0u,
-        .pPushConstantRanges    = active->push_size > 0 ? &push : NULL,
+        .pushConstantRangeCount = st->push_size > 0 ? 1u : 0u,
+        .pPushConstantRanges    = st->push_size > 0 ? &push : NULL,
     };
     if (vkCreatePipelineLayout(graph->gpu->device, &plci, NULL, &st->pl) != VK_SUCCESS) {
-        AP_ERROR("graph: %s: pipeline layout failed", module->name);
+        AP_ERROR("graph: %s: pipeline layout failed", name);
         return -1;
     }
 
     VkShaderModuleCreateInfo smci = {
         .sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = active->spv_size,
-        .pCode    = active->spv_data,
+        .codeSize = spv_size,
+        .pCode    = spv_data,
     };
     VkShaderModule sm;
     if (vkCreateShaderModule(graph->gpu->device, &smci, NULL, &sm) != VK_SUCCESS) {
-        AP_ERROR("graph: %s: shader module failed", module->name);
+        AP_ERROR("graph: %s: shader module failed", name);
         return -1;
     }
 
@@ -331,7 +367,7 @@ static int create_stage(ap_pipeline_graph *graph, graph_stage *st,
                                           1, &cpci, NULL, &st->pipeline);
     vkDestroyShaderModule(graph->gpu->device, sm, NULL);
     if (r != VK_SUCCESS) {
-        AP_ERROR("graph: %s: vkCreateComputePipelines -> %d", module->name, r);
+        AP_ERROR("graph: %s: vkCreateComputePipelines -> %d", name, r);
         return -1;
     }
 
@@ -342,55 +378,127 @@ static int create_stage(ap_pipeline_graph *graph, graph_stage *st,
         .pSetLayouts        = &st->dsl,
     };
     if (vkAllocateDescriptorSets(graph->gpu->device, &dai, &st->ds) != VK_SUCCESS) {
-        AP_ERROR("graph: %s: descriptor set alloc failed", module->name);
+        AP_ERROR("graph: %s: descriptor set alloc failed", name);
         return -1;
     }
+
+    VkDescriptorImageInfo r0 = { .imageView = st->read0_view, .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+    VkDescriptorImageInfo w  = { .imageView = st->write_view, .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+    VkDescriptorImageInfo r1 = { .imageView = st->read1_view, .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+    VkWriteDescriptorSet writes[3] = {
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = st->ds, .dstBinding = 0,
+          .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &r0 },
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = st->ds, .dstBinding = 1,
+          .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &w  },
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = st->ds, .dstBinding = 2,
+          .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &r1 },
+    };
+    vkUpdateDescriptorSets(graph->gpu->device, 3, writes, 0, NULL);
     return 0;
 }
 
-static void wire_descriptors(ap_pipeline_graph *graph, graph_stage *st,
-                             VkImageView in_view, VkImageView out_view)
+// Resolve a pass buffer reference to a (view, image) pair, given the
+// module's IN / OUT buffers and the graph's scratch pool.
+static void resolve_buf(ap_pipeline_graph *graph, ap_pass_buf b,
+                        VkImageView in_view,
+                        VkImageView out_view, VkImage out_image,
+                        VkImageView *res_view, VkImage *res_image)
 {
-    VkDescriptorImageInfo in_info  = { .imageView = in_view,  .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
-    VkDescriptorImageInfo out_info = { .imageView = out_view, .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
-    VkWriteDescriptorSet writes[2] = {
-        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = st->ds, .dstBinding = 0,
-          .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-          .pImageInfo = &in_info },
-        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = st->ds, .dstBinding = 1,
-          .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-          .pImageInfo = &out_info },
-    };
-    vkUpdateDescriptorSets(graph->gpu->device, 2, writes, 0, NULL);
+    if (b == AP_PASS_BUF_IN) {
+        *res_view  = in_view;
+        *res_image = VK_NULL_HANDLE;   // IN is only ever read
+    } else if (b == AP_PASS_BUF_OUT) {
+        *res_view  = out_view;
+        *res_image = out_image;
+    } else {
+        int n = (int)b - (int)AP_PASS_BUF_SCRATCH0;
+        if (n >= 0 && n < graph->scratch_count) {
+            *res_view  = graph->scratch_view[n];
+            *res_image = graph->scratch_image[n];
+        } else {
+            *res_view  = out_view;     // defensive — module mis-declared
+            *res_image = out_image;
+        }
+    }
 }
 
-static void wire_chain(ap_pipeline_graph *graph, VkImageView input_view)
+// Walk the resolved chain, expanding multi-pass variants into one
+// stage per pass, assigning each stage its IN / OUT / scratch buffers,
+// and building the Vulkan state. The ping-pong of stage_a / stage_b
+// across modules is unchanged; multi-pass modules additionally route
+// through the scratch pool. Contract: a multi-pass variant's final
+// pass must write AP_PASS_BUF_OUT; passes never write IN.
+static int assemble_stages(ap_pipeline_graph *graph,
+                           const ap_module *const *chain_modules,
+                           const int *chain_entry_idx,
+                           const ap_module_active *chain_active,
+                           int chain_len, VkImageView input_view)
 {
-    VkImageView prev_out = VK_NULL_HANDLE;
-    for (int i = 0; i < graph->stage_count; i++) {
-        VkImageView in_view  = (i == 0) ? input_view : prev_out;
+    VkImageView cur_view = input_view;
+    int s = 0;
+
+    for (int c = 0; c < chain_len; c++) {
+        const ap_module        *m = chain_modules[c];
+        const ap_module_active *a = &chain_active[c];
+        bool last_module = (c == chain_len - 1);
+
         VkImageView out_view;
         VkImage     out_image;
-
-        bool is_last = (i == graph->stage_count - 1);
-        if (is_last) {
+        if (last_module) {
             out_view  = graph->display_view_unorm;
             out_image = graph->display_image;
+        } else if (cur_view == graph->stage_a_view) {
+            out_view  = graph->stage_b_view;
+            out_image = graph->stage_b_image;
         } else {
-            // Pick A or B such that we don't read+write the same buffer.
-            if (i == 0 || prev_out == graph->stage_b_view) {
-                out_view  = graph->stage_a_view;
-                out_image = graph->stage_a_image;
-            } else {
-                out_view  = graph->stage_b_view;
-                out_image = graph->stage_b_image;
-            }
+            out_view  = graph->stage_a_view;
+            out_image = graph->stage_a_image;
         }
 
-        wire_descriptors(graph, &graph->stages[i], in_view, out_view);
-        graph->stages[i].output_image = out_image;
-        prev_out = out_view;
+        int n_passes = (a->pass_count > 0) ? a->pass_count : 1;
+        if (s + n_passes > MAX_STAGES) {
+            AP_ERROR("graph: stage count exceeds MAX_STAGES");
+            return -1;
+        }
+
+        for (int p = 0; p < n_passes; p++) {
+            graph_stage *st = &graph->stages[s];
+            st->module    = m;
+            st->entry_idx = chain_entry_idx[c];
+
+            const uint32_t *spv;
+            size_t spv_size;
+            if (a->pass_count > 0) {
+                const ap_module_pass *pass = &a->passes[p];
+                st->push_size = pass->push_size;
+                st->pack_push = pass->pack_push;
+                spv      = pass->spv_data;
+                spv_size = pass->spv_size;
+                VkImage ignore;
+                resolve_buf(graph, pass->read0, cur_view, out_view,
+                            out_image, &st->read0_view, &ignore);
+                resolve_buf(graph, pass->read1, cur_view, out_view,
+                            out_image, &st->read1_view, &ignore);
+                resolve_buf(graph, pass->write, cur_view, out_view,
+                            out_image, &st->write_view, &st->write_image);
+            } else {
+                st->push_size  = a->push_size;
+                st->pack_push  = a->pack_push;
+                spv            = a->spv_data;
+                spv_size       = a->spv_size;
+                st->read0_view = cur_view;
+                st->read1_view = cur_view;   // single-pass: aux unused
+                st->write_view = out_view;
+                st->write_image = out_image;
+            }
+
+            if (create_stage(graph, st, spv, spv_size) < 0) return -1;
+            s++;
+        }
+        cur_view = out_view;
     }
+    graph->stage_count = s;
+    return 0;
 }
 
 static int initial_layout_transitions(ap_pipeline_graph *graph)
@@ -410,9 +518,15 @@ static int initial_layout_transitions(ap_pipeline_graph *graph)
     };
     vkBeginCommandBuffer(cmd, &bi);
 
-    VkImage targets[3] = { graph->stage_a_image, graph->stage_b_image, graph->display_image };
-    VkImageMemoryBarrier2 barriers[3];
-    for (int i = 0; i < 3; i++) {
+    VkImage targets[3 + AP_MODULE_MAX_SCRATCH] = {
+        graph->stage_a_image, graph->stage_b_image, graph->display_image,
+    };
+    int target_count = 3;
+    for (int i = 0; i < graph->scratch_count; i++) {
+        targets[target_count++] = graph->scratch_image[i];
+    }
+    VkImageMemoryBarrier2 barriers[3 + AP_MODULE_MAX_SCRATCH];
+    for (int i = 0; i < target_count; i++) {
         barriers[i] = (VkImageMemoryBarrier2){
             .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
             .srcStageMask  = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
@@ -433,7 +547,7 @@ static int initial_layout_transitions(ap_pipeline_graph *graph)
     }
     VkDependencyInfo dep = {
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .imageMemoryBarrierCount = 3,
+        .imageMemoryBarrierCount = (uint32_t)target_count,
         .pImageMemoryBarriers    = barriers,
     };
     vkCmdPipelineBarrier2(cmd, &dep);
@@ -487,7 +601,7 @@ ap_pipeline_graph *ap_pipeline_graph_create(ap_gpu *g, ap_texture *input,
 
     const ap_module *chain_modules[MAX_MODULES];
     int              chain_entry_idx[MAX_MODULES];
-    int              stage_count = 0;
+    int              chain_len = 0;
 
     // Does the stack have any enabled Demosaic entry? If not, we'll
     // prepend the raw passthrough so format dimensions line up.
@@ -501,9 +615,9 @@ ap_pipeline_graph *ap_pipeline_graph_create(ap_gpu *g, ap_texture *input,
         }
     }
     if (need_passthrough) {
-        chain_modules[stage_count]   = m_pass;
-        chain_entry_idx[stage_count] = -1;
-        stage_count++;
+        chain_modules[chain_len]   = m_pass;
+        chain_entry_idx[chain_len] = -1;
+        chain_len++;
     }
 
     for (int i = 0; i < n; i++) {
@@ -515,64 +629,74 @@ ap_pipeline_graph *ap_pipeline_graph_create(ap_gpu *g, ap_texture *input,
                      e->module_name, i);
             return NULL;
         }
-        // Metadata-only modules (e.g. Crop — a framing operation the
-        // canvas + export consume, not a pixel stage) carry no shader.
-        // They occupy a stack slot but produce no compute stage.
+        // Metadata-only modules (e.g. Transform — a framing operation
+        // the canvas + export consume, not a pixel stage) carry no
+        // shader. They occupy a stack slot but produce no stage.
         if (!m->spv_data && (m->variant_count == 0 || !m->variants)) {
             continue;
         }
-        if (stage_count >= MAX_MODULES - 1) {
+        if (chain_len >= MAX_MODULES - 1) {
             AP_ERROR("ap_pipeline_graph_create: stack exceeds MAX_MODULES");
             return NULL;
         }
-        chain_modules[stage_count]   = m;
-        chain_entry_idx[stage_count] = i;
-        stage_count++;
+        chain_modules[chain_len]   = m;
+        chain_entry_idx[chain_len] = i;
+        chain_len++;
     }
 
-    chain_modules[stage_count]   = m_out;
-    chain_entry_idx[stage_count] = -1;
-    stage_count++;
+    chain_modules[chain_len]   = m_out;
+    chain_entry_idx[chain_len] = -1;
+    chain_len++;
+
+    // Resolve each chain module's active variant up front. Variant
+    // choice (incl. whether a variant is multi-pass) is baked into the
+    // graph at build time; variant changes trigger a rebuild. From the
+    // resolved actives, total the expanded stage count + the scratch
+    // pool size a multi-pass variant needs.
+    ap_module_active chain_active[MAX_MODULES];
+    int total_stages = 0;
+    int max_scratch  = 0;
+    for (int c = 0; c < chain_len; c++) {
+        const float *params = NULL;
+        if (chain_entry_idx[c] >= 0 && stack) {
+            const ap_edit_entry *e =
+                ap_edit_stack_at_const(stack, chain_entry_idx[c]);
+            if (e) params = e->params;
+        }
+        ap_module_resolve(chain_modules[c], params, &chain_active[c]);
+        total_stages += (chain_active[c].pass_count > 0)
+                      ? chain_active[c].pass_count : 1;
+        if (chain_active[c].scratch_count > max_scratch) {
+            max_scratch = chain_active[c].scratch_count;
+        }
+    }
+    if (total_stages > MAX_STAGES) {
+        AP_ERROR("ap_pipeline_graph_create: %d stages exceeds MAX_STAGES",
+                 total_stages);
+        return NULL;
+    }
+    if (max_scratch > AP_MODULE_MAX_SCRATCH) max_scratch = AP_MODULE_MAX_SCRATCH;
 
     ap_pipeline_graph *graph = calloc(1, sizeof(*graph));
     if (!graph) {
         AP_ERROR("ap_pipeline_graph_create: out of memory");
         return NULL;
     }
-    graph->gpu    = g;
-    graph->width  = output_width;
-    graph->height = output_height;
-    graph->stage_count = stage_count;
+    graph->gpu           = g;
+    graph->width         = output_width;
+    graph->height        = output_height;
+    graph->scratch_count = max_scratch;
     if (meta) {
         graph->meta     = *meta;
         graph->has_meta = true;
     }
 
-    if (create_buffers(graph, graph->width, graph->height)        < 0) goto fail;
-    if (create_descriptor_pool(graph, stage_count)                < 0) goto fail;
-
-    for (int i = 0; i < stage_count; i++) {
-        // Resolve the active variant from the entry's params before
-        // building Vulkan state — variant choice is baked into the
-        // pipeline at build time. Param-only edits don't rebuild the
-        // graph, but variant changes do (the panel layer detects the
-        // slot change and triggers ap_app_rebuild_photo_graph).
-        const float *params = NULL;
-        int entry_idx = chain_entry_idx[i];
-        if (entry_idx >= 0 && stack) {
-            const ap_edit_entry *e = ap_edit_stack_at_const(stack, entry_idx);
-            if (e) params = e->params;
-        }
-        ap_module_active active;
-        ap_module_resolve(chain_modules[i], params, &active);
-
-        if (create_stage(graph, &graph->stages[i],
-                         chain_modules[i], &active) < 0) goto fail;
-        graph->stages[i].entry_idx = entry_idx;
-    }
-    wire_chain(graph, ap_texture_view(input));
-
-    if (initial_layout_transitions(graph)                         < 0) goto fail;
+    if (create_buffers(graph, graph->width, graph->height)   < 0) goto fail;
+    if (create_descriptor_pool(graph, total_stages)          < 0) goto fail;
+    if (assemble_stages(graph, chain_modules, chain_entry_idx,
+                        chain_active, chain_len,
+                        ap_texture_view(input))              < 0) goto fail;
+    if (initial_layout_transitions(graph)                    < 0) goto fail;
 
     return graph;
 
@@ -594,6 +718,12 @@ void ap_pipeline_graph_destroy(ap_pipeline_graph *graph)
     if (graph->display_view_unorm) vkDestroyImageView(dev, graph->display_view_unorm, NULL);
     if (graph->display_image)      vkDestroyImage(dev, graph->display_image, NULL);
     if (graph->display_memory)     vkFreeMemory(dev, graph->display_memory, NULL);
+
+    for (int i = 0; i < AP_MODULE_MAX_SCRATCH; i++) {
+        if (graph->scratch_view[i])   vkDestroyImageView(dev, graph->scratch_view[i], NULL);
+        if (graph->scratch_image[i])  vkDestroyImage(dev, graph->scratch_image[i], NULL);
+        if (graph->scratch_memory[i]) vkFreeMemory(dev, graph->scratch_memory[i], NULL);
+    }
 
     if (graph->stage_b_view)   vkDestroyImageView(dev, graph->stage_b_view, NULL);
     if (graph->stage_b_image)  vkDestroyImage(dev, graph->stage_b_image, NULL);
@@ -686,22 +816,21 @@ int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
     for (int i = 0; i < graph->stage_count; i++) {
         graph_stage *st = &graph->stages[i];
         const ap_module *m = st->module;
-        const ap_module_active *a = &st->active;
 
-        if (a->push_size > sizeof(push_buf)) {
+        if (st->push_size > sizeof(push_buf)) {
             AP_ERROR("graph: %s push_size %zu exceeds scratch %zu",
-                     m->name, a->push_size, sizeof(push_buf));
+                     m ? m->name : "?", st->push_size, sizeof(push_buf));
             return -1;
         }
 
-        if (a->pack_push) {
+        if (st->pack_push) {
             const ap_raw_metadata *meta = graph->has_meta ? &graph->meta : NULL;
             const float *params = NULL;
             if (st->entry_idx >= 0 && stack) {
                 const ap_edit_entry *e = ap_edit_stack_at_const(stack, st->entry_idx);
                 if (e) params = e->params;
             }
-            int rc = a->pack_push(m, params, meta, push_buf);
+            int rc = st->pack_push(m, params, meta, push_buf);
             if (rc != 0) {
                 continue; // module signaled "skip"
             }
@@ -710,17 +839,17 @@ int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, st->pipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, st->pl,
                                 0, 1, &st->ds, 0, NULL);
-        if (a->push_size > 0) {
+        if (st->push_size > 0) {
             vkCmdPushConstants(cmd, st->pl, VK_SHADER_STAGE_COMPUTE_BIT,
-                               0, (uint32_t)a->push_size, push_buf);
+                               0, (uint32_t)st->push_size, push_buf);
         }
         vkCmdDispatch(cmd, gx, gy, 1);
 
         bool is_last = (i == graph->stage_count - 1);
         if (is_last) {
-            compute_to_sample_barrier(cmd, st->output_image);
+            compute_to_sample_barrier(cmd, st->write_image);
         } else {
-            compute_to_compute_barrier(cmd, st->output_image);
+            compute_to_compute_barrier(cmd, st->write_image);
         }
     }
     return 0;

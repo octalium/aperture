@@ -16,6 +16,8 @@ shader_sources = [
   'hsl.comp',
   'saturation.comp',
   'sharpen.comp',
+  'sharpen_blur_h.comp',
+  'sharpen_gauss_combine.comp',
   'tone.comp',
   'tone_filmic.comp',
   'vignette.comp',

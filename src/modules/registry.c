@@ -57,8 +57,11 @@ void ap_module_resolve(const ap_module *self, const float *params,
                        ap_module_active *out)
 {
     if (!out) return;
-    out->display_name = "";
-    out->variant_idx  = 0;
+    out->display_name   = "";
+    out->variant_idx    = 0;
+    out->pass_count     = 0;
+    out->passes         = NULL;
+    out->scratch_count  = 0;
     if (!self) {
         out->spv_data  = NULL;
         out->spv_size  = 0;
@@ -75,12 +78,15 @@ void ap_module_resolve(const ap_module *self, const float *params,
         if (idx < 0) idx = 0;
         if (idx >= self->variant_count) idx = self->variant_count - 1;
         const ap_module_variant *v = &self->variants[idx];
-        out->spv_data     = v->spv_data;
-        out->spv_size     = v->spv_size;
-        out->push_size    = v->push_size;
-        out->pack_push    = v->pack_push;
-        out->display_name = v->display_name ? v->display_name : "";
-        out->variant_idx  = idx;
+        out->spv_data      = v->spv_data;
+        out->spv_size      = v->spv_size;
+        out->push_size     = v->push_size;
+        out->pack_push     = v->pack_push;
+        out->display_name  = v->display_name ? v->display_name : "";
+        out->variant_idx   = idx;
+        out->pass_count    = v->pass_count;
+        out->passes        = v->passes;
+        out->scratch_count = v->scratch_count;
         return;
     }
     out->spv_data  = self->spv_data;
