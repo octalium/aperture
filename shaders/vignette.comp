@@ -1,0 +1,38 @@
+#version 450
+
+// Radial darkening / brightening from center to corners. A
+// smoothstep ramp between `midpoint` and (midpoint..1.42) controls
+// where the falloff starts and how wide it is; `amount` scales the
+// final gain at the corners. Negative `amount` darkens (classic
+// vignette), positive brightens.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D in_image;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
+
+layout(push_constant) uniform PushConstants {
+    float amount;
+    float midpoint;
+    float feather;
+} pc;
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(in_image);
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    vec2 uv = (vec2(coord) + 0.5) / vec2(size);
+    vec2 d  = (uv - 0.5) * 2.0;                  // [-1, +1] from center
+    float r = length(d);
+
+    // Smooth ramp from midpoint to corner (1.42 ≈ sqrt(2)).
+    float upper = mix(pc.midpoint, 1.42, max(pc.feather, 1e-3));
+    float t     = smoothstep(pc.midpoint, upper, r);
+
+    float gain  = 1.0 + pc.amount * t;
+    vec4  c     = imageLoad(in_image, coord);
+    c.rgb *= gain;
+    imageStore(out_image, coord, c);
+}
