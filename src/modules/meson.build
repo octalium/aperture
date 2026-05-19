@@ -4,6 +4,7 @@ aperture_sources += files(
   'demosaic.c',
   'exposure.c',
   'grain.c',
+  'hsl.c',
   'orientation.c',
   'output_transfer.c',
   'profile.c',
