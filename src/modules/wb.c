@@ -101,8 +101,7 @@ static void slider_with_reset(const ap_module *self, float *params,
 static void wb_render(const ap_module *self, float *params)
 {
     if (!params) return;
-    ap_module_render_variant_combo(self, params);
-
+    // The algorithm dropdown is drawn centrally by the config window.
     int variant = (int)params[SLOT_ALGO];
     if (variant == VARIANT_MANUAL) {
         slider_with_reset(self, params, "R", SLOT_R, 0.1f, 4.0f);
