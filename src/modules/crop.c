@@ -4,6 +4,8 @@
 
 #include "cimgui.h"
 
+#include <math.h>
+
 typedef struct {
     float x0;
     float y0;
@@ -31,27 +33,44 @@ static int crop_pack_push(const ap_module *self,
     return 0;
 }
 
-static void slider_with_reset(const ap_module *self, float *params,
-                              const char *label, int slot)
+static float clampf(float v, float lo, float hi)
 {
-    igSliderFloat(label, &params[slot], 0.0f, 1.0f, "%.3f", 0);
-    if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
-        params[slot] = self->params_default[slot];
-    }
+    return v < lo ? lo : (v > hi ? hi : v);
 }
 
+// Crop is precise framing — numeric entry beats fuzzy sliders. The
+// rect is stored as x0/y0/x1/y1 but presented as X / Y / Width /
+// Height, which is the natural mental model. Values are fractions of
+// the image ([0, 1]); a draggable canvas overlay is the eventual
+// "something better" but wants canvas hit-testing first.
 static void crop_render(const ap_module *self, float *params)
 {
+    (void)self;
     if (!params) return;
-    slider_with_reset(self, params, "X0", SLOT_X0);
-    slider_with_reset(self, params, "Y0", SLOT_Y0);
-    slider_with_reset(self, params, "X1", SLOT_X1);
-    slider_with_reset(self, params, "Y1", SLOT_Y1);
 
-    // Guardrail: keep the rect non-degenerate so the shader's small
-    // epsilon clamp doesn't have to carry the whole load.
-    if (params[SLOT_X1] <= params[SLOT_X0]) params[SLOT_X1] = params[SLOT_X0] + 0.01f;
-    if (params[SLOT_Y1] <= params[SLOT_Y0]) params[SLOT_Y1] = params[SLOT_Y0] + 0.01f;
+    float x = params[SLOT_X0];
+    float y = params[SLOT_Y0];
+    float w = params[SLOT_X1] - params[SLOT_X0];
+    float h = params[SLOT_Y1] - params[SLOT_Y0];
+
+    bool changed = false;
+    changed |= igInputFloat("X",      &x, 0.01f, 0.1f, "%.3f", 0);
+    changed |= igInputFloat("Y",      &y, 0.01f, 0.1f, "%.3f", 0);
+    changed |= igInputFloat("Width",  &w, 0.01f, 0.1f, "%.3f", 0);
+    changed |= igInputFloat("Height", &h, 0.01f, 0.1f, "%.3f", 0);
+
+    if (changed) {
+        x = clampf(x, 0.0f, 0.99f);
+        y = clampf(y, 0.0f, 0.99f);
+        w = clampf(w, 0.01f, 1.0f - x);
+        h = clampf(h, 0.01f, 1.0f - y);
+        params[SLOT_X0] = x;
+        params[SLOT_Y0] = y;
+        params[SLOT_X1] = x + w;
+        params[SLOT_Y1] = y + h;
+    }
+
+    igTextDisabled("X/Y/W/H as fractions of the image; canvas drag-overlay is a follow-up");
 }
 
 // Geometric category. The pipeline graph's stage ordering keeps

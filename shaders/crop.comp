@@ -1,12 +1,15 @@
 #version 450
 
-// Crop: resample the working buffer so a normalized sub-rect of the
-// input fills the output. The pipeline graph allocates fixed-size
-// buffers, so the output image keeps the working dimensions — the
-// crop region gets stretched to fill them. Aspect distortion happens
-// when the crop rect's aspect differs from the working buffer's;
-// matching aspect is the user's responsibility for v1. A future
-// follow-up can letterbox (or grow into the dynamic-extent path).
+// Crop: show a normalized sub-rect of the working buffer at its
+// correct aspect ratio. The pipeline graph allocates fixed-size
+// buffers, so the crop is *letterboxed* into the working
+// dimensions — the cropped region is scaled to fit while preserving
+// its pixel aspect, centered, with black bars filling the remainder.
+// No stretching.
+//
+// True viewport-filling crop (output buffer resized to the crop
+// dimensions) needs the dynamic-extent allocator — tracked as a
+// follow-up. Letterbox is correct-aspect and contained.
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
@@ -20,24 +23,56 @@ layout(push_constant) uniform PushConstants {
     float y1;
 } pc;
 
+vec4 sample_bilinear(vec2 src_px, ivec2 size)
+{
+    vec2  px = src_px - 0.5;
+    ivec2 p0 = ivec2(floor(px));
+    vec2  f  = px - vec2(p0);
+    ivec2 a = clamp(p0,               ivec2(0), size - 1);
+    ivec2 b = clamp(p0 + ivec2(1, 0), ivec2(0), size - 1);
+    ivec2 c = clamp(p0 + ivec2(0, 1), ivec2(0), size - 1);
+    ivec2 d = clamp(p0 + ivec2(1, 1), ivec2(0), size - 1);
+    vec4 top = mix(imageLoad(in_image, a), imageLoad(in_image, b), f.x);
+    vec4 bot = mix(imageLoad(in_image, c), imageLoad(in_image, d), f.x);
+    return mix(top, bot, f.y);
+}
+
 void main()
 {
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size  = imageSize(in_image);
     if (coord.x >= size.x || coord.y >= size.y) return;
 
-    vec2 uv = (vec2(coord) + 0.5) / vec2(size);
-
-    // Clamp the crop rect so x1 > x0 and y1 > y0 — degenerate input
-    // would zero the divisor and read off the image.
+    // Sanitize the crop rect: x1 > x0, y1 > y0, all within [0, 1].
     float x0 = clamp(pc.x0, 0.0, 1.0);
     float y0 = clamp(pc.y0, 0.0, 1.0);
     float x1 = clamp(max(pc.x1, x0 + 1e-4), 0.0, 1.0);
     float y1 = clamp(max(pc.y1, y0 + 1e-4), 0.0, 1.0);
 
-    vec2 sample_uv = vec2(x0, y0) + uv * vec2(x1 - x0, y1 - y0);
-    ivec2 sc = clamp(ivec2(sample_uv * vec2(size)),
-                     ivec2(0), size - 1);
+    // The crop's true pixel dimensions + aspect.
+    float crop_w = (x1 - x0) * float(size.x);
+    float crop_h = (y1 - y0) * float(size.y);
+    float crop_aspect = crop_w / crop_h;
+    float buf_aspect  = float(size.x) / float(size.y);
 
-    imageStore(out_image, coord, imageLoad(in_image, sc));
+    // Letterbox: the content rect is the crop scaled to fit the
+    // buffer while keeping crop_aspect; the rest is black bars.
+    vec2 content;
+    if (crop_aspect > buf_aspect) {
+        content = vec2(float(size.x), float(size.x) / crop_aspect);
+    } else {
+        content = vec2(float(size.y) * crop_aspect, float(size.y));
+    }
+    vec2 origin = (vec2(size) - content) * 0.5;
+
+    vec2 local = (vec2(coord) + 0.5 - origin) / content;  // [0,1] in content
+    if (local.x < 0.0 || local.x > 1.0 ||
+        local.y < 0.0 || local.y > 1.0) {
+        imageStore(out_image, coord, vec4(0.0, 0.0, 0.0, 1.0));
+        return;
+    }
+
+    vec2 src_uv = vec2(x0, y0) + local * vec2(x1 - x0, y1 - y0);
+    imageStore(out_image, coord,
+               sample_bilinear(src_uv * vec2(size), size));
 }
