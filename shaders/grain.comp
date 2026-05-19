@@ -1,0 +1,58 @@
+#version 450
+
+// Synthetic film grain — per-pixel hash noise modulated by luma.
+// The hash seed (`seed`) is held stable per recompose so the grain
+// doesn't shimmer between frames; flipping the slider re-rolls.
+//
+// Texture-based grain (sampled blue-noise tile, anisotropic spectra)
+// is the higher-fidelity follow-up — it lands once the pipeline
+// graph can bind a static per-module input image.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D in_image;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
+
+layout(push_constant) uniform PushConstants {
+    float amount;
+    float size;
+    float mid_bias;
+    float seed;
+} pc;
+
+// Stateless hash → float in [0, 1). Variant of Wang / xorshift mash —
+// good enough for grain texture.
+float hash(uvec3 v)
+{
+    v ^= v >> 16u;
+    v *= uvec3(0x85ebca6bu, 0xc2b2ae35u, 0x27d4eb2du);
+    v ^= v >> 13u;
+    uint h = v.x ^ v.y ^ v.z;
+    return float(h) * (1.0 / 4294967296.0);
+}
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(in_image);
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    vec4 c = imageLoad(in_image, coord);
+
+    // Grain "particle" size: integer-divide coord by pc.size so a
+    // cluster of pixels shares one noise sample. Avoids the
+    // single-pixel salt-and-pepper look at large sizes.
+    int s = max(1, int(pc.size));
+    ivec2 quant = coord / s;
+    uvec3 seed_v = uvec3(quant.x, quant.y, uint(pc.seed * 1e6));
+
+    float n = hash(seed_v) - 0.5;
+
+    // Luma-weighted tent. Real film grain is loudest in midtones;
+    // bias toward that with a (1 - mid_bias) lerp to uniform.
+    float luma = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float w    = mix(1.0, 4.0 * luma * (1.0 - luma), pc.mid_bias);
+
+    c.rgb += pc.amount * w * vec3(n);
+    imageStore(out_image, coord, c);
+}
