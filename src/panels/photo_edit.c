@@ -466,7 +466,8 @@ static void histogram_window(ap_photo *photo)
 
 // ---- per-entry config windows ---------------------------------------
 
-static void config_window(ap_photo *photo, ap_edit_stack *stack, int idx)
+static void config_window(ap_app *app, ap_photo *photo,
+                          ap_edit_stack *stack, int idx)
 {
     (void)photo;
     ap_edit_entry *e = ap_edit_stack_at(stack, idx);
@@ -504,10 +505,26 @@ static void config_window(ap_photo *photo, ap_edit_stack *stack, int idx)
         igTextDisabled("double-click a value to reset it");
         igSeparator();
 
+        // Snapshot the variant slot so we can detect a flip and
+        // trigger a graph rebuild — variant switches change shader
+        // bytecode, not just push constants. Param-only edits flow
+        // through push constants on the next record and need no
+        // rebuild.
+        bool  has_variants = (m->variant_count > 0 &&
+                              m->variant_param_slot >= 0 &&
+                              m->variant_param_slot < AP_EDIT_PARAMS_SLOTS);
+        float old_variant_val = has_variants
+            ? e->params[m->variant_param_slot] : 0.0f;
+
         if (m->render_params) {
             m->render_params(m, e->params);
         } else {
             igTextDisabled("(no parameters)");
+        }
+
+        if (has_variants &&
+            (int)e->params[m->variant_param_slot] != (int)old_variant_val) {
+            ap_app_rebuild_photo_graph(app);
         }
     }
     igEnd();
@@ -516,11 +533,12 @@ static void config_window(ap_photo *photo, ap_edit_stack *stack, int idx)
     if (!open) e->show_config = false;
 }
 
-static void entry_config_windows(ap_photo *photo, ap_edit_stack *stack)
+static void entry_config_windows(ap_app *app, ap_photo *photo,
+                                 ap_edit_stack *stack)
 {
     int n = ap_edit_stack_count(stack);
     for (int i = 0; i < n; i++) {
-        config_window(photo, stack, i);
+        config_window(app, photo, stack, i);
     }
 }
 
@@ -682,7 +700,7 @@ static void photo_edit_draw(ap_app *app)
     tools_window(app, photo, stack);
     image_window(app, photo);
     histogram_window(photo);
-    entry_config_windows(photo, stack);
+    entry_config_windows(app, photo, stack);
     draw_save_as_pipeline_modal(app, photo, stack);
     draw_apply_pipeline_modal(app, photo, stack);
 }
