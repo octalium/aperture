@@ -18,7 +18,12 @@ extern "C" {
 // so they neither cost a dispatch nor allocate working buffers.
 
 #define AP_EDIT_NAME_LEN    32
-#define AP_EDIT_PARAMS_SLOTS 8
+// Per-entry param capacity. Modules with more knobs (HSL, lens
+// correction, color grading wheels) need elbow room beyond the
+// initial 8. Bumping the cap keeps every entry the same shape — a
+// few hundred extra bytes per entry, no variable-size blob plumbing
+// to maintain. Cross-reference #108.
+#define AP_EDIT_PARAMS_SLOTS 32
 #define AP_EDIT_STACK_MAX   32
 
 #define AP_EDIT_DISPLAY_LEN 64

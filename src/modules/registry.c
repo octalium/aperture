@@ -1,6 +1,7 @@
 #include "module.h"
 
 #include "cimgui.h"
+#include "edit/stack.h"
 
 #include <string.h>
 
@@ -52,7 +53,7 @@ void ap_module_resolve(const ap_module *self, const float *params,
     if (self->variant_count > 0 && self->variants) {
         int slot = self->variant_param_slot;
         int idx  = 0;
-        if (params && slot >= 0 && slot < 8 /* AP_EDIT_PARAMS_SLOTS */) {
+        if (params && slot >= 0 && slot < AP_EDIT_PARAMS_SLOTS) {
             idx = (int)params[slot];
         }
         if (idx < 0) idx = 0;
@@ -77,7 +78,7 @@ bool ap_module_render_variant_combo(const ap_module *self, float *params)
     if (!self || !params) return false;
     if (self->variant_count <= 0 || !self->variants) return false;
     if (self->variant_param_slot < 0 ||
-        self->variant_param_slot >= 8 /* AP_EDIT_PARAMS_SLOTS */) {
+        self->variant_param_slot >= AP_EDIT_PARAMS_SLOTS) {
         return false;
     }
 
