@@ -50,6 +50,10 @@ int ap_pipeline_get_default(ap_pipeline_def *out);
 // Fetch a pipeline by id. Returns 0 on success, -1 if not found.
 int ap_pipeline_get(int64_t id, ap_pipeline_def *out);
 
+// Fetch a pipeline by name (exact match). Returns 0 on success,
+// -1 if no pipeline with that name exists.
+int ap_pipeline_get_by_name(const char *name, ap_pipeline_def *out);
+
 // List up to `max` pipelines, ordered by name. Returns the number
 // written, or -1 on error.
 int ap_pipeline_list(ap_pipeline_def *out, int max);

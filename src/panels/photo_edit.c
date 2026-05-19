@@ -1,8 +1,11 @@
 #include "panels.h"
 
+#include "app/app.h"
 #include "edit/stack.h"
+#include "library/library.h"
 #include "modules/module.h"
 #include "photo/photo.h"
+#include "sidecar/sidecar.h"
 
 #include "cimgui.h"
 
@@ -96,6 +99,29 @@ static bool draw_rename_modal(ap_edit_stack *stack)
     return changed;
 }
 
+// ---- Save-as-pipeline / Apply-pipeline popup state ------------------
+
+static bool    g_save_as_open       = false;
+static bool    g_apply_open         = false;
+static char    g_save_as_name[AP_PIPELINE_NAME_LEN] = {0};
+static char    g_save_status[256]   = {0};
+static char    g_apply_status[256]  = {0};
+static bool    g_save_as_pending_overwrite = false;
+
+static void open_save_as_popup(void)
+{
+    g_save_as_open  = true;
+    g_save_status[0] = '\0';
+    g_save_as_pending_overwrite = false;
+    g_save_as_name[0] = '\0';
+}
+
+static void open_apply_popup(void)
+{
+    g_apply_open      = true;
+    g_apply_status[0] = '\0';
+}
+
 static void edits_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
 {
     if (!igBegin("Edits", NULL, 0)) {
@@ -104,6 +130,20 @@ static void edits_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
     }
 
     int n = ap_edit_stack_count(stack);
+
+    // Pipeline actions live at the top of the Edits window so both
+    // appear regardless of whether the stack has any entries. Save-as
+    // is disabled on an empty stack — nothing meaningful to save.
+    if (n == 0) igBeginDisabled(true);
+    if (igButton("Save as pipeline...", (ImVec2_c){ 0.0f, 0.0f })) {
+        open_save_as_popup();
+    }
+    if (n == 0) igEndDisabled();
+    igSameLine(0.0f, -1.0f);
+    if (igButton("Apply pipeline...", (ImVec2_c){ 0.0f, 0.0f })) {
+        open_apply_popup();
+    }
+    igSeparator();
 
     igTextDisabled("drag rows to reorder  ·  right-click for actions");
     igSeparator();
@@ -484,6 +524,151 @@ static void entry_config_windows(ap_photo *photo, ap_edit_stack *stack)
     }
 }
 
+// ---- Save-as-pipeline modal -----------------------------------------
+
+static void draw_save_as_pipeline_modal(ap_app *app, ap_photo *photo,
+                                        const ap_edit_stack *stack)
+{
+    if (g_save_as_open) {
+        igOpenPopup_Str("Save as Pipeline", 0);
+        g_save_as_open = false;
+    }
+    if (!igBeginPopupModal("Save as Pipeline", NULL, 0)) return;
+    (void)app;
+    (void)photo;
+
+    igText("Name for the new pipeline:");
+    igSetNextItemWidth(280.0f);
+    if (igInputText("##pipeline_name", g_save_as_name,
+                    sizeof(g_save_as_name), 0, NULL, NULL)) {
+        // Editing the name invalidates any prior overwrite prompt
+        // (the user might be typing a brand-new name).
+        g_save_as_pending_overwrite = false;
+    }
+
+    bool name_ok = g_save_as_name[0] != '\0';
+
+    bool save_clicked = false;
+    if (!name_ok) igBeginDisabled(true);
+    save_clicked = igButton(g_save_as_pending_overwrite ? "Overwrite"
+                                                        : "Save",
+                            (ImVec2_c){ 120.0f, 0.0f });
+    if (!name_ok) igEndDisabled();
+    igSameLine(0.0f, -1.0f);
+    bool cancel = igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f });
+
+    if (g_save_status[0]) {
+        igSeparator();
+        igTextDisabled("%s", g_save_status);
+    }
+
+    if (save_clicked && name_ok) {
+        if (g_save_as_pending_overwrite) {
+            ap_pipeline_def existing;
+            if (ap_pipeline_get_by_name(g_save_as_name, &existing) == 0) {
+                if (ap_pipeline_update(existing.id, NULL, stack) == 0) {
+                    snprintf(g_save_status, sizeof(g_save_status),
+                             "Pipeline \"%s\" overwritten.",
+                             g_save_as_name);
+                    igCloseCurrentPopup();
+                    g_save_as_pending_overwrite = false;
+                } else {
+                    snprintf(g_save_status, sizeof(g_save_status),
+                             "Overwrite failed.");
+                }
+            } else {
+                // Race: existing row vanished between probe and write.
+                snprintf(g_save_status, sizeof(g_save_status),
+                         "Pipeline \"%s\" no longer exists; click Save "
+                         "to create it fresh.", g_save_as_name);
+                g_save_as_pending_overwrite = false;
+            }
+        } else {
+            int64_t new_id = 0;
+            if (ap_pipeline_create(g_save_as_name, stack, &new_id) == 0) {
+                snprintf(g_save_status, sizeof(g_save_status),
+                         "Saved as \"%s\".", g_save_as_name);
+                igCloseCurrentPopup();
+            } else {
+                // Probably a name collision — flip into overwrite mode
+                // so the next click confirms.
+                ap_pipeline_def probe;
+                if (ap_pipeline_get_by_name(g_save_as_name, &probe) == 0) {
+                    g_save_as_pending_overwrite = true;
+                    snprintf(g_save_status, sizeof(g_save_status),
+                             "A pipeline named \"%s\" already exists. "
+                             "Click Overwrite to replace it.",
+                             g_save_as_name);
+                } else {
+                    snprintf(g_save_status, sizeof(g_save_status),
+                             "Save failed.");
+                }
+            }
+        }
+    } else if (cancel) {
+        igCloseCurrentPopup();
+        g_save_as_pending_overwrite = false;
+    }
+    igEndPopup();
+}
+
+// ---- Apply-pipeline modal -------------------------------------------
+
+#define APPLY_LIST_MAX 64
+
+static void draw_apply_pipeline_modal(ap_app *app, ap_photo *photo,
+                                      ap_edit_stack *stack)
+{
+    if (g_apply_open) {
+        igOpenPopup_Str("Apply Pipeline", 0);
+        g_apply_open = false;
+    }
+    if (!igBeginPopupModal("Apply Pipeline", NULL, 0)) return;
+
+    igText("Replace the current edit stack with:");
+    igSeparator();
+
+    ap_pipeline_def list[APPLY_LIST_MAX];
+    int n = ap_pipeline_list(list, APPLY_LIST_MAX);
+    if (n <= 0) {
+        igTextDisabled("(no pipelines available)");
+    } else {
+        for (int i = 0; i < n; i++) {
+            char label[AP_PIPELINE_NAME_LEN + 32];
+            int entries = ap_edit_stack_count(&list[i].stack);
+            snprintf(label, sizeof(label), "%s  (%d edit%s)",
+                     list[i].name, entries, entries == 1 ? "" : "s");
+            if (igSelectable_Bool(label, false, 0, (ImVec2_c){ 0, 0 })) {
+                // Apply onto the photo's stack: replace in-place,
+                // then rebuild the pipeline graph so the canvas reflects
+                // the new edits immediately. Sidecar gets written on
+                // the next close (the standard photo-close path).
+                if (ap_pipeline_apply_to_stack(list[i].id, stack) == 0) {
+                    ap_app_rebuild_photo_graph(app);
+                    snprintf(g_apply_status, sizeof(g_apply_status),
+                             "Applied \"%s\".", list[i].name);
+                    igCloseCurrentPopup();
+                } else {
+                    snprintf(g_apply_status, sizeof(g_apply_status),
+                             "Apply failed.");
+                }
+            }
+        }
+    }
+    (void)photo;
+
+    igSeparator();
+    if (igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f })) {
+        igCloseCurrentPopup();
+    }
+    if (g_apply_status[0]) {
+        igSameLine(0.0f, -1.0f);
+        igTextDisabled("%s", g_apply_status);
+    }
+
+    igEndPopup();
+}
+
 // ---- panel entry point ----------------------------------------------
 
 static void photo_edit_draw(ap_app *app)
@@ -498,6 +683,8 @@ static void photo_edit_draw(ap_app *app)
     image_window(app, photo);
     histogram_window(photo);
     entry_config_windows(photo, stack);
+    draw_save_as_pipeline_modal(app, photo, stack);
+    draw_apply_pipeline_modal(app, photo, stack);
 }
 
 const ap_panel panel_photo_edit = {
