@@ -3,8 +3,8 @@
 // Radial darkening / brightening from center to corners. A
 // smoothstep ramp between `midpoint` and (midpoint..1.42) controls
 // where the falloff starts and how wide it is; `amount` scales the
-// final gain at the corners. Negative `amount` darkens (classic
-// vignette), positive brightens.
+// final gain at the corners. Positive `amount` darkens (classic
+// vignette), negative brightens.
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
@@ -31,7 +31,8 @@ void main()
     float upper = mix(pc.midpoint, 1.42, max(pc.feather, 1e-3));
     float t     = smoothstep(pc.midpoint, upper, r);
 
-    float gain  = 1.0 + pc.amount * t;
+    // Positive amount darkens the corners (subtract from unity gain).
+    float gain  = 1.0 - pc.amount * t;
     vec4  c     = imageLoad(in_image, coord);
     c.rgb *= gain;
     imageStore(out_image, coord, c);
