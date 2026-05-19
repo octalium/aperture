@@ -1,0 +1,44 @@
+#version 450
+
+// Exposure with soft knees at the highlight + shadow ends. Identical
+// to exposure.comp at the same EV when both knees are 0 — beyond
+// that, values above `1 - highlight_knee` get compressed smoothly
+// toward 1 instead of clipping, and values below `shadow_knee` get
+// lifted toward `shadow_knee` instead of crushing.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D in_image;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
+
+layout(push_constant) uniform PushConstants {
+    float exposure_ev;
+    float highlight_knee;
+    float shadow_knee;
+} pc;
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(in_image);
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    vec4 px = imageLoad(in_image, coord);
+    vec3 c = px.rgb * exp2(pc.exposure_ev);
+
+    if (pc.highlight_knee > 1e-3) {
+        float knee_start = 1.0 - pc.highlight_knee;
+        vec3 over = max(c - knee_start, 0.0);
+        vec3 compressed = over / (1.0 + over / pc.highlight_knee);
+        c = min(c, vec3(knee_start)) + compressed;
+    }
+
+    if (pc.shadow_knee > 1e-3) {
+        // Symmetric: lift values below the shadow knee toward it.
+        vec3 under = max(pc.shadow_knee - c, 0.0);
+        vec3 compressed = under / (1.0 + under / pc.shadow_knee);
+        c = max(c, vec3(pc.shadow_knee)) - compressed;
+    }
+
+    imageStore(out_image, coord, vec4(c, px.a));
+}
