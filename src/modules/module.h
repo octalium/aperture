@@ -59,17 +59,56 @@ typedef void (*ap_module_render_params_fn)(const ap_module *self,
                                            float *params,
                                            const ap_module_render_ctx *ctx);
 
+// Buffers a multi-pass variant's passes can read from / write to.
+// IN is the buffer the module received; OUT is the buffer the
+// module must leave its result in; SCRATCH0..2 are module-private
+// intermediates the pipeline graph allocates. A pass never writes
+// IN — the module's input stays intact for any later pass that
+// needs it (e.g. an unsharp-mask combine).
+typedef enum {
+    AP_PASS_BUF_IN       = 0,
+    AP_PASS_BUF_OUT      = 1,
+    AP_PASS_BUF_SCRATCH0 = 2,
+    AP_PASS_BUF_SCRATCH1 = 3,
+    AP_PASS_BUF_SCRATCH2 = 4,
+} ap_pass_buf;
+
+#define AP_MODULE_MAX_SCRATCH 3
+
+// One compute pass of a multi-pass variant. `read0` feeds binding 0,
+// `read1` binding 2 (the aux input — set it equal to read0 when the
+// pass needs only one input), `write` binding 1.
+typedef struct {
+    const uint32_t        *spv_data;
+    size_t                 spv_size;
+    size_t                 push_size;
+    ap_module_pack_push_fn pack_push;
+    ap_pass_buf            read0;
+    ap_pass_buf            read1;
+    ap_pass_buf            write;
+} ap_module_pass;
+
 // One algorithm variant. A module either declares `variants[]` here
 // (modern) or fills the legacy single-shader fields below (transport
 // modules + simple single-algorithm modules). When variants exist, the
 // pipeline graph picks the active variant via
 // `int(params[variant_param_slot])`, clamped to [0, variant_count).
+//
+// A variant is single-pass (spv_data set, pass_count == 0) or
+// multi-pass (passes[] set, pass_count > 0). A multi-pass variant
+// expands into `pass_count` pipeline-graph stages; `scratch_count`
+// (<= AP_MODULE_MAX_SCRATCH) full-resolution intermediates are
+// allocated for it.
 typedef struct {
     const char *display_name;        // shown in the variant combo
     const uint32_t *spv_data;
     size_t          spv_size;
     size_t          push_size;        // may differ between variants
     ap_module_pack_push_fn pack_push; // variant-specific packing
+
+    int                   pass_count;
+    const ap_module_pass *passes;
+    int                   scratch_count;
 } ap_module_variant;
 
 struct ap_module {
@@ -123,6 +162,10 @@ bool ap_module_render_variant_combo(const ap_module *self, float *params);
 // fields. For variant-bearing modules, returns the picked variant.
 // Pipeline graph code uses this so it doesn't have to know about
 // variants beyond the call site.
+//
+// When `pass_count > 0` the active variant is multi-pass: the
+// `spv_data`/`push_size`/`pack_push` triple is unused and the graph
+// walks `passes[]` instead.
 typedef struct {
     const uint32_t        *spv_data;
     size_t                 spv_size;
@@ -130,6 +173,10 @@ typedef struct {
     ap_module_pack_push_fn pack_push;
     const char            *display_name;   // variant name; "" when none
     int                    variant_idx;    // resolved index; 0 when none
+
+    int                    pass_count;     // 0 = single-pass
+    const ap_module_pass  *passes;
+    int                    scratch_count;
 } ap_module_active;
 
 // Resolve which shader + pack_push to use given the current runtime
