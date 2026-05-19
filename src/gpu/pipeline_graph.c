@@ -21,6 +21,7 @@
 
 typedef struct {
     const ap_module      *module;
+    ap_module_active      active;        // resolved variant or legacy fields
     int                   entry_idx;     // index into the edit_stack, or -1
                                          // for transport modules (demosaic,
                                          // encode) inserted by the graph
@@ -266,9 +267,11 @@ static int create_descriptor_pool(ap_pipeline_graph *graph, int module_count)
 }
 
 static int create_stage(ap_pipeline_graph *graph, graph_stage *st,
-                        const ap_module *module)
+                        const ap_module *module,
+                        const ap_module_active *active)
 {
     st->module = module;
+    st->active = *active;
 
     VkDescriptorSetLayoutBinding bindings[2] = {
         { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
@@ -289,14 +292,14 @@ static int create_stage(ap_pipeline_graph *graph, graph_stage *st,
     VkPushConstantRange push = {
         .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
         .offset     = 0,
-        .size       = (uint32_t)module->push_size,
+        .size       = (uint32_t)active->push_size,
     };
     VkPipelineLayoutCreateInfo plci = {
         .sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .setLayoutCount         = 1,
         .pSetLayouts            = &st->dsl,
-        .pushConstantRangeCount = module->push_size > 0 ? 1u : 0u,
-        .pPushConstantRanges    = module->push_size > 0 ? &push : NULL,
+        .pushConstantRangeCount = active->push_size > 0 ? 1u : 0u,
+        .pPushConstantRanges    = active->push_size > 0 ? &push : NULL,
     };
     if (vkCreatePipelineLayout(graph->gpu->device, &plci, NULL, &st->pl) != VK_SUCCESS) {
         AP_ERROR("graph: %s: pipeline layout failed", module->name);
@@ -305,8 +308,8 @@ static int create_stage(ap_pipeline_graph *graph, graph_stage *st,
 
     VkShaderModuleCreateInfo smci = {
         .sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = module->spv_size,
-        .pCode    = module->spv_data,
+        .codeSize = active->spv_size,
+        .pCode    = active->spv_data,
     };
     VkShaderModule sm;
     if (vkCreateShaderModule(graph->gpu->device, &smci, NULL, &sm) != VK_SUCCESS) {
@@ -543,8 +546,23 @@ ap_pipeline_graph *ap_pipeline_graph_create(ap_gpu *g, ap_texture *input,
     if (create_descriptor_pool(graph, stage_count)                < 0) goto fail;
 
     for (int i = 0; i < stage_count; i++) {
-        if (create_stage(graph, &graph->stages[i], chain_modules[i]) < 0) goto fail;
-        graph->stages[i].entry_idx = chain_entry_idx[i];
+        // Resolve the active variant from the entry's params before
+        // building Vulkan state — variant choice is baked into the
+        // pipeline at build time. Param-only edits don't rebuild the
+        // graph, but variant changes do (the panel layer detects the
+        // slot change and triggers ap_app_rebuild_photo_graph).
+        const float *params = NULL;
+        int entry_idx = chain_entry_idx[i];
+        if (entry_idx >= 0 && stack) {
+            const ap_edit_entry *e = ap_edit_stack_at_const(stack, entry_idx);
+            if (e) params = e->params;
+        }
+        ap_module_active active;
+        ap_module_resolve(chain_modules[i], params, &active);
+
+        if (create_stage(graph, &graph->stages[i],
+                         chain_modules[i], &active) < 0) goto fail;
+        graph->stages[i].entry_idx = entry_idx;
     }
     wire_chain(graph, ap_texture_view(input));
 
@@ -662,21 +680,22 @@ int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
     for (int i = 0; i < graph->stage_count; i++) {
         graph_stage *st = &graph->stages[i];
         const ap_module *m = st->module;
+        const ap_module_active *a = &st->active;
 
-        if (m->push_size > sizeof(push_buf)) {
+        if (a->push_size > sizeof(push_buf)) {
             AP_ERROR("graph: %s push_size %zu exceeds scratch %zu",
-                     m->name, m->push_size, sizeof(push_buf));
+                     m->name, a->push_size, sizeof(push_buf));
             return -1;
         }
 
-        if (m->pack_push) {
+        if (a->pack_push) {
             const ap_raw_metadata *meta = graph->has_meta ? &graph->meta : NULL;
             const float *params = NULL;
             if (st->entry_idx >= 0 && stack) {
                 const ap_edit_entry *e = ap_edit_stack_at_const(stack, st->entry_idx);
                 if (e) params = e->params;
             }
-            int rc = m->pack_push(m, params, meta, push_buf);
+            int rc = a->pack_push(m, params, meta, push_buf);
             if (rc != 0) {
                 continue; // module signaled "skip"
             }
@@ -685,9 +704,9 @@ int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, st->pipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, st->pl,
                                 0, 1, &st->ds, 0, NULL);
-        if (m->push_size > 0) {
+        if (a->push_size > 0) {
             vkCmdPushConstants(cmd, st->pl, VK_SHADER_STAGE_COMPUTE_BIT,
-                               0, (uint32_t)m->push_size, push_buf);
+                               0, (uint32_t)a->push_size, push_buf);
         }
         vkCmdDispatch(cmd, gx, gy, 1);
 
