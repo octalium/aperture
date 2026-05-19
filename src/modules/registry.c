@@ -11,6 +11,7 @@ extern const ap_module module_wb;
 extern const ap_module module_profile;
 extern const ap_module module_exposure;
 extern const ap_module module_tone;
+extern const ap_module module_saturation;
 extern const ap_module module_output_transfer;
 
 const ap_module *const ap_module_registry[] = {
@@ -20,6 +21,7 @@ const ap_module *const ap_module_registry[] = {
     &module_profile,
     &module_exposure,
     &module_tone,
+    &module_saturation,
     &module_output_transfer,
     NULL,
 };

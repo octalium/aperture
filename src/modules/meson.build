@@ -5,6 +5,7 @@ aperture_sources += files(
   'profile.c',
   'raw_passthrough.c',
   'registry.c',
+  'saturation.c',
   'tone.c',
   'wb.c',
 )
