@@ -1,4 +1,5 @@
 aperture_sources += files(
+  'color_grade.c',
   'crop.c',
   'demosaic.c',
   'exposure.c',
