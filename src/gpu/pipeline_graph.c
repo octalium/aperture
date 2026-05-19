@@ -12,6 +12,13 @@
 #define WORKGROUP_SIZE 16
 #define MAX_MODULES    16
 
+// Max long edge of the GPU-side thumb image. The close path blits the
+// rendered output into here (linear filter, basically free on the GPU)
+// and reads back from the small image instead of the full-resolution
+// display image. Kept in line with thumbnail.c's CPU downsample target
+// so the JPEG encoder's CPU downsample step becomes a no-op copy.
+#define THUMB_MAX_EDGE 384
+
 typedef struct {
     const ap_module      *module;
     int                   entry_idx;     // index into the edit_stack, or -1
@@ -47,6 +54,15 @@ struct ap_pipeline_graph {
     VkImageView    display_view_unorm;
     VkImageView    display_view_srgb;
     VkSampler      display_sampler;
+
+    // GPU-side downsample target for ap_pipeline_graph_readback_thumb.
+    // Allocated alongside display_image so the close path can blit
+    // display -> thumb (linear filter) and read back the small image
+    // instead of pulling the full rendered output across PCIe.
+    VkImage        thumb_image;
+    VkDeviceMemory thumb_memory;
+    int            thumb_width;
+    int            thumb_height;
 
     int          stage_count;
     graph_stage  stages[MAX_MODULES];
@@ -203,6 +219,29 @@ static int create_buffers(ap_pipeline_graph *graph, int width, int height)
         AP_ERROR("graph: sampler create failed");
         return -1;
     }
+
+    // Aspect-preserving downscale to THUMB_MAX_EDGE on the long side.
+    // If the rendered output is already smaller, just use its dims so
+    // the blit doesn't upscale. Always at least 1x1 for safety.
+    int longest = width > height ? width : height;
+    if (longest <= THUMB_MAX_EDGE) {
+        graph->thumb_width  = width;
+        graph->thumb_height = height;
+    } else {
+        double s = (double)THUMB_MAX_EDGE / (double)longest;
+        graph->thumb_width  = (int)(width  * s + 0.5);
+        graph->thumb_height = (int)(height * s + 0.5);
+    }
+    if (graph->thumb_width  < 1) graph->thumb_width  = 1;
+    if (graph->thumb_height < 1) graph->thumb_height = 1;
+
+    if (create_image(graph->gpu->device, graph->gpu->physical,
+                     graph->thumb_width, graph->thumb_height,
+                     VK_FORMAT_R8G8B8A8_UNORM,
+                     VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                       | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                     0, NULL, 0,
+                     &graph->thumb_image, &graph->thumb_memory) < 0) return -1;
     return 0;
 }
 
@@ -523,6 +562,9 @@ void ap_pipeline_graph_destroy(ap_pipeline_graph *graph)
     if (!graph) return;
     VkDevice dev = graph->gpu->device;
 
+    if (graph->thumb_image)        vkDestroyImage(dev, graph->thumb_image, NULL);
+    if (graph->thumb_memory)       vkFreeMemory(dev, graph->thumb_memory, NULL);
+
     if (graph->display_sampler)    vkDestroySampler(dev, graph->display_sampler, NULL);
     if (graph->display_view_srgb)  vkDestroyImageView(dev, graph->display_view_srgb, NULL);
     if (graph->display_view_unorm) vkDestroyImageView(dev, graph->display_view_unorm, NULL);
@@ -804,6 +846,243 @@ int ap_pipeline_graph_readback(ap_pipeline_graph *graph,
     }
     memcpy(out_pixels, map, needed);
     vkUnmapMemory(graph->gpu->device, staging_mem);
+    rc = 0;
+
+out:
+    if (staging_mem) vkFreeMemory(graph->gpu->device, staging_mem, NULL);
+    if (staging)    vkDestroyBuffer(graph->gpu->device, staging, NULL);
+    return rc;
+}
+
+int ap_pipeline_graph_thumb_width(const ap_pipeline_graph *g)  { return g->thumb_width; }
+int ap_pipeline_graph_thumb_height(const ap_pipeline_graph *g) { return g->thumb_height; }
+
+int ap_pipeline_graph_readback_thumb(ap_pipeline_graph *graph,
+                                     void *out_pixels, size_t out_size,
+                                     int *out_w, int *out_h)
+{
+    if (!graph || !out_pixels || !out_w || !out_h) {
+        AP_ERROR("readback_thumb: invalid args");
+        return -1;
+    }
+    size_t needed = (size_t)graph->thumb_width
+                  * (size_t)graph->thumb_height * 4u;
+    if (out_size < needed) {
+        AP_ERROR("readback_thumb: out_size %zu < required %zu",
+                 out_size, needed);
+        return -1;
+    }
+
+    vkDeviceWaitIdle(graph->gpu->device);
+
+    VkBufferCreateInfo bci = {
+        .sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size        = needed,
+        .usage       = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    VkBuffer       staging     = VK_NULL_HANDLE;
+    VkDeviceMemory staging_mem = VK_NULL_HANDLE;
+    int rc = -1;
+
+    if (vkCreateBuffer(graph->gpu->device, &bci, NULL, &staging) != VK_SUCCESS) {
+        AP_ERROR("readback_thumb: vkCreateBuffer failed");
+        goto out;
+    }
+
+    VkMemoryRequirements mreq;
+    vkGetBufferMemoryRequirements(graph->gpu->device, staging, &mreq);
+    int mt = find_memory_type(graph->gpu->physical, mreq.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (mt < 0) {
+        AP_ERROR("readback_thumb: no host-visible memory type");
+        goto out;
+    }
+    VkMemoryAllocateInfo mai = {
+        .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize  = mreq.size,
+        .memoryTypeIndex = (uint32_t)mt,
+    };
+    if (vkAllocateMemory(graph->gpu->device, &mai, NULL, &staging_mem) != VK_SUCCESS) {
+        AP_ERROR("readback_thumb: vkAllocateMemory failed");
+        goto out;
+    }
+    vkBindBufferMemory(graph->gpu->device, staging, staging_mem, 0);
+
+    VkCommandBufferAllocateInfo cba = {
+        .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool        = graph->gpu->command_pool,
+        .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    vkAllocateCommandBuffers(graph->gpu->device, &cba, &cmd);
+
+    VkCommandBufferBeginInfo bi = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    vkBeginCommandBuffer(cmd, &bi);
+
+    // display: GENERAL -> TRANSFER_SRC_OPTIMAL (read for blit).
+    // thumb:   UNDEFINED -> TRANSFER_DST_OPTIMAL (written by blit).
+    VkImageMemoryBarrier2 pre[2] = {
+        {
+            .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+                           | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            .dstStageMask  = VK_PIPELINE_STAGE_2_BLIT_BIT,
+            .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+            .oldLayout     = VK_IMAGE_LAYOUT_GENERAL,
+            .newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = graph->display_image,
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0, .levelCount = 1,
+                .baseArrayLayer = 0, .layerCount = 1,
+            },
+        },
+        {
+            .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask  = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            .srcAccessMask = 0,
+            .dstStageMask  = VK_PIPELINE_STAGE_2_BLIT_BIT,
+            .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = graph->thumb_image,
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0, .levelCount = 1,
+                .baseArrayLayer = 0, .layerCount = 1,
+            },
+        },
+    };
+    VkDependencyInfo dep_pre = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 2,
+        .pImageMemoryBarriers    = pre,
+    };
+    vkCmdPipelineBarrier2(cmd, &dep_pre);
+
+    VkImageBlit blit = {
+        .srcSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1,
+        },
+        .srcOffsets = {
+            { 0, 0, 0 },
+            { graph->width, graph->height, 1 },
+        },
+        .dstSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1,
+        },
+        .dstOffsets = {
+            { 0, 0, 0 },
+            { graph->thumb_width, graph->thumb_height, 1 },
+        },
+    };
+    vkCmdBlitImage(cmd,
+                   graph->display_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   graph->thumb_image,   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   1, &blit, VK_FILTER_LINEAR);
+
+    // thumb: TRANSFER_DST_OPTIMAL -> TRANSFER_SRC_OPTIMAL (for copy-to-buffer).
+    VkImageMemoryBarrier2 thumb_to_src = {
+        .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask  = VK_PIPELINE_STAGE_2_BLIT_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+        .oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = graph->thumb_image,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0, .levelCount = 1,
+            .baseArrayLayer = 0, .layerCount = 1,
+        },
+    };
+    VkDependencyInfo dep_mid = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers    = &thumb_to_src,
+    };
+    vkCmdPipelineBarrier2(cmd, &dep_mid);
+
+    VkBufferImageCopy region = {
+        .imageSubresource = {
+            .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+            .mipLevel       = 0,
+            .baseArrayLayer = 0,
+            .layerCount     = 1,
+        },
+        .imageExtent = { (uint32_t)graph->thumb_width,
+                         (uint32_t)graph->thumb_height, 1 },
+    };
+    vkCmdCopyImageToBuffer(cmd, graph->thumb_image,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           staging, 1, &region);
+
+    // display: TRANSFER_SRC_OPTIMAL -> GENERAL (so subsequent dispatches
+    // see it in the layout they expect).
+    VkImageMemoryBarrier2 display_back = {
+        .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask  = VK_PIPELINE_STAGE_2_BLIT_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+        .dstStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+                       | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        .oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .newLayout     = VK_IMAGE_LAYOUT_GENERAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = graph->display_image,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0, .levelCount = 1,
+            .baseArrayLayer = 0, .layerCount = 1,
+        },
+    };
+    VkDependencyInfo dep_post = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers    = &display_back,
+    };
+    vkCmdPipelineBarrier2(cmd, &dep_post);
+
+    vkEndCommandBuffer(cmd);
+
+    VkCommandBufferSubmitInfo cmd_si = {
+        .sType         = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+        .commandBuffer = cmd,
+    };
+    VkSubmitInfo2 submit = {
+        .sType                  = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+        .commandBufferInfoCount = 1,
+        .pCommandBufferInfos    = &cmd_si,
+    };
+    vkQueueSubmit2(graph->gpu->graphics_queue, 1, &submit, VK_NULL_HANDLE);
+    vkQueueWaitIdle(graph->gpu->graphics_queue);
+    vkFreeCommandBuffers(graph->gpu->device, graph->gpu->command_pool, 1, &cmd);
+
+    void *map = NULL;
+    if (vkMapMemory(graph->gpu->device, staging_mem, 0, needed, 0, &map) != VK_SUCCESS) {
+        AP_ERROR("readback_thumb: vkMapMemory failed");
+        goto out;
+    }
+    memcpy(out_pixels, map, needed);
+    vkUnmapMemory(graph->gpu->device, staging_mem);
+    *out_w = graph->thumb_width;
+    *out_h = graph->thumb_height;
     rc = 0;
 
 out:

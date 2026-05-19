@@ -184,20 +184,22 @@ int ap_photo_readback_rgba(ap_photo *photo,
                            uint8_t **out_rgba, int *out_w, int *out_h)
 {
     if (!photo || !photo->graph || !out_rgba || !out_w || !out_h) return -1;
-    int w = ap_pipeline_graph_output_width(photo->graph);
-    int h = ap_pipeline_graph_output_height(photo->graph);
-    if (w <= 0 || h <= 0) return -1;
+    int tw = ap_pipeline_graph_thumb_width(photo->graph);
+    int th = ap_pipeline_graph_thumb_height(photo->graph);
+    if (tw <= 0 || th <= 0) return -1;
 
-    size_t bytes = (size_t)w * (size_t)h * 4u;
+    size_t bytes = (size_t)tw * (size_t)th * 4u;
     uint8_t *rgba = malloc(bytes);
     if (!rgba) return -1;
-    if (ap_pipeline_graph_readback(photo->graph, rgba, bytes) != 0) {
+    int got_w = 0, got_h = 0;
+    if (ap_pipeline_graph_readback_thumb(photo->graph, rgba, bytes,
+                                         &got_w, &got_h) != 0) {
         free(rgba);
         return -1;
     }
     *out_rgba = rgba;
-    *out_w    = w;
-    *out_h    = h;
+    *out_w    = got_w;
+    *out_h    = got_h;
     return 0;
 }
 
