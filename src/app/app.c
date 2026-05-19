@@ -1471,6 +1471,30 @@ int ap_app_run_frame(ap_app *app)
         igEnd();
     }
 
+    // Track the dockspace central node so the grid renders + lays out
+    // within whatever the user's panel arrangement leaves behind. With
+    // no panels docked the central node fills the whole viewport;
+    // with the default left/right split it's the slot in between.
+    // Cleared to "full window" when show_panels is off so the grid
+    // reverts to full-bleed rendering.
+    if (app->grid) {
+        if (app->show_panels) {
+            ImGuiID dockspace_id = igGetID_Str("aperture_dockspace");
+            ImGuiDockNode *central = igDockBuilderGetCentralNode(dockspace_id);
+            if (central && central->Size.x > 0.0f && central->Size.y > 0.0f) {
+                ap_grid_set_render_rect(app->grid,
+                                        (int)central->Pos.x,
+                                        (int)central->Pos.y,
+                                        (int)central->Size.x,
+                                        (int)central->Size.y);
+            } else {
+                ap_grid_set_render_rect(app->grid, 0, 0, 0, 0);
+            }
+        } else {
+            ap_grid_set_render_rect(app->grid, 0, 0, 0, 0);
+        }
+    }
+
     if (app->show_panels) {
         for (const ap_panel *const *p = ap_panel_registry; *p; p++) {
             const ap_panel *panel = *p;

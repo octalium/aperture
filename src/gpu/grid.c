@@ -62,6 +62,14 @@ struct ap_grid {
     int border_px;
 
     float scroll_y;
+
+    // Sub-rect of the framebuffer to render + lay out within. Zero
+    // size means "fall back to the swapchain extent passed to
+    // ap_grid_record".
+    int rect_x;
+    int rect_y;
+    int rect_w;
+    int rect_h;
 };
 
 #define BIT_GET(bm, i) (((bm)[(i) >> 3] >> ((i) & 7)) & 1u)
@@ -75,6 +83,41 @@ typedef struct {
     int cell_gap_x;
     int cell_gap_y;
 } grid_layout;
+
+// Resolve the effective render rect: the stored sub-rect when set,
+// otherwise the full-window fallback. Origin coords are in framebuffer
+// space; w/h are the inner extents the grid lays out into.
+static void effective_rect(const ap_grid *g, int win_w, int win_h,
+                           int *rx, int *ry, int *rw, int *rh)
+{
+    if (g->rect_w > 0 && g->rect_h > 0) {
+        *rx = g->rect_x;
+        *ry = g->rect_y;
+        *rw = g->rect_w;
+        *rh = g->rect_h;
+    } else {
+        *rx = 0;
+        *ry = 0;
+        *rw = win_w;
+        *rh = win_h;
+    }
+}
+
+void ap_grid_set_render_rect(ap_grid *grid, int x, int y, int w, int h)
+{
+    if (!grid) return;
+    if (w <= 0 || h <= 0) {
+        grid->rect_x = 0;
+        grid->rect_y = 0;
+        grid->rect_w = 0;
+        grid->rect_h = 0;
+        return;
+    }
+    grid->rect_x = x;
+    grid->rect_y = y;
+    grid->rect_w = w;
+    grid->rect_h = h;
+}
 
 static grid_layout layout_for(const ap_grid *g, int win_w, int win_h)
 {
@@ -664,7 +707,10 @@ int ap_grid_photo_count(const ap_grid *grid)
 int ap_grid_cells_per_row(const ap_grid *grid, int win_width, int win_height)
 {
     if (!grid) return 1;
-    grid_layout L = layout_for(grid, win_width, win_height);
+    int rx, ry, rw, rh;
+    effective_rect(grid, win_width, win_height, &rx, &ry, &rw, &rh);
+    (void)rx; (void)ry;
+    grid_layout L = layout_for(grid, rw, rh);
     return L.cells_per_row;
 }
 
@@ -690,7 +736,10 @@ void ap_grid_reset_cell_size(ap_grid *grid)
 void ap_grid_scroll(ap_grid *grid, float dy, int win_width, int win_height)
 {
     if (!grid) return;
-    float ms = max_scroll_for(grid, win_width, win_height);
+    int rx, ry, rw, rh;
+    effective_rect(grid, win_width, win_height, &rx, &ry, &rw, &rh);
+    (void)rx; (void)ry;
+    float ms = max_scroll_for(grid, rw, rh);
     grid->scroll_y += dy;
     if (grid->scroll_y < 0.0f) grid->scroll_y = 0.0f;
     if (grid->scroll_y > ms)   grid->scroll_y = ms;
@@ -701,21 +750,24 @@ void ap_grid_ensure_visible(ap_grid *grid, int idx,
 {
     if (!grid || idx < 0 || idx >= grid->photo_count) return;
 
-    grid_layout L = layout_for(grid, win_width, win_height);
+    int rx, ry, rw, rh;
+    effective_rect(grid, win_width, win_height, &rx, &ry, &rw, &rh);
+    (void)rx; (void)ry;
+    grid_layout L = layout_for(grid, rw, rh);
     if (L.cells_per_row <= 0) return;
     int pitch_y = L.cell_size + L.cell_gap_y;
     int row     = idx / L.cells_per_row;
 
-    // Where the cell *would* sit on screen at the current scroll.
+    // Where the cell *would* sit within the render rect at current scroll.
     float cell_top    = (float)GRID_MARGIN + (float)(row * pitch_y) - grid->scroll_y;
     float cell_bottom = cell_top + (float)L.cell_size;
 
     if (cell_top < (float)GRID_MARGIN) {
         grid->scroll_y -= (float)GRID_MARGIN - cell_top;
-    } else if (cell_bottom > (float)(win_height - GRID_MARGIN)) {
-        grid->scroll_y += cell_bottom - (float)(win_height - GRID_MARGIN);
+    } else if (cell_bottom > (float)(rh - GRID_MARGIN)) {
+        grid->scroll_y += cell_bottom - (float)(rh - GRID_MARGIN);
     }
-    float ms = max_scroll_for(grid, win_width, win_height);
+    float ms = max_scroll_for(grid, rw, rh);
     if (grid->scroll_y < 0.0f) grid->scroll_y = 0.0f;
     if (grid->scroll_y > ms)   grid->scroll_y = ms;
 }
@@ -726,12 +778,16 @@ int ap_grid_hit_test(const ap_grid *grid,
 {
     if (!grid || grid->photo_count <= 0) return -1;
 
-    grid_layout L = layout_for(grid, win_width, win_height);
+    int rx, ry, rw, rh;
+    effective_rect(grid, win_width, win_height, &rx, &ry, &rw, &rh);
+    grid_layout L = layout_for(grid, rw, rh);
     int pitch_x = L.cell_size + L.cell_gap_x;
     int pitch_y = L.cell_size + L.cell_gap_y;
 
-    float x = screen_x - (float)L.origin_x;
-    float y = screen_y - (float)L.origin_y;
+    // Caller passes window-absolute coords; subtract the render-rect
+    // origin first so the layout math operates in render-rect space.
+    float x = screen_x - (float)rx - (float)L.origin_x;
+    float y = screen_y - (float)ry - (float)L.origin_y;
     if (x < 0.0f || y < 0.0f) return -1;
 
     int col = (int)(x / (float)pitch_x);
@@ -754,17 +810,20 @@ int ap_grid_cell_rect(const ap_grid *grid, int idx,
 {
     if (!grid || idx < 0 || idx >= grid->photo_count) return -1;
 
-    grid_layout L = layout_for(grid, win_width, win_height);
+    int rx, ry, rw, rh;
+    effective_rect(grid, win_width, win_height, &rx, &ry, &rw, &rh);
+    grid_layout L = layout_for(grid, rw, rh);
     int pitch_x = L.cell_size + L.cell_gap_x;
     int pitch_y = L.cell_size + L.cell_gap_y;
     int row = idx / L.cells_per_row;
     int col = idx % L.cells_per_row;
 
-    if (out_x) *out_x = (float)(L.origin_x + col * pitch_x);
-    if (out_y) *out_y = (float)(L.origin_y + row * pitch_y);
+    // Returned coords are window-absolute (drawList overlays live in
+    // window coords). Add the render-rect origin.
+    if (out_x) *out_x = (float)(rx + L.origin_x + col * pitch_x);
+    if (out_y) *out_y = (float)(ry + L.origin_y + row * pitch_y);
     if (out_w) *out_w = (float)L.cell_size;
     if (out_h) *out_h = (float)L.cell_size;
-    (void)win_height;
     return 0;
 }
 
@@ -774,22 +833,30 @@ void ap_grid_record(ap_grid *grid, VkCommandBuffer cmd,
     if (!grid) return;
     if (win_width <= 0 || win_height <= 0) return;
 
+    int rx, ry, rw, rh;
+    effective_rect(grid, win_width, win_height, &rx, &ry, &rw, &rh);
+    if (rw <= 0 || rh <= 0) return;
+
     VkViewport viewport = {
-        .x = 0.0f, .y = 0.0f,
-        .width  = (float)win_width,
-        .height = (float)win_height,
+        .x = (float)rx, .y = (float)ry,
+        .width  = (float)rw,
+        .height = (float)rh,
         .minDepth = 0.0f, .maxDepth = 1.0f,
     };
     VkRect2D scissor = {
-        .offset = { 0, 0 },
-        .extent = { (uint32_t)win_width, (uint32_t)win_height },
+        .offset = { rx, ry },
+        .extent = { (uint32_t)rw, (uint32_t)rh },
     };
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    grid_layout L = layout_for(grid, win_width, win_height);
+    grid_layout L = layout_for(grid, rw, rh);
+    // window_size_px feeds the fragment shader's render-rect-relative
+    // coordinate math; passing the render-rect extent (not the
+    // swapchain extent) keeps NDC→pixel correspondence consistent
+    // with the viewport set above.
     grid_push pc = {
-        .window_size_px  = { (float)win_width, (float)win_height },
+        .window_size_px  = { (float)rw, (float)rh },
         .origin_px       = { (float)L.origin_x, (float)L.origin_y },
         .bg_color        = { 0.10f, 0.10f, 0.10f, 1.0f },
         .selected_color  = { 0.95f, 0.78f, 0.25f, 1.0f },

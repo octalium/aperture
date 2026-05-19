@@ -66,6 +66,16 @@ void ap_grid_ensure_visible(ap_grid *grid, int idx,
 void ap_grid_set_thumbnail(ap_grid *grid, int idx,
                            VkImageView view, VkSampler sampler);
 
+// Restrict the grid render + layout to a sub-rect of the framebuffer.
+// Used by app.c to fit the grid to the ImGui dockspace's central node,
+// so docked panels don't paint over the thumb area and the grid
+// reflows when the user resizes panels. Pass w == 0 (or h == 0) to
+// clear and revert to full-window rendering. The grid stores absolute
+// framebuffer coords; ap_grid_hit_test and ap_grid_cell_rect still
+// speak in window-absolute coords on the outside, but apply the
+// origin offset internally.
+void ap_grid_set_render_rect(ap_grid *grid, int x, int y, int w, int h);
+
 // Hit-test a screen-space point against the grid. Returns the cell
 // index, or -1 if the point misses any cell. Layout is recomputed
 // each call from the supplied window dims so callers don't have to
