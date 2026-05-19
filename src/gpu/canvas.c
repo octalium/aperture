@@ -31,7 +31,7 @@ typedef struct {
     float crop_rect[4];       // x0, y0, x1, y1 (normalized)
     float vp_params[4];       // rotation_rad, flip_x, flip_y, autozoom
     float source_size_px[2];  // full rendered image size
-    float _pad[2];
+    float scale[2];           // per-axis content stretch (in place)
 } canvas_push;
 
 struct ap_canvas {
@@ -429,6 +429,7 @@ void ap_canvas_record(ap_canvas *canvas, VkCommandBuffer cmd,
                             autozoom },
         .source_size_px = { (float)canvas->image_width,
                             (float)canvas->image_height },
+        .scale          = { vp->scale_x, vp->scale_y },
     };
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, canvas->pipeline);

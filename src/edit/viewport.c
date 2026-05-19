@@ -23,10 +23,13 @@ void ap_viewport_output_size(const ap_viewport *vp,
                              int src_w, int src_h,
                              int *out_w, int *out_h)
 {
+    // Output dimensions are the crop's pixel size — scale does NOT
+    // change resolution. Scale stretches the content in place within
+    // this fixed frame (see backward_map).
     float cw = (vp->crop_x1 - vp->crop_x0) * (float)src_w;
     float ch = (vp->crop_y1 - vp->crop_y0) * (float)src_h;
-    int w = (int)(cw * vp->scale_x + 0.5f);
-    int h = (int)(ch * vp->scale_y + 0.5f);
+    int w = (int)(cw + 0.5f);
+    int h = (int)(ch + 0.5f);
     if (out_w) *out_w = w > 1 ? w : 1;
     if (out_h) *out_h = h > 1 ? h : 1;
 }
@@ -55,6 +58,14 @@ static void backward_map(const ap_viewport *vp, int src_w, int src_h,
     float ty = (oy + 0.5f) / (float)out_h;
     if (vp->flip_x) tx = 1.0f - tx;
     if (vp->flip_y) ty = 1.0f - ty;
+
+    // Scale: stretch the content in place about the frame center.
+    // >1 enlarges (samples a sub-range of the crop), <1 shrinks
+    // (samples beyond the crop). Resolution is unchanged.
+    float sx = vp->scale_x > 1e-4f ? vp->scale_x : 1e-4f;
+    float sy = vp->scale_y > 1e-4f ? vp->scale_y : 1e-4f;
+    tx = 0.5f + (tx - 0.5f) / sx;
+    ty = 0.5f + (ty - 0.5f) / sy;
 
     // Into the crop sub-rect of the rotated frame.
     float rfx = vp->crop_x0 + tx * (vp->crop_x1 - vp->crop_x0);
