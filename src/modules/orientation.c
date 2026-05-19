@@ -40,7 +40,6 @@ static void orientation_render(const ap_module *self, float *params)
     if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
         params[SLOT_ANGLE_DEG] = self->params_default[SLOT_ANGLE_DEG];
     }
-    igTextDisabled("90°/180°/270° lossless + letterbox land with dynamic-extent buffers");
 }
 
 const ap_module module_orientation = {
