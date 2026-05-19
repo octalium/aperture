@@ -2,6 +2,7 @@ aperture_sources += files(
   'color_grade.c',
   'crop.c',
   'demosaic.c',
+  'denoise.c',
   'exposure.c',
   'grain.c',
   'hsl.c',

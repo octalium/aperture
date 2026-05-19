@@ -1,0 +1,61 @@
+#version 450
+
+// Single-pass bilateral filter. Per output pixel, weight each sample
+// in the local window by:
+//   ws = exp(-r² / (2*sigma_s²))     (spatial — Gaussian)
+//   wi = exp(-|Δc|² / (2*sigma_i²))  (intensity — edge-preserving)
+// The intensity weight crashes at high-contrast edges so they don't
+// blur away. v1 is single-pass — fine for small radii (≤ 3). The
+// separable two-pass form is a follow-up under #119 once the user
+// wants larger kernels.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D in_image;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
+
+layout(push_constant) uniform PushConstants {
+    float strength;       // intensity sigma — bigger = more smoothing
+    float radius;         // spatial sigma in pixels
+} pc;
+
+#define MAX_RADIUS 4
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(in_image);
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    vec4 center4 = imageLoad(in_image, coord);
+    vec3 center  = center4.rgb;
+
+    // Strength <= 0 disables — write through unchanged.
+    if (pc.strength <= 1e-4 || pc.radius < 0.5) {
+        imageStore(out_image, coord, center4);
+        return;
+    }
+
+    int r = int(clamp(pc.radius, 1.0, float(MAX_RADIUS)));
+    float ss = pc.radius * pc.radius;
+    float si = pc.strength * pc.strength;
+
+    vec3  acc  = vec3(0.0);
+    float wsum = 0.0;
+
+    for (int dy = -r; dy <= r; dy++) {
+        for (int dx = -r; dx <= r; dx++) {
+            ivec2 p = clamp(coord + ivec2(dx, dy),
+                            ivec2(0), size - 1);
+            vec3 s  = imageLoad(in_image, p).rgb;
+            vec3 d  = s - center;
+            float spatial   = exp(-float(dx * dx + dy * dy) / (2.0 * ss));
+            float intensity = exp(-dot(d, d) / (2.0 * si));
+            float w = spatial * intensity;
+            acc  += s * w;
+            wsum += w;
+        }
+    }
+
+    imageStore(out_image, coord, vec4(acc / max(wsum, 1e-6), center4.a));
+}

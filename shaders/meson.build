@@ -6,6 +6,7 @@ shader_sources = [
   'color_grade.comp',
   'crop.comp',
   'demosaic.comp',
+  'denoise.comp',
   'orientation.comp',
   'wb.comp',
   'profile.comp',
