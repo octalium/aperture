@@ -14,8 +14,7 @@ extern const ap_module module_tone;
 extern const ap_module module_saturation;
 extern const ap_module module_vignette;
 extern const ap_module module_sharpen;
-extern const ap_module module_crop;
-extern const ap_module module_orientation;
+extern const ap_module module_transform;
 extern const ap_module module_grain;
 extern const ap_module module_color_grade;
 extern const ap_module module_hsl;
@@ -36,8 +35,7 @@ const ap_module *const ap_module_registry[] = {
     &module_denoise,
     &module_sharpen,
     &module_grain,
-    &module_crop,
-    &module_orientation,
+    &module_transform,
     &module_output_transfer,
     NULL,
 };

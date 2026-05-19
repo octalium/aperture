@@ -1,12 +1,10 @@
 aperture_sources += files(
   'color_grade.c',
-  'crop.c',
   'demosaic.c',
   'denoise.c',
   'exposure.c',
   'grain.c',
   'hsl.c',
-  'orientation.c',
   'output_transfer.c',
   'profile.c',
   'raw_passthrough.c',
@@ -14,6 +12,7 @@ aperture_sources += files(
   'saturation.c',
   'sharpen.c',
   'tone.c',
+  'transform.c',
   'vignette.c',
   'wb.c',
 )

@@ -1,6 +1,7 @@
 #ifndef APERTURE_GPU_CANVAS_H
 #define APERTURE_GPU_CANVAS_H
 
+#include "edit/viewport.h"
 #include "gpu/gpu.h"
 
 #include <vulkan/vulkan.h>
@@ -25,13 +26,11 @@ void ap_canvas_set_input(ap_canvas *canvas,
                          VkImageView view, VkSampler sampler,
                          int image_width, int image_height);
 
-// Restrict the displayed region to a normalized sub-rect of the input
-// image — the "Crop as framing" path. The pipeline still renders the
-// full frame; the canvas fits this sub-rect to the window. Defaults
-// to the full frame (0,0,1,1). Coords are clamped + kept
-// non-degenerate.
-void ap_canvas_set_crop(ap_canvas *canvas,
-                        float x0, float y0, float x1, float y1);
+// Set the viewport — crop / rotation / flip / scale — the canvas
+// displays the input image through. The pipeline still renders the
+// full frame; the canvas applies this transform at presentation.
+// Pass NULL for the identity viewport. See src/edit/viewport.h.
+void ap_canvas_set_viewport(ap_canvas *canvas, const ap_viewport *vp);
 
 // View-state controls. Pan units are window pixels; zoom is a
 // multiplier on top of fit-to-window (1.0 = fit).
