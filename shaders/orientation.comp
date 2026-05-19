@@ -1,0 +1,37 @@
+#version 450
+
+// User rotation: rotate the working buffer around its center by an
+// arbitrary angle. The pipeline graph allocates fixed-size buffers,
+// so the rotated content fits into the same dimensions — corner
+// pixels that map outside the source rectangle read the edge clamp.
+// 90°/180°/270° lossless variants + letterbox come later when the
+// dynamic-extent allocator does.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D in_image;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
+
+layout(push_constant) uniform PushConstants {
+    float angle_rad;
+} pc;
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(in_image);
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    // Rotate the output pixel back into source space around the
+    // center. We apply the inverse rotation here (backward map) so
+    // each output coord finds where to sample from.
+    vec2 dst   = (vec2(coord) + 0.5) / vec2(size) - 0.5;
+    float cs   = cos(-pc.angle_rad);
+    float sn   = sin(-pc.angle_rad);
+    vec2  src  = vec2(dst.x * cs - dst.y * sn,
+                      dst.x * sn + dst.y * cs) + 0.5;
+
+    ivec2 sc = clamp(ivec2(src * vec2(size)),
+                     ivec2(0), size - 1);
+    imageStore(out_image, coord, imageLoad(in_image, sc));
+}

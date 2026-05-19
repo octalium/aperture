@@ -5,6 +5,7 @@ shader_sources = [
   'raw_passthrough.comp',
   'crop.comp',
   'demosaic.comp',
+  'orientation.comp',
   'wb.comp',
   'profile.comp',
   'exposure.comp',
