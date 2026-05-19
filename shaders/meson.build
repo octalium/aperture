@@ -12,6 +12,7 @@ shader_sources = [
   'exposure.comp',
   'exposure_soft.comp',
   'grain.comp',
+  'hsl.comp',
   'saturation.comp',
   'sharpen.comp',
   'tone.comp',
