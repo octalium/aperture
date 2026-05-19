@@ -94,7 +94,7 @@ static void slider_with_reset(const ap_module *self, float *params,
 static void exposure_render(const ap_module *self, float *params)
 {
     if (!params) return;
-    ap_module_render_variant_combo(self, params);
+    // The algorithm dropdown is drawn centrally by the config window.
     slider_with_reset(self, params, "EV", SLOT_EV, -5.0f, 5.0f, "%.2f");
 
     int variant = (int)params[SLOT_ALGO];

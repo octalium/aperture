@@ -505,16 +505,28 @@ static void config_window(ap_app *app, ap_photo *photo,
         igTextDisabled("double-click a value to reset it");
         igSeparator();
 
-        // Snapshot the variant slot so we can detect a flip and
-        // trigger a graph rebuild — variant switches change shader
-        // bytecode, not just push constants. Param-only edits flow
-        // through push constants on the next record and need no
-        // rebuild.
+        // Algorithm dropdown — drawn for every module. Variant-bearing
+        // modules get the real selector; single-algorithm modules get
+        // a disabled one-entry combo for UI consistency. Snapshot the
+        // slot first so a flip can trigger a graph rebuild — variant
+        // switches change shader bytecode, not just push constants.
         bool  has_variants = (m->variant_count > 0 &&
                               m->variant_param_slot >= 0 &&
                               m->variant_param_slot < AP_EDIT_PARAMS_SLOTS);
         float old_variant_val = has_variants
             ? e->params[m->variant_param_slot] : 0.0f;
+
+        if (has_variants) {
+            ap_module_render_variant_combo(m, e->params);
+        } else {
+            // Single-algorithm module: a disabled one-item combo.
+            // "Default" stands in until the module declares variants.
+            igBeginDisabled(true);
+            int only = 0;
+            igCombo_Str("Algorithm", &only, "Default\0", -1);
+            igEndDisabled();
+        }
+        igSeparator();
 
         if (m->render_params) {
             m->render_params(m, e->params);
