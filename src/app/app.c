@@ -650,13 +650,29 @@ static void drive_canvas_input(ap_app *app)
     if (io->MouseDown[0] && (io->MouseDelta.x != 0.0f || io->MouseDelta.y != 0.0f)) {
         ap_canvas_pan(app->canvas, io->MouseDelta.x, io->MouseDelta.y);
     }
-    if (io->MouseWheel != 0.0f) {
-        float factor = io->MouseWheel > 0.0f
-            ? 1.0f + 0.10f * io->MouseWheel
-            : 1.0f / (1.0f - 0.10f * io->MouseWheel);
-        ap_canvas_zoom_at(app->canvas, factor,
-                          io->MousePos.x, io->MousePos.y,
-                          win_w, win_h);
+    // Wheel semantics:
+    //   plain wheel  → pan (vertical + horizontal). Trackpad
+    //                  two-finger scroll lands here and feels native.
+    //   Ctrl + wheel → zoom-at-cursor. Compositors translate trackpad
+    //                  pinch into Ctrl+vertical-scroll, so pinch-to-
+    //                  zoom works without GLFW gesture plumbing.
+    if (io->MouseWheel != 0.0f || io->MouseWheelH != 0.0f) {
+        if (io->KeyCtrl && io->MouseWheel != 0.0f) {
+            float factor = io->MouseWheel > 0.0f
+                ? 1.0f + 0.10f * io->MouseWheel
+                : 1.0f / (1.0f - 0.10f * io->MouseWheel);
+            ap_canvas_zoom_at(app->canvas, factor,
+                              io->MousePos.x, io->MousePos.y,
+                              win_w, win_h);
+        } else {
+            const float pan_step_px = 40.0f;
+            // Sign matches "natural scrolling": wheel-up moves the
+            // image up, wheel-right moves it right. Flip a sign here
+            // if it ever feels inverted on a different input setup.
+            ap_canvas_pan(app->canvas,
+                          io->MouseWheelH * pan_step_px,
+                          -io->MouseWheel  * pan_step_px);
+        }
     }
 
     if (igIsKeyPressed_Bool(ImGuiKey_F, false) ||
