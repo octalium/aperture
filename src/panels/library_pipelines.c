@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include "panels.h"
 
 #include "app/app.h"
@@ -141,12 +143,15 @@ static void library_pipelines_draw(ap_app *app)
     if (igButton("Duplicate", (ImVec2_c){ 100.0f, 0.0f })) {
         ap_pipeline_def def;
         if (ap_pipeline_get(g_selected_id, &def) == 0) {
-            // " copy" suffix; cap the source so the join fits.
+            // " copy" suffix; cap the source so the join fits. Use
+            // memcpy rather than snprintf to dodge gcc's
+            // format-truncation pessimism on bounded inputs.
             static const char SUFFIX[] = " copy";
-            char new_name[AP_PIPELINE_NAME_LEN];
-            const size_t cap = sizeof(new_name) - sizeof(SUFFIX);
-            snprintf(new_name, cap + 1, "%s", def.name);
-            strncat(new_name, SUFFIX, sizeof(new_name) - strlen(new_name) - 1);
+            char  new_name[AP_PIPELINE_NAME_LEN];
+            const size_t src_cap = sizeof(new_name) - sizeof(SUFFIX);
+            size_t src_len = strnlen(def.name, src_cap);
+            memcpy(new_name, def.name, src_len);
+            memcpy(new_name + src_len, SUFFIX, sizeof(SUFFIX));
             int64_t new_id = 0;
             if (ap_pipeline_create(new_name, &def.stack, &new_id) == 0) {
                 g_selected_id = new_id;

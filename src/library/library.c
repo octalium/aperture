@@ -418,6 +418,33 @@ int ap_pipeline_get(int64_t id, ap_pipeline_def *out)
     return load_rc;
 }
 
+int ap_pipeline_get_by_name(const char *name, ap_pipeline_def *out)
+{
+    if (!name || !*name || !out) return -1;
+    memset(out, 0, sizeof(*out));
+
+    sqlite3 *reg = NULL;
+    if (registry_open(&reg) < 0) return -1;
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(reg,
+            "SELECT id, name, definition FROM pipelines WHERE name = ?;",
+            -1, &stmt, NULL) != SQLITE_OK) {
+        AP_ERROR("pipeline: prepare select name: %s", sqlite3_errmsg(reg));
+        sqlite3_close(reg);
+        return -1;
+    }
+    sqlite3_bind_text(stmt, 1, name, -1, SQLITE_STATIC);
+
+    int load_rc = -1;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        load_rc = row_to_def(stmt, out);
+    }
+    sqlite3_finalize(stmt);
+    sqlite3_close(reg);
+    return load_rc;
+}
+
 int ap_pipeline_list(ap_pipeline_def *out, int max)
 {
     if (!out || max <= 0) return 0;
