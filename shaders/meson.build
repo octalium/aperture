@@ -7,6 +7,7 @@ shader_sources = [
   'wb.comp',
   'profile.comp',
   'exposure.comp',
+  'saturation.comp',
   'tone.comp',
   'output_transfer.comp',
   'canvas.vert',
