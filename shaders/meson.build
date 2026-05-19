@@ -8,6 +8,7 @@ shader_sources = [
   'profile.comp',
   'exposure.comp',
   'saturation.comp',
+  'sharpen.comp',
   'tone.comp',
   'vignette.comp',
   'output_transfer.comp',
