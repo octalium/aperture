@@ -1,4 +1,5 @@
 aperture_sources += files(
+  'crop.c',
   'demosaic.c',
   'exposure.c',
   'output_transfer.c',
