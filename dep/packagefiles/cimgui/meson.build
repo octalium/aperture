@@ -17,7 +17,10 @@ cimgui_inc = include_directories(
 cimgui_cpp_args = [
   # IMGUI_IMPL_API as extern "C" makes backend (glfw/vulkan) function
   # symbols C-callable so our C++ bridge can name them without mangling.
+  # Obsolete overloads in the backend headers (e.g. ImGui_ImplVulkan_AddTexture
+  # with a sampler) collide with extern "C" because C has no overloading.
   '-DIMGUI_IMPL_API=extern "C"',
+  '-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS',
 ]
 
 cimgui_lib = static_library('cimgui',
@@ -42,6 +45,7 @@ cimgui_dep = declare_dependency(
   compile_args: [
     '-DCIMGUI_DEFINE_ENUMS_AND_STRUCTS',
     '-DIMGUI_IMPL_API=extern "C"',
+    '-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS',
   ],
 )
 

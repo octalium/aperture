@@ -121,7 +121,11 @@ extern "C" uint64_t ap_imgui_register_texture(VkSampler sampler,
                                               VkImageView view,
                                               VkImageLayout layout)
 {
-    VkDescriptorSet ds = ImGui_ImplVulkan_AddTexture(sampler, view, layout);
+    // The Vulkan backend now sources the sampler from
+    // ImGui_ImplVulkan_InitInfo (or a per-texture sampler set elsewhere).
+    // Wrapper signature is kept for callers; sampler arg is unused.
+    (void)sampler;
+    VkDescriptorSet ds = ImGui_ImplVulkan_AddTexture(view, layout);
     return reinterpret_cast<uint64_t>(ds);
 }
 
