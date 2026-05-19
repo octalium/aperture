@@ -1,0 +1,212 @@
+#define _GNU_SOURCE
+
+#include "layout_profiles.h"
+
+#include "app/root.h"
+#include "core/log.h"
+#include "ui/imgui.h"
+
+#include <dirent.h>
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#define LAYOUTS_DIR  "layouts"
+#define CURRENT_FILE ".current"
+#define LAYOUT_EXT   ".ini"
+
+// Module-local state. The "active name" buffer + the rebuild flag.
+static char g_active_name[AP_LAYOUT_NAME_LEN] = {0};
+static bool g_rebuild_pending                 = false;
+
+static int layouts_dir_path(char *out, size_t out_len)
+{
+    if (ap_app_root_ensure() < 0) return -1;
+    return ap_app_root_join(LAYOUTS_DIR, out, out_len);
+}
+
+static int layouts_dir_ensure(void)
+{
+    char dir[4096];
+    if (layouts_dir_path(dir, sizeof(dir)) < 0) return -1;
+    if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+        AP_ERROR("layouts: mkdir(%s): %s", dir, strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+static int profile_path(const char *name, char *out, size_t out_len)
+{
+    char dir[4096];
+    if (layouts_dir_path(dir, sizeof(dir)) < 0) return -1;
+    int n = snprintf(out, out_len, "%s/%s%s", dir, name, LAYOUT_EXT);
+    return (n < 0 || (size_t)n >= out_len) ? -1 : 0;
+}
+
+static int current_pointer_path(char *out, size_t out_len)
+{
+    char dir[4096];
+    if (layouts_dir_path(dir, sizeof(dir)) < 0) return -1;
+    int n = snprintf(out, out_len, "%s/%s", dir, CURRENT_FILE);
+    return (n < 0 || (size_t)n >= out_len) ? -1 : 0;
+}
+
+// Read a single-line text file into `out`. Strips trailing newline /
+// whitespace. Returns 0 on success.
+static int read_pointer(char *out, size_t out_len)
+{
+    char path[4096];
+    if (current_pointer_path(path, sizeof(path)) < 0) return -1;
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        if (errno != ENOENT) AP_WARN("layouts: open .current: %s", strerror(errno));
+        out[0] = '\0';
+        return -1;
+    }
+    if (!fgets(out, (int)out_len, f)) {
+        fclose(f);
+        out[0] = '\0';
+        return -1;
+    }
+    fclose(f);
+    // Trim trailing whitespace / newline.
+    size_t len = strlen(out);
+    while (len > 0 && (out[len - 1] == '\n' || out[len - 1] == '\r' ||
+                       out[len - 1] == ' '  || out[len - 1] == '\t')) {
+        out[--len] = '\0';
+    }
+    return 0;
+}
+
+static int write_pointer(const char *name)
+{
+    char path[4096];
+    if (current_pointer_path(path, sizeof(path)) < 0) return -1;
+    if (!name || !*name) {
+        // Empty name → clear pointer (delete the file).
+        if (unlink(path) != 0 && errno != ENOENT) {
+            AP_WARN("layouts: unlink .current: %s", strerror(errno));
+        }
+        return 0;
+    }
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        AP_ERROR("layouts: open .current for write: %s", strerror(errno));
+        return -1;
+    }
+    fprintf(f, "%s\n", name);
+    fclose(f);
+    return 0;
+}
+
+int ap_layout_init(void)
+{
+    if (layouts_dir_ensure() < 0) return -1;
+
+    char name[AP_LAYOUT_NAME_LEN];
+    if (read_pointer(name, sizeof(name)) != 0 || !*name) {
+        // No active profile — leave runtime state alone; the dock
+        // builder will produce the first-launch default.
+        g_active_name[0] = '\0';
+        return 0;
+    }
+
+    char path[4096];
+    if (profile_path(name, path, sizeof(path)) < 0) return -1;
+    ap_imgui_load_layout(path);
+    snprintf(g_active_name, sizeof(g_active_name), "%s", name);
+    return 0;
+}
+
+int ap_layout_list(char names[][AP_LAYOUT_NAME_LEN], int max)
+{
+    if (!names || max <= 0) return 0;
+    char dir[4096];
+    if (layouts_dir_path(dir, sizeof(dir)) < 0) return -1;
+
+    DIR *d = opendir(dir);
+    if (!d) {
+        if (errno == ENOENT) return 0;
+        AP_WARN("layouts: opendir(%s): %s", dir, strerror(errno));
+        return -1;
+    }
+    int n = 0;
+    struct dirent *e;
+    while (n < max && (e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;             // skip hidden + .current
+        size_t len = strlen(e->d_name);
+        size_t ext = strlen(LAYOUT_EXT);
+        if (len <= ext) continue;
+        if (strcmp(e->d_name + len - ext, LAYOUT_EXT) != 0) continue;
+        size_t name_len = len - ext;
+        if (name_len + 1 >= AP_LAYOUT_NAME_LEN) continue;
+        memcpy(names[n], e->d_name, name_len);
+        names[n][name_len] = '\0';
+        n++;
+    }
+    closedir(d);
+    return n;
+}
+
+const char *ap_layout_active_name(void)
+{
+    return g_active_name;
+}
+
+int ap_layout_set_active(const char *name)
+{
+    if (!name || !*name) return -1;
+    char path[4096];
+    if (profile_path(name, path, sizeof(path)) < 0) return -1;
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        AP_WARN("layouts: profile '%s' not on disk", name);
+        return -1;
+    }
+    ap_imgui_clear_settings();
+    ap_imgui_load_layout(path);
+    snprintf(g_active_name, sizeof(g_active_name), "%s", name);
+    write_pointer(name);
+    return 0;
+}
+
+int ap_layout_save_current_as(const char *name)
+{
+    if (!name || !*name) return -1;
+    if (layouts_dir_ensure() < 0) return -1;
+    char path[4096];
+    if (profile_path(name, path, sizeof(path)) < 0) return -1;
+    ap_imgui_save_layout(path);
+    snprintf(g_active_name, sizeof(g_active_name), "%s", name);
+    write_pointer(name);
+    return 0;
+}
+
+int ap_layout_reload_active(void)
+{
+    if (!g_active_name[0]) return 0;
+    char path[4096];
+    if (profile_path(g_active_name, path, sizeof(path)) < 0) return -1;
+    ap_imgui_clear_settings();
+    ap_imgui_load_layout(path);
+    return 0;
+}
+
+void ap_layout_reset_to_default(void)
+{
+    ap_imgui_clear_settings();
+    g_active_name[0]  = '\0';
+    g_rebuild_pending = true;
+    write_pointer(NULL);
+}
+
+bool ap_layout_consume_rebuild_request(void)
+{
+    bool r = g_rebuild_pending;
+    g_rebuild_pending = false;
+    return r;
+}
