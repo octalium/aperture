@@ -51,6 +51,35 @@ static void photo_metadata_draw(ap_app *app)
     igTextDisabled("edits persist in this photo's sidecar; the raw file is never touched");
     igSeparator();
 
+    // Sync this photo's overrides onto the library grid's selection.
+    // The button is enabled only when there's something to fan out
+    // (at least one field overridden on this photo).
+    bool has_overrides = false;
+    for (int i = 0; i < AP_META_FIELD_COUNT; i++) {
+        if (ap_photo_metadata_is_user(photo, (ap_meta_field)i)) {
+            has_overrides = true;
+            break;
+        }
+    }
+    if (!has_overrides) igBeginDisabled(true);
+    if (igButton("Sync to selection", (ImVec2_c){ 180.0f, 0.0f })) {
+        ap_photo_metadata patch;
+        bool              patch_set[AP_META_FIELD_COUNT] = {0};
+        ap_photo_metadata_clear(&patch);
+        for (int i = 0; i < AP_META_FIELD_COUNT; i++) {
+            if (!ap_photo_metadata_is_user(photo, (ap_meta_field)i)) continue;
+            ap_photo_metadata_set(&patch, (ap_meta_field)i,
+                                  ap_photo_metadata_value(photo,
+                                                          (ap_meta_field)i));
+            patch_set[i] = true;
+        }
+        ap_app_apply_metadata_to_selection(app, &patch, patch_set);
+    }
+    if (!has_overrides) igEndDisabled();
+    igSameLine(0.0f, -1.0f);
+    igTextDisabled("broadcasts overridden fields to the grid selection");
+    igSeparator();
+
     for (int i = 0; i < AP_META_FIELD_COUNT; i++) {
         ap_meta_field f = (ap_meta_field)i;
         igPushID_Int(i);

@@ -561,6 +561,25 @@ ap_library *ap_app_library(ap_app *app)
     return app ? app->library : NULL;
 }
 
+int ap_app_apply_metadata_to_selection(ap_app *app,
+                                       const ap_photo_metadata *patch,
+                                       const bool patch_set[AP_META_FIELD_COUNT])
+{
+    if (!app || !patch || !patch_set) return -1;
+    if (!app->library || !app->grid)  return -1;
+
+    int n = ap_library_photo_count(app->library);
+    int wrote = 0;
+    for (int i = 0; i < n; i++) {
+        if (!ap_grid_is_selected(app->grid, i)) continue;
+        if (ap_library_apply_metadata_patch(app->library, i,
+                                            patch, patch_set) == 0) {
+            wrote++;
+        }
+    }
+    return wrote;
+}
+
 static void navigate_library_relative(ap_app *app, int dir)
 {
     // Walks the library list while staying in photo mode. The

@@ -4,7 +4,10 @@
 
 #include "app/root.h"
 #include "core/log.h"
+#include "edit/stack.h"
+#include "modules/module.h"
 #include "photo/thumbnail.h"
+#include "sidecar/sidecar.h"
 
 #include <sqlite3.h>
 
@@ -899,4 +902,53 @@ int ap_library_store_thumbnail(ap_library *lib, int index,
         return -1;
     }
     return 0;
+}
+
+// Seed the stack with the registry default pipeline's user-visible
+// modules. Mirrors what photo.c does when opening a photo that has
+// no sidecar. Used so bulk metadata writes don't strip a photo's
+// edits when the sidecar didn't exist before the write.
+static void seed_default_stack(ap_edit_stack *stack)
+{
+    ap_pipeline_def def;
+    if (ap_pipeline_get_default(&def) != 0) return;
+    for (int i = 0; i < def.module_count; i++) {
+        const ap_module *m = ap_module_find(def.modules[i]);
+        if (!m || !m->user_visible) continue;
+        ap_edit_stack_add(stack, def.modules[i]);
+    }
+}
+
+int ap_library_apply_metadata_patch(ap_library *lib, int index,
+                                    const ap_photo_metadata *patch,
+                                    const bool patch_set[AP_META_FIELD_COUNT])
+{
+    if (!lib || !patch || !patch_set) return -1;
+    if (index < 0 || index >= lib->photo_count) return -1;
+
+    char path[4096];
+    if (ap_library_photo_absolute_path(lib, index, path, sizeof(path)) != 0) {
+        return -1;
+    }
+
+    ap_edit_stack stack;
+    ap_edit_stack_init(&stack);
+    bool respect_orientation = true;
+    ap_photo_metadata user_meta;
+    ap_photo_metadata_clear(&user_meta);
+    bool user_set[AP_META_FIELD_COUNT] = {0};
+
+    bool had_sidecar = (ap_sidecar_load(path, &stack, &respect_orientation,
+                                        &user_meta, user_set) == 0);
+    if (!had_sidecar) seed_default_stack(&stack);
+
+    for (int i = 0; i < AP_META_FIELD_COUNT; i++) {
+        if (!patch_set[i]) continue;
+        ap_photo_metadata_set(&user_meta, (ap_meta_field)i,
+                              ap_photo_metadata_get(patch, (ap_meta_field)i));
+        user_set[i] = true;
+    }
+
+    return ap_sidecar_save(path, &stack, respect_orientation,
+                           &user_meta, user_set);
 }

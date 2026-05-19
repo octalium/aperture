@@ -1,6 +1,9 @@
 #ifndef APERTURE_LIBRARY_H
 #define APERTURE_LIBRARY_H
 
+#include "photo/metadata.h"
+
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -129,6 +132,18 @@ int  ap_library_thumbnail_blob(const ap_library *lib, int index,
 // the freshness comparison holds. Returns 0 on success.
 int  ap_library_store_thumbnail(ap_library *lib, int index,
                                 const unsigned char *jpeg, size_t size);
+
+// Apply a metadata-override patch to the n-th photo's sidecar.
+// Loads the existing sidecar (seeding the default edit pipeline if
+// none, so this write doesn't strip the photo's edits the next time
+// it's opened), merges every field where `patch_set[f]` is true
+// (replacing the previous override at that field), and saves the
+// sidecar atomically. The photo's pixels and library db blob are
+// untouched - metadata is per-photo string state independent of the
+// rendered output. Returns 0 on success.
+int  ap_library_apply_metadata_patch(ap_library *lib, int index,
+                                     const ap_photo_metadata *patch,
+                                     const bool patch_set[AP_META_FIELD_COUNT]);
 
 #ifdef __cplusplus
 }
