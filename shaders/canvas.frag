@@ -15,6 +15,7 @@ layout(push_constant) uniform PushConstants {
     vec4  crop_rect;       // x0, y0, x1, y1 (normalized)
     vec4  vp_params;       // rotation_rad, flip_x, flip_y, autozoom
     vec2  source_size_px;  // full rendered image size
+    vec2  scale;           // per-axis content stretch (in place)
 } pc;
 
 void main() {
@@ -39,6 +40,10 @@ void main() {
     vec2 t = framed_px / pc.image_size_px;          // [0,1] in framed
     if (pc.vp_params.y > 0.5) t.x = 1.0 - t.x;      // flip_x
     if (pc.vp_params.z > 0.5) t.y = 1.0 - t.y;      // flip_y
+
+    // Scale: stretch the content in place about the frame center.
+    vec2 s = max(pc.scale, vec2(1e-4));
+    t = vec2(0.5) + (t - vec2(0.5)) / s;
 
     vec2 crop_origin = pc.crop_rect.xy;
     vec2 crop_size   = pc.crop_rect.zw - pc.crop_rect.xy;

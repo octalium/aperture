@@ -918,13 +918,22 @@ static void draw_grid_labels(ap_app *app)
             }
         }
 
-        // Don't paint the band when the cell is too small to read it.
-        if (fit_h < band_h * 2.0f) continue;
+        // Skip only when the *cell* genuinely can't carry a band —
+        // not when the fitted image is short. A heavily cropped photo
+        // has a wide, short thumbnail; gating on fit_h dropped its
+        // title entirely.
+        if (ch < band_h) continue;
 
-        ImVec2_c band_tl = { fit_x,         fit_y + fit_h - band_h };
-        ImVec2_c band_br = { fit_x + fit_w, fit_y + fit_h          };
+        // Band rides under the fitted image, clamped to stay inside
+        // the cell so a short thumbnail never carries it off-cell.
+        float band_top = fit_y + fit_h - band_h;
+        if (band_top < cy)                  band_top = cy;
+        if (band_top + band_h > cy + ch)    band_top = cy + ch - band_h;
+
+        ImVec2_c band_tl = { fit_x,         band_top          };
+        ImVec2_c band_br = { fit_x + fit_w, band_top + band_h };
         ImDrawList_AddRectFilled(dl, band_tl, band_br, 0xB8000000, 0.0f, 0);
-        ImVec2_c text_pos = { fit_x + 4.0f, fit_y + fit_h - band_h + 2.0f };
+        ImVec2_c text_pos = { fit_x + 4.0f, band_top + 2.0f };
         ImDrawList_AddText_Vec2(dl, text_pos, 0xFFEEEEEE, rel, NULL);
     }
 }
