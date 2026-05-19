@@ -1,6 +1,8 @@
 #ifndef APERTURE_APP_H
 #define APERTURE_APP_H
 
+#include "photo/metadata.h"
+
 #include <stdbool.h>
 
 #ifdef __cplusplus
@@ -69,6 +71,14 @@ int       ap_app_request_jpeg_export(ap_app *app, ap_photo *photo,
 int         ap_app_open_library(ap_app *app, const char *path);
 void        ap_app_close_library(ap_app *app);
 ap_library *ap_app_library(ap_app *app);
+
+// Apply a metadata-override patch to every photo currently in the
+// library grid's selection set. The bulk-edit panel + the photo-mode
+// Sync-to-selection button both route through here. Returns the
+// number of photos written, or -1 if no library / no grid.
+int ap_app_apply_metadata_to_selection(ap_app *app,
+                                       const ap_photo_metadata *patch,
+                                       const bool patch_set[AP_META_FIELD_COUNT]);
 
 #ifdef __cplusplus
 }
