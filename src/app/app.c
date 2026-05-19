@@ -440,6 +440,25 @@ void ap_app_close_photo(ap_app *app)
                                              &thumb_rgba,
                                              &thumb_w, &thumb_h) == 0);
 
+    // Frame the grid thumbnail through the photo's viewport so a
+    // cropped / rotated / flipped photo shows its framed result in
+    // the library grid, not the full rendered frame. Done before
+    // release_photo — the viewport lives on the photo's edit stack.
+    if (have_rgba) {
+        ap_viewport vp = ap_photo_viewport(app->photo);
+        int fw = 0, fh = 0;
+        uint8_t *framed = ap_viewport_resample_rgba8(&vp, thumb_rgba,
+                                                     thumb_w, thumb_h,
+                                                     &fw, &fh);
+        if (framed) {
+            free(thumb_rgba);
+            thumb_rgba = framed;
+            thumb_w    = fw;
+            thumb_h    = fh;
+        }
+        // On OOM keep the un-framed thumb — better than no thumbnail.
+    }
+
     release_photo(app);
     app->photo_library_idx = -1;
     app->mode  = AP_MODE_LIBRARY;
