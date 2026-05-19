@@ -5,6 +5,8 @@ shader_sources = [
   'raw_passthrough.comp',
   'color_grade.comp',
   'demosaic.comp',
+  'demosaic_malvar.comp',
+  'demosaic_adaptive.comp',
   'denoise.comp',
   'wb.comp',
   'profile.comp',
