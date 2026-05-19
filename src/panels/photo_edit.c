@@ -504,11 +504,14 @@ static void config_window(ap_app *app, ap_photo *photo,
         igTextDisabled("double-click a value to reset it");
         igSeparator();
 
-        // Algorithm dropdown — drawn for every module. Variant-bearing
-        // modules get the real selector; single-algorithm modules get
-        // a disabled one-entry combo for UI consistency. Snapshot the
-        // slot first so a flip can trigger a graph rebuild — variant
-        // switches change shader bytecode, not just push constants.
+        // Algorithm dropdown — only for modules that genuinely have
+        // a choice of algorithms (variant_count > 0). A one-item
+        // dropdown on a fixed-behavior module (Transform, Vignette,
+        // ...) is itself a "dropdown where it doesn't make sense";
+        // when such a module gains real variants the selector
+        // appears automatically. Snapshot the slot first so a flip
+        // can trigger a graph rebuild — variant switches change
+        // shader bytecode, not just push constants.
         bool  has_variants = (m->variant_count > 0 &&
                               m->variant_param_slot >= 0 &&
                               m->variant_param_slot < AP_EDIT_PARAMS_SLOTS);
@@ -517,15 +520,8 @@ static void config_window(ap_app *app, ap_photo *photo,
 
         if (has_variants) {
             ap_module_render_variant_combo(m, e->params);
-        } else {
-            // Single-algorithm module: a disabled one-item combo.
-            // "Default" stands in until the module declares variants.
-            igBeginDisabled(true);
-            int only = 0;
-            igCombo_Str("Algorithm", &only, "Default\0", -1);
-            igEndDisabled();
+            igSeparator();
         }
-        igSeparator();
 
         if (m->render_params) {
             ap_module_render_ctx ctx = {
