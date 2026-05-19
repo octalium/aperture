@@ -179,6 +179,13 @@ int  ap_library_thumbnail_blob(const ap_library *lib, int index,
 int  ap_library_store_thumbnail(ap_library *lib, int index,
                                 const unsigned char *jpeg, size_t size);
 
+// Replace the n-th photo's edit stack with the contents of the
+// pipeline. Loads the existing sidecar so the photo's orientation
+// toggle + per-field metadata overrides are preserved; writes the
+// sidecar atomically. Returns 0 on success.
+int  ap_library_apply_pipeline_to_photo(ap_library *lib, int index,
+                                        int64_t pipeline_id);
+
 // Apply a metadata-override patch to the n-th photo's sidecar.
 // Loads the existing sidecar (seeding the default edit pipeline if
 // none, so this write doesn't strip the photo's edits the next time
