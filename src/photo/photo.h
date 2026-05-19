@@ -2,6 +2,7 @@
 #define APERTURE_PHOTO_H
 
 #include "edit/stack.h"
+#include "edit/viewport.h"
 #include "gpu/gpu.h"
 #include "gpu/pipeline_graph.h"
 #include "io/raw.h"
@@ -74,13 +75,11 @@ int         ap_photo_width(const ap_photo *photo);
 int         ap_photo_height(const ap_photo *photo);
 const char *ap_photo_path(const ap_photo *photo);
 
-// Active crop rectangle, normalized [0,1] of the rendered frame. The
-// first enabled "crop" stack entry's rect, or the full frame
-// (0,0,1,1) when none. "Crop as framing" — consumed by the canvas
-// (display) and export, not by the pixel pipeline. Any out param
-// may be NULL.
-void ap_photo_crop_rect(const ap_photo *photo,
-                        float *x0, float *y0, float *x1, float *y1);
+// Active viewport — crop / rotation / flip / scale — from the photo's
+// first enabled "transform" stack entry, or the identity viewport
+// when none. Consumed by the canvas (display) and export, not by the
+// pixel pipeline. See src/edit/viewport.h.
+ap_viewport ap_photo_viewport(const ap_photo *photo);
 
 // Per-field metadata accessors. The "effective" value is the user's
 // override when set, otherwise the value the loader read from the
