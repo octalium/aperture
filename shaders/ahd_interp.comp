@@ -1,0 +1,130 @@
+#version 450
+
+// AHD pass 1 / 2: a full directional demosaic. Green is interpolated
+// along ONE forced axis (push selects horizontal or vertical); red
+// and blue then fill in as constant colour differences against that
+// green plane. Run twice — once each axis — to produce the two
+// candidates the homogeneity select (ahd_select.comp) chooses between.
+//
+// Each invocation is self-contained: it maps the output pixel to a
+// sensor coordinate and reads only the Bayer plane, so there's no
+// cross-pass coordinate-space coupling. Same Bayer / flip boilerplate
+// as demosaic.comp.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, r16)     uniform readonly  image2D in_image;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
+
+layout(push_constant) uniform PushConstants {
+    uvec4 channel_map;
+    vec4  black_level;
+    vec4  white_minus_black;
+    uvec4 sensor_size_flip;   // .xy = sensor WH, .z = flip, .w = axis
+} pc;
+
+uint channel_at(ivec2 p)
+{
+    return pc.channel_map[(p.y & 1) * 2 + (p.x & 1)];
+}
+
+float bayer(ivec2 p, ivec2 size)
+{
+    p = clamp(p, ivec2(0), size - 1);
+    uint  ch  = channel_at(p);
+    float raw = imageLoad(in_image, p).r * 65535.0;
+    return (raw - pc.black_level[ch]) / max(pc.white_minus_black[ch], 1.0);
+}
+
+ivec2 sensor_coord_of(ivec2 out_coord, ivec2 sensor_size, uint flip)
+{
+    if (flip == 3u) {
+        return sensor_size - ivec2(1) - out_coord;
+    } else if (flip == 5u) {
+        return ivec2(sensor_size.x - 1 - out_coord.y, out_coord.x);
+    } else if (flip == 6u) {
+        return ivec2(out_coord.y, sensor_size.y - 1 - out_coord.x);
+    }
+    return out_coord;
+}
+
+bool is_green(uint ch) { return ch == 1u || ch == 3u; }
+
+// Green at a sensor pixel: known at green sites; at red/blue sites,
+// interpolated along the forced axis (axis 0 = horizontal).
+float green_at(ivec2 p, ivec2 size)
+{
+    if (is_green(channel_at(p))) return bayer(p, size);
+
+    float c = bayer(p, size);
+    if (pc.sensor_size_flip.w == 0u) {
+        float gl  = bayer(p + ivec2(-1, 0), size);
+        float gr  = bayer(p + ivec2( 1, 0), size);
+        float cl2 = bayer(p + ivec2(-2, 0), size);
+        float cr2 = bayer(p + ivec2( 2, 0), size);
+        return (gl + gr) * 0.5 + (2.0 * c - cl2 - cr2) * 0.25;
+    } else {
+        float gu  = bayer(p + ivec2(0, -1), size);
+        float gd  = bayer(p + ivec2(0,  1), size);
+        float cu2 = bayer(p + ivec2(0, -2), size);
+        float cd2 = bayer(p + ivec2(0,  2), size);
+        return (gu + gd) * 0.5 + (2.0 * c - cu2 - cd2) * 0.25;
+    }
+}
+
+// Average (channel - green) colour difference over n sites that all
+// carry the target channel, returned as that channel at the centre.
+float chroma_from(ivec2 p, ivec2 size, float green_here,
+                  ivec2 offs[4], int n)
+{
+    float acc = 0.0;
+    for (int i = 0; i < n; i++) {
+        ivec2 q = p + offs[i];
+        acc += bayer(q, size) - green_at(q, size);
+    }
+    return green_here + acc / float(n);
+}
+
+void main()
+{
+    ivec2 out_coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 out_size  = imageSize(out_image);
+    if (out_coord.x >= out_size.x || out_coord.y >= out_size.y) return;
+
+    ivec2 sensor_size = ivec2(pc.sensor_size_flip.xy);
+    uint  flip        = pc.sensor_size_flip.z;
+    ivec2 center      = sensor_coord_of(out_coord, sensor_size, flip);
+
+    uint  ch     = channel_at(center);
+    uint  out_ch = (ch == 3u) ? 1u : ch;
+    float green  = green_at(center, sensor_size);
+
+    vec3 rgb;
+    if (out_ch == 1u) {
+        rgb.g = bayer(center, sensor_size);
+        ivec2 horiz[4] = { ivec2(-1,0), ivec2(1,0), ivec2(0), ivec2(0) };
+        ivec2 vert[4]  = { ivec2(0,-1), ivec2(0,1), ivec2(0), ivec2(0) };
+        if (channel_at(center + ivec2(1, 0)) == 0u) {
+            rgb.r = chroma_from(center, sensor_size, green, horiz, 2);
+            rgb.b = chroma_from(center, sensor_size, green, vert,  2);
+        } else {
+            rgb.b = chroma_from(center, sensor_size, green, horiz, 2);
+            rgb.r = chroma_from(center, sensor_size, green, vert,  2);
+        }
+    } else {
+        ivec2 diag[4] = {
+            ivec2(-1,-1), ivec2(1,-1), ivec2(-1,1), ivec2(1,1),
+        };
+        float other = chroma_from(center, sensor_size, green, diag, 4);
+        rgb.g = green;
+        if (out_ch == 0u) {
+            rgb.r = bayer(center, sensor_size);
+            rgb.b = other;
+        } else {
+            rgb.b = bayer(center, sensor_size);
+            rgb.r = other;
+        }
+    }
+
+    imageStore(out_image, out_coord, vec4(max(rgb, vec3(0.0)), 1.0));
+}

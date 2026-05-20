@@ -1,0 +1,83 @@
+#version 450
+
+// AHD pass 3: homogeneity-directed selection. Given the horizontal and
+// vertical demosaic candidates (ahd_interp.comp), choose per pixel the
+// one that sits in the more locally homogeneous neighbourhood — the
+// directional artefacts of a wrong-axis interpolation show up as low
+// homogeneity.
+//
+// dcraw-style metric on a green-luma proxy of the camera RGB (the true
+// camera->XYZ matrix isn't applied until later in the pipeline):
+//   L = G,  a = R - G,  b = B - G
+// A neighbour counts as homogeneous when both its luminance and its
+// chrominance differ from the centre by less than adaptive thresholds
+// (the tightest variation seen across the two candidates). The chosen
+// direction is the one with the larger homogeneity total over a 3x3
+// window.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D rgb_h;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
+layout(set = 0, binding = 2, rgba16f) uniform readonly  image2D rgb_v;
+
+// left, right, up, down
+const ivec2 N4[4] = ivec2[4](
+    ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
+
+vec3 lab_proxy(vec3 rgb)
+{
+    return vec3(rgb.g, rgb.r - rgb.g, rgb.b - rgb.g);
+}
+
+// Homogeneity count for both candidates at q, returned as (h, v).
+ivec2 homogeneity_pair(ivec2 q, ivec2 sz)
+{
+    vec3 ch = lab_proxy(imageLoad(rgb_h, q).rgb);
+    vec3 cv = lab_proxy(imageLoad(rgb_v, q).rgb);
+
+    float ldiff_h[4], ldiff_v[4], abdiff_h[4], abdiff_v[4];
+    for (int k = 0; k < 4; k++) {
+        ivec2 n  = clamp(q + N4[k], ivec2(0), sz - 1);
+        vec3  nh = lab_proxy(imageLoad(rgb_h, n).rgb);
+        vec3  nv = lab_proxy(imageLoad(rgb_v, n).rgb);
+        ldiff_h[k]  = abs(ch.x - nh.x);
+        ldiff_v[k]  = abs(cv.x - nv.x);
+        vec2 dh = ch.yz - nh.yz;
+        vec2 dv = cv.yz - nv.yz;
+        abdiff_h[k] = dot(dh, dh);
+        abdiff_v[k] = dot(dv, dv);
+    }
+
+    float leps  = min(max(ldiff_h[0],  ldiff_h[1]),
+                      max(ldiff_v[2],  ldiff_v[3]));
+    float abeps = min(max(abdiff_h[0], abdiff_h[1]),
+                      max(abdiff_v[2], abdiff_v[3]));
+
+    int hc = 0, vc = 0;
+    for (int k = 0; k < 4; k++) {
+        if (ldiff_h[k] <= leps && abdiff_h[k] <= abeps) hc++;
+        if (ldiff_v[k] <= leps && abdiff_v[k] <= abeps) vc++;
+    }
+    return ivec2(hc, vc);
+}
+
+void main()
+{
+    ivec2 p  = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(rgb_h);
+    if (p.x >= sz.x || p.y >= sz.y) return;
+
+    ivec2 total = ivec2(0);
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            ivec2 q = clamp(p + ivec2(dx, dy), ivec2(0), sz - 1);
+            total += homogeneity_pair(q, sz);
+        }
+    }
+
+    vec4 chosen = (total.x >= total.y)
+        ? imageLoad(rgb_h, p)
+        : imageLoad(rgb_v, p);
+    imageStore(out_image, p, chosen);
+}
