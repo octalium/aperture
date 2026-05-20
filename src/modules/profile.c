@@ -14,8 +14,10 @@ typedef struct {
 
 enum { SLOT_ALGO = 0 };
 
-static const float       profile_defaults[] = { 0.0f };
-static const char *const profile_names[]    = { "algorithm" };
+static const float       profile_defaults[]  = { 0.0f };
+static const char *const profile_names[]      = { "algorithm" };
+static const char *const profile_str_names[]  = { "profile_path" };
+enum { STR_PROFILE_PATH = 0 };
 
 // Today the matrix comes from LibRaw's per-camera profile (rgb_cam).
 // Future variants would pick a different source (Adobe Standard, ACES,
@@ -48,7 +50,6 @@ static int profile_pack_push(const ap_module *self,
 static void profile_render(const ap_module *self, float *params,
                           const ap_module_render_ctx *ctx)
 {
-    (void)ctx;
     (void)self;
     if (!params) return;
     int algo = (int)params[SLOT_ALGO];
@@ -57,6 +58,11 @@ static void profile_render(const ap_module *self, float *params,
                         PROFILE_ALGO_COUNT, -1)) {
         params[SLOT_ALGO] = (float)algo;
     }
+
+    // Path to an .icc / .dcp profile. Carried and persisted now;
+    // wired to actual colour transforms in a later change.
+    igInputText("Profile path", ctx->str_params[STR_PROFILE_PATH],
+                AP_EDIT_STR_LEN, 0, NULL, NULL);
 }
 
 const ap_module module_profile = {
@@ -68,8 +74,10 @@ const ap_module module_profile = {
     .spv_size       = profile_comp_spv_size,
     .push_size      = sizeof(profile_push_t),
     .pack_push      = profile_pack_push,
-    .params_count   = 1,
-    .params_default = profile_defaults,
-    .params_names   = profile_names,
-    .render_params  = profile_render,
+    .params_count     = 1,
+    .params_default   = profile_defaults,
+    .params_names     = profile_names,
+    .render_params    = profile_render,
+    .str_params_count = 1,
+    .str_params_names = profile_str_names,
 };
