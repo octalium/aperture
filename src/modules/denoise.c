@@ -22,10 +22,12 @@ static const char *const denoise_names[]    = { "strength", "radius" };
 
 static int denoise_pack_push(const ap_module *self,
                              const float *params,
+                             const char (*str_params)[AP_EDIT_STR_LEN],
                              const ap_raw_metadata *meta,
                              void *push_out)
 {
     (void)self;
+    (void)str_params;
     (void)meta;
     denoise_push_t *pc = push_out;
     pc->strength = params ? params[SLOT_STRENGTH] : 0.0f;

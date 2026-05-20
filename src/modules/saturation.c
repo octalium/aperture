@@ -16,10 +16,12 @@ static const char *const saturation_names[]    = { "saturation", "vibrance" };
 
 static int saturation_pack_push(const ap_module *self,
                                 const float *params,
+                                const char (*str_params)[AP_EDIT_STR_LEN],
                                 const ap_raw_metadata *meta,
                                 void *push_out)
 {
     (void)self;
+    (void)str_params;
     (void)meta;
     saturation_push_t *pc = push_out;
     pc->saturation = params ? params[SLOT_SAT] : 0.0f;

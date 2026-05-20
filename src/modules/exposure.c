@@ -40,10 +40,12 @@ static const char *const exposure_names[]    = {
 
 static int exposure_pack_linear(const ap_module *self,
                                 const float *params,
+                                const char (*str_params)[AP_EDIT_STR_LEN],
                                 const ap_raw_metadata *meta,
                                 void *push_out)
 {
     (void)self;
+    (void)str_params;
     (void)meta;
     exposure_linear_push_t *pc = push_out;
     pc->exposure_ev = params ? params[SLOT_EV] : 0.0f;
@@ -52,10 +54,12 @@ static int exposure_pack_linear(const ap_module *self,
 
 static int exposure_pack_soft(const ap_module *self,
                               const float *params,
+                              const char (*str_params)[AP_EDIT_STR_LEN],
                               const ap_raw_metadata *meta,
                               void *push_out)
 {
     (void)self;
+    (void)str_params;
     (void)meta;
     exposure_soft_push_t *pc = push_out;
     pc->exposure_ev    = params ? params[SLOT_EV]             : 0.0f;

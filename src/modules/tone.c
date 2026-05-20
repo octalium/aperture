@@ -74,10 +74,12 @@ static const char *const tone_names[] = {
 
 static int tone_pack_sigmoid(const ap_module *self,
                              const float *params,
+                             const char (*str_params)[AP_EDIT_STR_LEN],
                              const ap_raw_metadata *meta,
                              void *push_out)
 {
     (void)self;
+    (void)str_params;
     (void)meta;
     tone_sigmoid_push_t *pc = push_out;
     pc->contrast = params ? params[SLOT_CONTRAST] : 1.0f;
@@ -87,9 +89,11 @@ static int tone_pack_sigmoid(const ap_module *self,
 
 static int tone_pack_filmic(const ap_module *self,
                             const float *params,
+                            const char (*str_params)[AP_EDIT_STR_LEN],
                             const ap_raw_metadata *meta,
                             void *push_out)
 {
+    (void)str_params;
     (void)meta;
     tone_filmic_push_t *pc = push_out;
     const float *d = self->params_default;

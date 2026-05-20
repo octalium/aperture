@@ -10,11 +10,13 @@ typedef struct {
 
 static int output_transfer_pack_push(const ap_module *self,
                                      const float *params,
+                                     const char (*str_params)[AP_EDIT_STR_LEN],
                                      const ap_raw_metadata *meta,
                                      void *push_out)
 {
     (void)self;
     (void)params;
+    (void)str_params;
     (void)meta;
     output_transfer_push_t *pc = push_out;
     pc->transfer_function = TRANSFER_SRGB;

@@ -29,10 +29,12 @@ static const char *const color_grade_names[] = {
 
 static int color_grade_pack_push(const ap_module *self,
                                  const float *params,
+                                 const char (*str_params)[AP_EDIT_STR_LEN],
                                  const ap_raw_metadata *meta,
                                  void *push_out)
 {
     (void)self;
+    (void)str_params;
     (void)meta;
     color_grade_push_t *pc = push_out;
     pc->lift_r  = params ? params[SLOT_LIFT_R]  : 0.0f;
