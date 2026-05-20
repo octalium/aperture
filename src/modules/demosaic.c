@@ -3,21 +3,24 @@
 #include "demosaic_comp_spv.h"
 #include "demosaic_malvar_comp_spv.h"
 #include "demosaic_adaptive_comp_spv.h"
+#include "ahd_interp_comp_spv.h"
+#include "ahd_select_comp_spv.h"
 
 #include <string.h>
 
-// Demosaic. Three single-pass variants, all sharing the same push
-// constants (Bayer pattern, black levels, sensor size + EXIF flip)
-// and the same pack_push — they differ only in the interpolation
-// shader:
+// Demosaic. Three single-pass variants plus one multi-pass:
 //   0  Bilinear 3x3 — fast, soft, zipper artefacts on fine detail.
 //   1  Malvar 2004  — 5x5 gradient-corrected linear; sharp, cheap.
 //   2  Adaptive     — Hamilton-Adams edge-directed green + colour-
 //                     difference chroma; best edge behaviour.
+//   3  AHD          — three-pass: interpolate both axes, then pick
+//                     per pixel the locally more homogeneous result.
 //
-// AHD / DCB want a multi-pass pipeline (interpolate both axes, then a
-// homogeneity decision) — that needs multi-dispatch-per-module
-// support and is tracked separately.
+// The single-pass variants share the same push constants (Bayer
+// pattern, black levels, sensor size + EXIF flip) and pack_push; they
+// differ only in the interpolation shader. AHD reuses that same push
+// layout, additionally signalling the forced axis through the spare
+// sensor_size_flip.w slot (see ahd_pack_v).
 
 typedef struct {
     uint32_t channel_map[4];
@@ -59,6 +62,49 @@ static int demosaic_pack_push(const ap_module *self,
     return 0;
 }
 
+// AHD. The two interpolation passes share ahd_interp.comp and the
+// demosaic push layout; pass 1 forces the vertical axis by stamping
+// sensor_size_flip.w. The select pass reads the two candidates and
+// needs no parameters.
+static int ahd_pack_v(const ap_module *self, const float *params,
+                      const ap_raw_metadata *meta, void *push_out)
+{
+    int rc = demosaic_pack_push(self, params, meta, push_out);
+    if (rc != 0) return rc;            // propagate the "no metadata" skip
+    ((demosaic_push_t *)push_out)->sensor_size_flip[3] = 1;
+    return 0;
+}
+
+static const ap_module_pass ahd_passes[] = {
+    {   // pass 0: horizontal-axis demosaic -> scratch 0
+        .spv_data  = ahd_interp_comp_spv,
+        .spv_size  = ahd_interp_comp_spv_size,
+        .push_size = sizeof(demosaic_push_t),
+        .pack_push = demosaic_pack_push,    // sensor_size_flip.w = 0
+        .read0     = AP_PASS_BUF_IN,
+        .read1     = AP_PASS_BUF_IN,
+        .write     = AP_PASS_BUF_SCRATCH0,
+    },
+    {   // pass 1: vertical-axis demosaic -> scratch 1
+        .spv_data  = ahd_interp_comp_spv,
+        .spv_size  = ahd_interp_comp_spv_size,
+        .push_size = sizeof(demosaic_push_t),
+        .pack_push = ahd_pack_v,            // sensor_size_flip.w = 1
+        .read0     = AP_PASS_BUF_IN,
+        .read1     = AP_PASS_BUF_IN,
+        .write     = AP_PASS_BUF_SCRATCH1,
+    },
+    {   // pass 2: homogeneity-directed select -> out
+        .spv_data  = ahd_select_comp_spv,
+        .spv_size  = ahd_select_comp_spv_size,
+        .push_size = 0,
+        .pack_push = NULL,
+        .read0     = AP_PASS_BUF_SCRATCH0,
+        .read1     = AP_PASS_BUF_SCRATCH1,
+        .write     = AP_PASS_BUF_OUT,
+    },
+};
+
 static const ap_module_variant demosaic_variants[] = {
     {
         .display_name = "Bilinear 3x3",
@@ -80,6 +126,12 @@ static const ap_module_variant demosaic_variants[] = {
         .spv_size     = demosaic_adaptive_comp_spv_size,
         .push_size    = sizeof(demosaic_push_t),
         .pack_push    = demosaic_pack_push,
+    },
+    {
+        .display_name  = "AHD",
+        .pass_count    = (int)(sizeof(ahd_passes) / sizeof(ahd_passes[0])),
+        .passes        = ahd_passes,
+        .scratch_count = 2,
     },
 };
 

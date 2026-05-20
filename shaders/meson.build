@@ -7,6 +7,8 @@ shader_sources = [
   'demosaic.comp',
   'demosaic_malvar.comp',
   'demosaic_adaptive.comp',
+  'ahd_interp.comp',
+  'ahd_select.comp',
   'denoise.comp',
   'wb.comp',
   'profile.comp',
