@@ -24,6 +24,10 @@ libraw_dep  = dependency('libraw')
 sqlite3_dep = dependency('sqlite3')
 tomlc99_dep = dependency('tomlc99')
 libjpeg_dep = dependency('libjpeg')
+# Built from the wrap unconditionally — a system liblcms2, if present,
+# would otherwise be picked ahead of it; vendoring keeps the colour
+# engine version deterministic across machines.
+lcms2_dep   = subproject('lcms2').get_variable('lcms2_dep')
 threads_dep = dependency('threads')
 
 aperture_inc = include_directories('src')
@@ -40,6 +44,7 @@ aperture_deps = [
   sqlite3_dep,
   tomlc99_dep,
   libjpeg_dep,
+  lcms2_dep,
   threads_dep,
   shaders_dep,
 ]

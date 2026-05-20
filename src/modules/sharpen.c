@@ -44,9 +44,11 @@ typedef struct {
 } sharpen_3x3_push_t;
 
 static int sharpen_pack_3x3(const ap_module *self, const float *params,
+                            const char (*str_params)[AP_EDIT_STR_LEN],
                             const ap_raw_metadata *meta, void *push_out)
 {
     (void)self;
+    (void)str_params;
     (void)meta;
     sharpen_3x3_push_t *pc = push_out;
     pc->amount    = params ? params[SLOT_AMOUNT]    : 0.0f;
@@ -64,9 +66,11 @@ typedef struct {
 } sharpen_gauss_push_t;
 
 static int sharpen_pack_gauss(const ap_module *self, const float *params,
+                              const char (*str_params)[AP_EDIT_STR_LEN],
                               const ap_raw_metadata *meta, void *push_out)
 {
     (void)self;
+    (void)str_params;
     (void)meta;
     sharpen_gauss_push_t *pc = push_out;
     int   radius = params ? (int)params[SLOT_RADIUS] : 2;

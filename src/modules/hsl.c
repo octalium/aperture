@@ -43,10 +43,12 @@ static const char *const hsl_names[3 * N_BANDS] = {
 
 static int hsl_pack_push(const ap_module *self,
                          const float *params,
+                         const char (*str_params)[AP_EDIT_STR_LEN],
                          const ap_raw_metadata *meta,
                          void *push_out)
 {
     (void)self;
+    (void)str_params;
     (void)meta;
     hsl_push_t *pc = push_out;
     for (int i = 0; i < N_BANDS; i++) {

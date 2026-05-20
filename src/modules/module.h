@@ -34,12 +34,15 @@ typedef struct ap_module ap_module;
 // or the variant's push_size when the module declares variants).
 // `params` is the per-instance parameter slot array carried by the
 // edit entry that scheduled this module (NULL for transport modules
-// like demosaic / encode with no user-visible parameters). `meta`
-// carries static per-image data (raw camera matrix, black levels,
+// like demosaic / encode with no user-visible parameters).
+// `str_params` is the focused edit entry's string params (paths etc.);
+// NULL for transport modules with no entry — parallel to `params`.
+// `meta` carries static per-image data (raw camera matrix, black levels,
 // etc.) and may be NULL for modules that don't need it. Return 0 to
 // dispatch normally; nonzero to skip this module this frame.
 typedef int (*ap_module_pack_push_fn)(const ap_module *self,
                                       const float *params,
+                                      const char (*str_params)[AP_EDIT_STR_LEN],
                                       const ap_raw_metadata *meta,
                                       void *push_out);
 

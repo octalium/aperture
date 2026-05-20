@@ -3,6 +3,7 @@ aperture_sources += files(
 )
 
 subdir('app')
+subdir('color')
 subdir('core')
 subdir('edit')
 subdir('gpu')

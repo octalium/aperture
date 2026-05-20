@@ -2,6 +2,7 @@
 
 #include "profile_comp_spv.h"
 
+#include "color/icc.h"
 #include "cimgui.h"
 
 #include <string.h>
@@ -19,26 +20,55 @@ static const char *const profile_names[]      = { "algorithm" };
 static const char *const profile_str_names[]  = { "profile_path" };
 enum { STR_PROFILE_PATH = 0 };
 
-// Today the matrix comes from LibRaw's per-camera profile (rgb_cam).
-// Future variants would pick a different source (Adobe Standard, ACES,
-// custom ICC, ...) and rewrite the matrix accordingly.
+// Matrix source:
+//   Camera Native — LibRaw's per-camera matrix (rgb_cam) from the raw
+//                   metadata. Always available; the fallback.
+//   ICC Profile   — the camera->linear-sRGB matrix derived from a
+//                   matrix/shaper .icc at `profile_path`. Falls back
+//                   to Camera Native when the file is missing or is
+//                   not a matrix profile.
 static const char *const profile_algorithms[] = {
     "Camera Native",
+    "ICC Profile",
 };
+enum { ALGO_CAMERA = 0, ALGO_ICC = 1 };
 #define PROFILE_ALGO_COUNT \
     ((int)(sizeof(profile_algorithms) / sizeof(profile_algorithms[0])))
 
+// Pack a row-major 3x3 into the vec4-padded push rows.
+static void pack_matrix(profile_push_t *pc, const float m[9])
+{
+    for (int j = 0; j < 3; j++) {
+        pc->cam_to_srgb_r0[j] = m[0 + j];
+        pc->cam_to_srgb_r1[j] = m[3 + j];
+        pc->cam_to_srgb_r2[j] = m[6 + j];
+    }
+}
+
 static int profile_pack_push(const ap_module *self,
                              const float *params,
+                             const char (*str_params)[AP_EDIT_STR_LEN],
                              const ap_raw_metadata *meta,
                              void *push_out)
 {
     (void)self;
-    (void)params;
     if (!meta) return -1;
 
     profile_push_t *pc = push_out;
     memset(pc, 0, sizeof(*pc));
+
+    int algo = params ? (int)params[SLOT_ALGO] : ALGO_CAMERA;
+
+    if (algo == ALGO_ICC && str_params && str_params[STR_PROFILE_PATH][0]) {
+        float m[9];
+        if (ap_icc_camera_matrix(str_params[STR_PROFILE_PATH], m) == 0) {
+            pack_matrix(pc, m);
+            return 0;
+        }
+        // Load failed (missing / not a matrix profile) — ap_icc has
+        // already logged it; fall through to the camera-native matrix.
+    }
+
     for (int j = 0; j < 3; j++) {
         pc->cam_to_srgb_r0[j] = meta->cam_to_srgb[0][j];
         pc->cam_to_srgb_r1[j] = meta->cam_to_srgb[1][j];
@@ -59,10 +89,13 @@ static void profile_render(const ap_module *self, float *params,
         params[SLOT_ALGO] = (float)algo;
     }
 
-    // Path to an .icc / .dcp profile. Carried and persisted now;
-    // wired to actual colour transforms in a later change.
-    igInputText("Profile path", ctx->str_params[STR_PROFILE_PATH],
-                AP_EDIT_STR_LEN, 0, NULL, NULL);
+    // The path field is only meaningful for the ICC source.
+    if (algo == ALGO_ICC) {
+        igInputText("Profile path", ctx->str_params[STR_PROFILE_PATH],
+                    AP_EDIT_STR_LEN, 0, NULL, NULL);
+        igTextDisabled("matrix/shaper .icc; camera matrix used if it "
+                       "can't be loaded");
+    }
 }
 
 const ap_module module_profile = {

@@ -42,11 +42,13 @@ static const char *const wb_names[] = {
 
 static int wb_pack_as_shot(const ap_module *self,
                            const float *params,
+                           const char (*str_params)[AP_EDIT_STR_LEN],
                            const ap_raw_metadata *meta,
                            void *push_out)
 {
     (void)self;
     (void)params;
+    (void)str_params;
     if (!meta) return -1;
     wb_push_t *pc = push_out;
     memset(pc, 0, sizeof(*pc));
@@ -58,10 +60,12 @@ static int wb_pack_as_shot(const ap_module *self,
 
 static int wb_pack_manual(const ap_module *self,
                           const float *params,
+                          const char (*str_params)[AP_EDIT_STR_LEN],
                           const ap_raw_metadata *meta,
                           void *push_out)
 {
     (void)self;
+    (void)str_params;
     (void)meta;
     wb_push_t *pc = push_out;
     memset(pc, 0, sizeof(*pc));

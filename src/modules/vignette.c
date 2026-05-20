@@ -17,10 +17,12 @@ static const char *const vignette_names[]    = { "amount", "midpoint", "feather"
 
 static int vignette_pack_push(const ap_module *self,
                               const float *params,
+                              const char (*str_params)[AP_EDIT_STR_LEN],
                               const ap_raw_metadata *meta,
                               void *push_out)
 {
     (void)self;
+    (void)str_params;
     (void)meta;
     vignette_push_t *pc = push_out;
     pc->amount   = params ? params[SLOT_AMOUNT]   : 0.0f;

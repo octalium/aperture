@@ -36,11 +36,13 @@ static const char *const demosaic_names[]    = { "algorithm" };
 
 static int demosaic_pack_push(const ap_module *self,
                               const float *params,
+                              const char (*str_params)[AP_EDIT_STR_LEN],
                               const ap_raw_metadata *meta,
                               void *push_out)
 {
     (void)self;
     (void)params;
+    (void)str_params;
     if (!meta) {
         return -1; // signal "skip" - no metadata, no demosaic.
     }
@@ -67,9 +69,10 @@ static int demosaic_pack_push(const ap_module *self,
 // sensor_size_flip.w. The select pass reads the two candidates and
 // needs no parameters.
 static int ahd_pack_v(const ap_module *self, const float *params,
+                      const char (*str_params)[AP_EDIT_STR_LEN],
                       const ap_raw_metadata *meta, void *push_out)
 {
-    int rc = demosaic_pack_push(self, params, meta, push_out);
+    int rc = demosaic_pack_push(self, params, str_params, meta, push_out);
     if (rc != 0) return rc;            // propagate the "no metadata" skip
     ((demosaic_push_t *)push_out)->sensor_size_flip[3] = 1;
     return 0;

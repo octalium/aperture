@@ -826,11 +826,12 @@ int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
         if (st->pack_push) {
             const ap_raw_metadata *meta = graph->has_meta ? &graph->meta : NULL;
             const float *params = NULL;
+            const char (*str_params)[AP_EDIT_STR_LEN] = NULL;
             if (st->entry_idx >= 0 && stack) {
                 const ap_edit_entry *e = ap_edit_stack_at_const(stack, st->entry_idx);
-                if (e) params = e->params;
+                if (e) { params = e->params; str_params = e->str_params; }
             }
-            int rc = st->pack_push(m, params, meta, push_buf);
+            int rc = st->pack_push(m, params, str_params, meta, push_buf);
             if (rc != 0) {
                 continue; // module signaled "skip"
             }
