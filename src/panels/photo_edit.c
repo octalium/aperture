@@ -527,6 +527,7 @@ static void config_window(ap_app *app, ap_photo *photo,
             ap_module_render_ctx ctx = {
                 .image_width  = ap_photo_width(photo),
                 .image_height = ap_photo_height(photo),
+                .str_params   = e->str_params,
             };
             m->render_params(m, e->params, &ctx);
         } else {

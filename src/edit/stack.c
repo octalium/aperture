@@ -115,6 +115,7 @@ int ap_edit_stack_reset(ap_edit_stack *s, int idx)
     const ap_module *m = ap_module_find(e->module_name);
     if (!m) return -1;
     memset(e->params, 0, sizeof(e->params));
+    memset(e->str_params, 0, sizeof(e->str_params));
     int n = m->params_count;
     if (n > AP_EDIT_PARAMS_SLOTS) n = AP_EDIT_PARAMS_SLOTS;
     if (m->params_default && n > 0) {

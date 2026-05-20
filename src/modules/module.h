@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "edit/stack.h"
 #include "gpu/gpu.h"
 #include "io/raw.h"
 
@@ -43,12 +44,16 @@ typedef int (*ap_module_pack_push_fn)(const ap_module *self,
                                       void *push_out);
 
 // Panel-side context handed to render_params: data the panel knows
-// but the module doesn't carry. Currently the open photo's pixel
-// dimensions — Crop uses them to present its rect in pixels. Grows
-// as more modules want panel context.
+// but the module doesn't carry. Grows as more modules want panel
+// context.
 typedef struct {
-    int image_width;
-    int image_height;
+    int image_width;        // open photo's pixel dimensions — Crop
+    int image_height;       // presents its rect in pixels
+
+    // The focused entry's string params (paths etc.). Modules with
+    // str_params_count > 0 read and write these in place; the buffers
+    // belong to the edit entry, so edits persist with the stack.
+    char (*str_params)[AP_EDIT_STR_LEN];
 } ap_module_render_ctx;
 
 // Render an ImGui config widget for the module's per-instance
@@ -138,6 +143,13 @@ struct ap_module {
     const float         *params_default;
     const char *const   *params_names;
     ap_module_render_params_fn render_params;
+
+    // Per-instance string parameters — parallel to the float params
+    // above but carried in ap_edit_entry::str_params (paths, etc.).
+    // str_params_count <= AP_EDIT_STR_SLOTS; str_params_names gives
+    // the sidecar field name for each slot.
+    int                  str_params_count;
+    const char *const   *str_params_names;
 
     // Algorithm variants. variant_count > 0 routes the pipeline graph
     // through `variants[clamped_idx]` for shader bytecode + push size

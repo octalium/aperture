@@ -28,6 +28,14 @@ extern "C" {
 
 #define AP_EDIT_DISPLAY_LEN 64
 
+// Per-entry string parameters — text a module needs that can't live
+// in the float params blob (e.g. Color Profile's .icc / .dcp path).
+// Fixed-size for the same reason the float params are: every entry
+// stays the same shape, no variable-size blob plumbing. A module
+// declares how many slots it uses via ap_module::str_params_count.
+#define AP_EDIT_STR_SLOTS 2
+#define AP_EDIT_STR_LEN   512
+
 typedef struct {
     char  module_name[AP_EDIT_NAME_LEN];
     char  display_name[AP_EDIT_DISPLAY_LEN]; // user-set; empty falls
@@ -35,6 +43,7 @@ typedef struct {
                                              // plus an auto-suffix
                                              // to disambiguate dupes
     float params[AP_EDIT_PARAMS_SLOTS];
+    char  str_params[AP_EDIT_STR_SLOTS][AP_EDIT_STR_LEN];
     bool  enabled;
     bool  show_config;   // UI-only, not persisted: is the config
                          // window visible for this entry?
