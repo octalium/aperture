@@ -18,9 +18,11 @@
 
 #include "cimgui.h"
 
+#include <errno.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 // Decode-on-worker job for one thumbnail. Submitter (main thread)
 // fills `path` + `idx`, and — when the library has a fresh
@@ -1127,13 +1129,45 @@ static void trigger_quick_export(ap_app *app)
 {
     if (!app->photo) return;
     const char *src = ap_photo_path(app->photo);
+
+    // Export filename mimics the source: its basename with the raw
+    // extension swapped for .jpg.
+    const char *slash = strrchr(src, '/');
+    const char *base  = slash ? slash + 1 : src;
+    char stem[1024];
+    snprintf(stem, sizeof(stem), "%s", base);
+    char *dot = strrchr(stem, '.');
+    if (dot) *dot = '\0';
+
     char out[4096];
-    int n = snprintf(out, sizeof(out), "%s.jpg", src);
-    if (n > 0 && (size_t)n < sizeof(out)) {
-        ap_app_request_jpeg_export(app, app->photo, out, 90);
+    if (app->library) {
+        // Default destination: <lib_root>/export/, created on demand.
+        char dir[4096];
+        int dn = snprintf(dir, sizeof(dir), "%s/export",
+                          ap_library_root(app->library));
+        if (dn <= 0 || (size_t)dn >= sizeof(dir)) {
+            AP_ERROR("export: directory path too long");
+            return;
+        }
+        if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+            AP_ERROR("export: mkdir(%s): %s", dir, strerror(errno));
+            return;
+        }
+        int n = snprintf(out, sizeof(out), "%s/%s.jpg", dir, stem);
+        if (n <= 0 || (size_t)n >= sizeof(out)) {
+            AP_ERROR("export: path too long for %s", stem);
+            return;
+        }
     } else {
-        AP_ERROR("export: path too long for %s", src);
+        // No library open — fall back to beside the source file.
+        int n = snprintf(out, sizeof(out), "%s.jpg", src);
+        if (n <= 0 || (size_t)n >= sizeof(out)) {
+            AP_ERROR("export: path too long for %s", src);
+            return;
+        }
     }
+
+    ap_app_request_jpeg_export(app, app->photo, out, 90);
 }
 
 static const char *library_display_label(ap_library *lib)
