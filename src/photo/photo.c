@@ -39,6 +39,10 @@ struct ap_photo {
     ap_photo_metadata file_meta;
     ap_photo_metadata user_meta;
     bool              user_set[AP_META_FIELD_COUNT];
+
+    // Group membership, persisted in the sidecar. Carried through so a
+    // sidecar save on close preserves it.
+    ap_photo_groups   groups;
 };
 
 static char *strdup_or_null(const char *s)
@@ -128,7 +132,8 @@ ap_photo *ap_photo_open_with_raw(ap_gpu *g, const char *path,
     for (int i = 0; i < AP_META_FIELD_COUNT; i++) photo->user_set[i] = false;
 
     if (ap_sidecar_load(path, &photo->stack, &photo->respect_orientation,
-                        &photo->user_meta, photo->user_set) == 0) {
+                        &photo->user_meta, photo->user_set,
+                        &photo->groups) == 0) {
         AP_INFO("photo: loaded sidecar for %s", path);
     } else {
         // First open of this photo (or schema mismatch). Seed the
@@ -208,7 +213,8 @@ void ap_photo_close(ap_photo *photo)
     if (photo->path) {
         if (ap_sidecar_save(photo->path, &photo->stack,
                             photo->respect_orientation,
-                            &photo->user_meta, photo->user_set) != 0) {
+                            &photo->user_meta, photo->user_set,
+                            &photo->groups) != 0) {
             AP_WARN("photo: failed to save sidecar for %s", photo->path);
         }
     }

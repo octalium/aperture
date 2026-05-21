@@ -2,6 +2,7 @@
 #define APERTURE_LIBRARY_H
 
 #include "edit/stack.h"
+#include "photo/groups.h"
 #include "photo/metadata.h"
 
 #include <stdbool.h>
@@ -136,6 +137,36 @@ int         ap_library_setting_get(const ap_library *lib, const char *key,
                                    char *out, size_t out_len);
 int         ap_library_setting_set(ap_library *lib, const char *key,
                                    const char *value);
+
+// ----- photo groups -----
+//
+// Group membership lives in each photo's sidecar (the source of
+// truth). The library builds an in-memory index from the sidecars
+// when it is opened; the calls below read and mutate that index and
+// keep the sidecars in sync.
+
+// The n-th photo's group membership, or NULL when the index is out of
+// range. Owned by the library; valid until close or the next mutation.
+const ap_photo_groups *ap_library_photo_groups(const ap_library *lib,
+                                               int index);
+
+// Collect the distinct group names across the whole library into
+// `names`. Returns the count written (<= max).
+int ap_library_group_list(const ap_library *lib,
+                          char names[][AP_GROUP_NAME_LEN], int max);
+
+// Add (member=true) or remove (member=false) the n-th photo's
+// membership in `group`. Updates the index and rewrites the photo's
+// sidecar. A no-op (returns 0) when already in the requested state.
+int ap_library_set_photo_group(ap_library *lib, int index,
+                               const char *group, bool member);
+
+// Rename `old_name` to `new_name` across every photo carrying it.
+int ap_library_rename_group(ap_library *lib, const char *old_name,
+                            const char *new_name);
+
+// Remove `group` from every photo carrying it.
+int ap_library_delete_group(ap_library *lib, const char *group);
 
 // Relative path of the n-th photo (n in [0, count)). Owned by the
 // library; valid until close.

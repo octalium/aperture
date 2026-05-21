@@ -46,10 +46,28 @@ static const char *read_string(toml_table_t *t, const char *key)
     return v.ok ? v.u.s : NULL;
 }
 
+// Fill `out` from the [aperture] table's `groups` array of strings.
+static void read_groups(toml_table_t *aperture, ap_photo_groups *out)
+{
+    out->count = 0;
+    toml_array_t *arr = toml_array_in(aperture, "groups");
+    if (!arr) return;
+    int n = toml_array_nelem(arr);
+    for (int i = 0; i < n && out->count < AP_GROUPS_MAX; i++) {
+        toml_datum_t v = toml_string_at(arr, i);
+        if (v.ok) {
+            snprintf(out->names[out->count], AP_GROUP_NAME_LEN, "%s", v.u.s);
+            out->count++;
+            free(v.u.s);
+        }
+    }
+}
+
 int ap_sidecar_load(const char *source_path, ap_edit_stack *stack,
                     bool *respect_orientation,
                     ap_photo_metadata *user_meta,
-                    bool user_set[AP_META_FIELD_COUNT])
+                    bool user_set[AP_META_FIELD_COUNT],
+                    ap_photo_groups *groups)
 {
     if (!source_path || !stack) return -1;
 
@@ -76,6 +94,10 @@ int ap_sidecar_load(const char *source_path, ap_edit_stack *stack,
         if (read_int(aperture, "respect_orientation", &i) == 0) {
             *respect_orientation = i != 0;
         }
+    }
+    if (groups) {
+        groups->count = 0;
+        if (aperture) read_groups(aperture, groups);
     }
 
     toml_array_t *arr = toml_array_in(root, "edit");
@@ -135,7 +157,8 @@ static int write_escaped_string(FILE *f, const char *s)
 int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
                     bool respect_orientation,
                     const ap_photo_metadata *user_meta,
-                    const bool user_set[AP_META_FIELD_COUNT])
+                    const bool user_set[AP_META_FIELD_COUNT],
+                    const ap_photo_groups *groups)
 {
     if (!source_path || !stack) return -1;
 
@@ -159,8 +182,18 @@ int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
         "# Aperture per-photo sidecar.\n"
         "\n"
         "[aperture]\n"
-        "respect_orientation = %d\n\n",
+        "respect_orientation = %d\n",
         respect_orientation ? 1 : 0) < 0) goto io_fail;
+
+    if (groups && groups->count > 0) {
+        if (fputs("groups = [", f) == EOF) goto io_fail;
+        for (int i = 0; i < groups->count; i++) {
+            if (i > 0 && fputs(", ", f) == EOF) goto io_fail;
+            if (write_escaped_string(f, groups->names[i]) != 0) goto io_fail;
+        }
+        if (fputs("]\n", f) == EOF) goto io_fail;
+    }
+    if (fputc('\n', f) == EOF) goto io_fail;
 
     if (ap_edit_stack_write_toml(stack, f) != 0) goto io_fail;
 
@@ -204,4 +237,26 @@ io_fail:
     AP_ERROR("sidecar: write %s: %s", tmp_path,
              errno ? strerror(errno) : "i/o error");
     return -1;
+}
+
+int ap_sidecar_load_groups(const char *source_path, ap_photo_groups *out)
+{
+    if (!source_path || !out) return -1;
+    out->count = 0;
+
+    char path[4096];
+    if (sidecar_path(source_path, path, sizeof(path)) < 0) return -1;
+
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+
+    char errbuf[256];
+    toml_table_t *root = toml_parse_file(f, errbuf, sizeof(errbuf));
+    fclose(f);
+    if (!root) return -1;
+
+    toml_table_t *aperture = toml_table_in(root, "aperture");
+    if (aperture) read_groups(aperture, out);
+    toml_free(root);
+    return 0;
 }
