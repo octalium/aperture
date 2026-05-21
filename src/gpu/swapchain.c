@@ -24,24 +24,6 @@ static VkSurfaceFormatKHR pick_surface_format(VkPhysicalDevice dev, VkSurfaceKHR
     return chosen;
 }
 
-static VkPresentModeKHR pick_present_mode(VkPhysicalDevice dev, VkSurfaceKHR surface)
-{
-    uint32_t count = 0;
-    vkGetPhysicalDeviceSurfacePresentModesKHR(dev, surface, &count, NULL);
-    VkPresentModeKHR *modes = calloc(count, sizeof(*modes));
-    vkGetPhysicalDeviceSurfacePresentModesKHR(dev, surface, &count, modes);
-
-    VkPresentModeKHR chosen = VK_PRESENT_MODE_FIFO_KHR;
-    for (uint32_t i = 0; i < count; i++) {
-        if (modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
-            chosen = VK_PRESENT_MODE_MAILBOX_KHR;
-            break;
-        }
-    }
-    free(modes);
-    return chosen;
-}
-
 static VkExtent2D pick_extent(GLFWwindow *window, const VkSurfaceCapabilitiesKHR *caps)
 {
     if (caps->currentExtent.width != UINT32_MAX) {
@@ -65,7 +47,11 @@ int gpu_swapchain_create(struct ap_gpu *g)
     VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g->physical, g->surface, &caps));
 
     VkSurfaceFormatKHR fmt = pick_surface_format(g->physical, g->surface);
-    VkPresentModeKHR mode = pick_present_mode(g->physical, g->surface);
+    // FIFO (vsync), always available. The UI is mostly static and the
+    // pixel pipeline only re-runs on an actual edit, so there is no
+    // frame to gain from rendering uncapped — MAILBOX would just spin
+    // the loop and keep the GPU warm at rest.
+    VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;
     VkExtent2D extent = pick_extent(g->window, &caps);
 
     uint32_t image_count = caps.minImageCount + 1;

@@ -48,6 +48,12 @@ struct ap_pipeline_graph {
     bool            has_meta;
     ap_raw_metadata meta;
 
+    // Change detection. record_snapshot is the edit stack as of the
+    // last compute dispatch; while it still matches, the display image
+    // is current and the dispatch is skipped entirely.
+    bool            has_recorded;
+    ap_edit_stack   record_snapshot;
+
     VkDescriptorPool descriptor_pool;
 
     VkImage        stage_a_image;
@@ -799,12 +805,56 @@ static void compute_to_sample_barrier(VkCommandBuffer cmd, VkImage image)
     vkCmdPipelineBarrier2(cmd, &dep);
 }
 
+// True when two edit stacks would produce the same pixel-pipeline
+// output: same modules in the same order, each enabled the same way
+// and carrying the same parameters. Focus, display name and
+// config-window visibility are UI-only and deliberately ignored, so
+// clicking around the panels doesn't force a re-dispatch.
+static bool stack_render_equal(const ap_edit_stack *a,
+                               const ap_edit_stack *b)
+{
+    if (a->count != b->count) {
+        return false;
+    }
+    for (int i = 0; i < a->count; i++) {
+        const ap_edit_entry *ea = &a->entries[i];
+        const ap_edit_entry *eb = &b->entries[i];
+        if (ea->enabled != eb->enabled) {
+            return false;
+        }
+        if (strcmp(ea->module_name, eb->module_name) != 0) {
+            return false;
+        }
+        if (memcmp(ea->params, eb->params, sizeof(ea->params)) != 0) {
+            return false;
+        }
+        if (memcmp(ea->str_params, eb->str_params,
+                   sizeof(ea->str_params)) != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
                              const ap_edit_stack *stack)
 {
     if (!graph || graph->stage_count == 0) {
         return 0;
     }
+
+    // Skip the compute pass when nothing that feeds it changed. The
+    // display image from the last dispatch is still valid — the canvas
+    // keeps sampling it — so an unchanged edit stack costs no GPU work.
+    // Viewport / crop changes are display-side and never reach here.
+    if (graph->has_recorded && stack &&
+        stack_render_equal(&graph->record_snapshot, stack)) {
+        return 0;
+    }
+    if (stack) {
+        graph->record_snapshot = *stack;
+    }
+    graph->has_recorded = true;
 
     uint32_t gx = (uint32_t)((graph->width  + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE);
     uint32_t gy = (uint32_t)((graph->height + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE);
