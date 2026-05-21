@@ -62,6 +62,7 @@ void ap_module_resolve(const ap_module *self, const float *params,
     out->pass_count     = 0;
     out->passes         = NULL;
     out->scratch_count  = 0;
+    out->bake_lut       = NULL;
     if (!self) {
         out->spv_data  = NULL;
         out->spv_size  = 0;
@@ -87,6 +88,7 @@ void ap_module_resolve(const ap_module *self, const float *params,
         out->pass_count    = v->pass_count;
         out->passes        = v->passes;
         out->scratch_count = v->scratch_count;
+        out->bake_lut      = v->bake_lut;
         return;
     }
     out->spv_data  = self->spv_data;

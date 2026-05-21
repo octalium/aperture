@@ -57,6 +57,12 @@ typedef struct {
     // str_params_count > 0 read and write these in place; the buffers
     // belong to the edit entry, so edits persist with the stack.
     char (*str_params)[AP_EDIT_STR_LEN];
+
+    // render_params sets *request_rebuild to ask the panel to rebuild
+    // the pipeline graph — needed when an edit changes graph structure
+    // rather than just a push constant (e.g. committing a profile path
+    // so a LUT-bearing variant re-bakes). Never NULL.
+    bool *request_rebuild;
 } ap_module_render_ctx;
 
 // Render an ImGui config widget for the module's per-instance
@@ -66,6 +72,21 @@ typedef struct {
 typedef void (*ap_module_render_params_fn)(const ap_module *self,
                                            float *params,
                                            const ap_module_render_ctx *ctx);
+
+// Bake a variant's colour LUT.
+//
+// Called once, when the pipeline graph is built, for a variant that
+// declares `bake_lut`. The graph supplies `out_lut`, a buffer of
+// AP_ICC_LUT_DIM^3 * 4 floats (see color/icc.h); the module fills it
+// with an RGBA 3D LUT the variant's shader samples at binding 2.
+// `params` / `str_params` / `meta` describe the scheduling edit entry,
+// exactly as for pack_push. Return 0 when the buffer was filled;
+// non-zero leaves it to the graph, which substitutes an identity LUT
+// so the stage becomes a pass-through.
+typedef int (*ap_module_bake_lut_fn)(const float *params,
+                                     const char (*str_params)[AP_EDIT_STR_LEN],
+                                     const ap_raw_metadata *meta,
+                                     float *out_lut);
 
 // Buffers a multi-pass variant's passes can read from / write to.
 // IN is the buffer the module received; OUT is the buffer the
@@ -117,6 +138,11 @@ typedef struct {
     int                   pass_count;
     const ap_module_pass *passes;
     int                   scratch_count;
+
+    // When set, this variant samples a colour LUT at binding 2. The
+    // graph calls bake_lut at build time, uploads the result into a
+    // small image, and routes it to the stage's aux binding.
+    ap_module_bake_lut_fn bake_lut;
 } ap_module_variant;
 
 struct ap_module {
@@ -192,6 +218,7 @@ typedef struct {
     int                    pass_count;     // 0 = single-pass
     const ap_module_pass  *passes;
     int                    scratch_count;
+    ap_module_bake_lut_fn  bake_lut;        // non-NULL: stage wants a LUT
 } ap_module_active;
 
 // Resolve which shader + pack_push to use given the current runtime

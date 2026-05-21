@@ -1,0 +1,59 @@
+#version 450
+
+// Color Profile, LUT path: apply an ICC profile baked into a 3D
+// colour LUT. Input is WB-corrected linear camera-RGB; output is
+// linear sRGB-primaries RGB, same as the matrix path.
+//
+// The LUT is a DIM^3 grid stored row-major in a DIM-wide image — the
+// texel for grid point (r,g,b) sits at (x = r, y = b*DIM + g). The
+// camera value is clamped to the [0,1] device cube the profile was
+// sampled over; values above 1.0 (very bright highlights) clamp to
+// the cube edge. Trilinear interpolation between the eight surrounding
+// grid points reproduces a matrix profile exactly and resolves a
+// cLUT profile's curvature.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D in_image;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
+layout(set = 0, binding = 2, rgba32f) uniform readonly  image2D lut_image;
+
+const int DIM = 33;   // must match AP_ICC_LUT_DIM
+
+vec3 lut_at(ivec3 g)
+{
+    g = clamp(g, ivec3(0), ivec3(DIM - 1));
+    return imageLoad(lut_image, ivec2(g.r, g.b * DIM + g.g)).rgb;
+}
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(out_image);
+    if (coord.x >= size.x || coord.y >= size.y) {
+        return;
+    }
+
+    vec4 in_px = imageLoad(in_image, coord);
+
+    vec3  t  = clamp(in_px.rgb, 0.0, 1.0) * float(DIM - 1);
+    ivec3 i0 = ivec3(floor(t));
+    ivec3 i1 = i0 + 1;
+    vec3  f  = t - vec3(i0);
+
+    vec3 c000 = lut_at(ivec3(i0.r, i0.g, i0.b));
+    vec3 c100 = lut_at(ivec3(i1.r, i0.g, i0.b));
+    vec3 c010 = lut_at(ivec3(i0.r, i1.g, i0.b));
+    vec3 c110 = lut_at(ivec3(i1.r, i1.g, i0.b));
+    vec3 c001 = lut_at(ivec3(i0.r, i0.g, i1.b));
+    vec3 c101 = lut_at(ivec3(i1.r, i0.g, i1.b));
+    vec3 c011 = lut_at(ivec3(i0.r, i1.g, i1.b));
+    vec3 c111 = lut_at(ivec3(i1.r, i1.g, i1.b));
+
+    vec3 srgb = mix(
+        mix(mix(c000, c100, f.r), mix(c010, c110, f.r), f.g),
+        mix(mix(c001, c101, f.r), mix(c011, c111, f.r), f.g),
+        f.b);
+
+    imageStore(out_image, coord, vec4(srgb, in_px.a));
+}

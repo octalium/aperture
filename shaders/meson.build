@@ -12,6 +12,7 @@ shader_sources = [
   'denoise.comp',
   'wb.comp',
   'profile.comp',
+  'profile_lut.comp',
   'exposure.comp',
   'exposure_soft.comp',
   'grain.comp',
