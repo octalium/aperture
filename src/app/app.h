@@ -19,6 +19,14 @@ typedef enum {
 // Sentinel for panels that should appear in every mode (info / FPS / etc.).
 #define AP_MODE_ANY  ((ap_mode)-1)
 
+// Library-grid group filter. AP_GROUP_FILTER_GROUP pairs with a group
+// name; ALL and UNGROUPED ignore the name.
+typedef enum {
+    AP_GROUP_FILTER_ALL       = 0,
+    AP_GROUP_FILTER_UNGROUPED = 1,
+    AP_GROUP_FILTER_GROUP     = 2,
+} ap_group_filter;
+
 typedef struct ap_app     ap_app;
 typedef struct ap_photo   ap_photo;
 typedef struct ap_library ap_library;
@@ -87,6 +95,23 @@ int ap_app_apply_metadata_to_selection(ap_app *app,
 // photo picks up the rewritten stack. Returns the number written,
 // or -1 on error.
 int ap_app_apply_pipeline_to_selection(ap_app *app, int64_t pipeline_id);
+
+// Library-grid group filter. Setting it rebuilds the visible grid;
+// the Groups panel reads the active filter back to highlight it.
+// `kind` is an ap_group_filter; `name` is used only for
+// AP_GROUP_FILTER_GROUP.
+void        ap_app_set_group_filter(ap_app *app, int kind, const char *name);
+int         ap_app_group_filter_kind(const ap_app *app);
+const char *ap_app_group_filter_name(const ap_app *app);
+
+// Number of photos currently selected in the library grid.
+int         ap_app_grid_selection_count(const ap_app *app);
+
+// Add (add=true) or remove (add=false) every selected grid photo
+// to / from `group`. Returns the number of photos affected, or -1 on
+// error.
+int         ap_app_assign_selection_to_group(ap_app *app,
+                                             const char *group, bool add);
 
 #ifdef __cplusplus
 }

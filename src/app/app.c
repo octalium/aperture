@@ -126,6 +126,17 @@ struct ap_app {
                                                // renders (default) vs
                                                // camera-embedded
                                                // previews.
+
+    // Library-grid group filter and the cell -> library-photo map it
+    // produces: grid_map[cell] is the library photo shown in that
+    // cell, grid_map_count the number of visible cells. With the ALL
+    // filter the map is the identity.
+    int              group_filter_kind;        // ap_group_filter
+    char             group_filter_name[AP_GROUP_NAME_LEN];
+    int             *grid_map;
+    int              grid_map_count;
+    int              grid_map_cap;
+
     bool               import_modal;        // File -> Import
     char               import_source[4096];
     ap_import_settings import_settings;
@@ -291,6 +302,8 @@ void ap_app_destroy(ap_app *app)
         ap_grid_destroy(app->grid);
         app->grid = NULL;
     }
+    free(app->grid_map);
+    app->grid_map = NULL;
     if (app->canvas) {
         ap_canvas_destroy(app->canvas);
         app->canvas = NULL;
@@ -586,6 +599,78 @@ int ap_app_request_jpeg_export(ap_app *app, ap_photo *photo,
     return 0;
 }
 
+// Rebuild the cell -> library-photo map from the active group filter,
+// resize the grid to the visible count, and re-bind each visible
+// cell's thumbnail from the library cache (the cells have just been
+// reassigned, so their bound textures are stale).
+static void rebuild_grid_map(ap_app *app)
+{
+    app->grid_map_count = 0;
+    if (!app->library) {
+        if (app->grid) ap_grid_set_photo_count(app->grid, 0);
+        return;
+    }
+
+    int n = ap_library_photo_count(app->library);
+    if (n > app->grid_map_cap) {
+        int *m = realloc(app->grid_map, (size_t)n * sizeof(int));
+        if (!m) {
+            AP_ERROR("app: grid map allocation failed");
+            return;
+        }
+        app->grid_map     = m;
+        app->grid_map_cap = n;
+    }
+
+    for (int i = 0; i < n; i++) {
+        bool show = true;
+        if (app->group_filter_kind != AP_GROUP_FILTER_ALL) {
+            const ap_photo_groups *g =
+                ap_library_photo_groups(app->library, i);
+            int gc = g ? g->count : 0;
+            if (app->group_filter_kind == AP_GROUP_FILTER_UNGROUPED) {
+                show = (gc == 0);
+            } else {
+                show = false;
+                for (int k = 0; k < gc; k++) {
+                    if (strcmp(g->names[k], app->group_filter_name) == 0) {
+                        show = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (show) {
+            app->grid_map[app->grid_map_count++] = i;
+        }
+    }
+
+    if (!app->grid) return;
+    ap_grid_set_photo_count(app->grid, app->grid_map_count);
+    ap_grid_set_selected(app->grid, 0);
+    for (int c = 0; c < app->grid_map_count; c++) {
+        ap_thumbnail *t = ap_library_thumbnail(app->library,
+                                               app->grid_map[c]);
+        if (t) {
+            ap_grid_set_thumbnail(app->grid, c, ap_thumbnail_view(t),
+                                  ap_thumbnail_sampler(t));
+        } else {
+            ap_grid_set_thumbnail(app->grid, c,
+                                  VK_NULL_HANDLE, VK_NULL_HANDLE);
+        }
+    }
+}
+
+// Grid cell currently showing library photo `photo_idx`, or -1 when
+// that photo is filtered out of the visible grid.
+static int cell_for_photo(const ap_app *app, int photo_idx)
+{
+    for (int c = 0; c < app->grid_map_count; c++) {
+        if (app->grid_map[c] == photo_idx) return c;
+    }
+    return -1;
+}
+
 int ap_app_open_library(ap_app *app, const char *path)
 {
     if (!app || !path) return -1;
@@ -597,8 +682,9 @@ int ap_app_open_library(ap_app *app, const char *path)
     if (!app->library) {
         return -1;
     }
-    ap_grid_set_photo_count(app->grid, ap_library_photo_count(app->library));
-    ap_grid_set_selected(app->grid, 0);
+    app->group_filter_kind    = AP_GROUP_FILTER_ALL;
+    app->group_filter_name[0] = '\0';
+    rebuild_grid_map(app);
     app->mode = AP_MODE_LIBRARY;
     bind_mode_view(app);
     refresh_window_title(app);
@@ -616,6 +702,7 @@ void ap_app_close_library(ap_app *app)
     discard_completed_thumb_jobs(app);
     ap_app_wait_idle(app);
     ap_grid_set_photo_count(app->grid, 0);
+    app->grid_map_count = 0;
     ap_library_close(app->library);
     app->library = NULL;
     bind_mode_view(app);
@@ -631,10 +718,10 @@ int ap_app_apply_pipeline_to_selection(ap_app *app, int64_t pipeline_id)
 {
     if (!app || !app->library || !app->grid) return -1;
 
-    int n = ap_library_photo_count(app->library);
     int wrote = 0;
-    for (int i = 0; i < n; i++) {
-        if (!ap_grid_is_selected(app->grid, i)) continue;
+    for (int c = 0; c < app->grid_map_count; c++) {
+        if (!ap_grid_is_selected(app->grid, c)) continue;
+        int i = app->grid_map[c];
         // Skip the open photo: rewriting its sidecar would leave the
         // in-memory stack stale until the user closes + reopens.
         if (app->photo && i == app->photo_library_idx) continue;
@@ -658,15 +745,62 @@ int ap_app_apply_metadata_to_selection(ap_app *app,
     if (!app || !patch || !patch_set) return -1;
     if (!app->library || !app->grid)  return -1;
 
-    int n = ap_library_photo_count(app->library);
     int wrote = 0;
-    for (int i = 0; i < n; i++) {
-        if (!ap_grid_is_selected(app->grid, i)) continue;
+    for (int c = 0; c < app->grid_map_count; c++) {
+        if (!ap_grid_is_selected(app->grid, c)) continue;
+        int i = app->grid_map[c];
         if (ap_library_apply_metadata_patch(app->library, i,
                                             patch, patch_set) == 0) {
             wrote++;
         }
     }
+    return wrote;
+}
+
+void ap_app_set_group_filter(ap_app *app, int kind, const char *name)
+{
+    if (!app) return;
+    app->group_filter_kind = kind;
+    if (kind == AP_GROUP_FILTER_GROUP && name) {
+        snprintf(app->group_filter_name, sizeof(app->group_filter_name),
+                 "%s", name);
+    } else {
+        app->group_filter_name[0] = '\0';
+    }
+    rebuild_grid_map(app);
+}
+
+int ap_app_group_filter_kind(const ap_app *app)
+{
+    return app ? app->group_filter_kind : AP_GROUP_FILTER_ALL;
+}
+
+const char *ap_app_group_filter_name(const ap_app *app)
+{
+    return app ? app->group_filter_name : "";
+}
+
+int ap_app_grid_selection_count(const ap_app *app)
+{
+    if (!app || !app->grid) return 0;
+    return ap_grid_selection_count(app->grid);
+}
+
+int ap_app_assign_selection_to_group(ap_app *app, const char *group, bool add)
+{
+    if (!app || !app->library || !app->grid || !group || !*group) {
+        return -1;
+    }
+    int wrote = 0;
+    for (int c = 0; c < app->grid_map_count; c++) {
+        if (!ap_grid_is_selected(app->grid, c)) continue;
+        if (ap_library_set_photo_group(app->library, app->grid_map[c],
+                                       group, add) == 0) {
+            wrote++;
+        }
+    }
+    // Membership changed — a group filter's visible set may have moved.
+    rebuild_grid_map(app);
     return wrote;
 }
 
@@ -762,8 +896,9 @@ static void drive_canvas_input(ap_app *app)
 static void open_selected_photo(ap_app *app)
 {
     if (!app->library || !app->grid) return;
-    int idx = ap_grid_selected(app->grid);
-    if (idx < 0 || idx >= ap_library_photo_count(app->library)) return;
+    int cell = ap_grid_selected(app->grid);
+    if (cell < 0 || cell >= app->grid_map_count) return;
+    int idx = app->grid_map[cell];
 
     char abs[4096];
     if (ap_library_photo_absolute_path(app->library, idx, abs, sizeof(abs)) != 0) {
@@ -779,7 +914,7 @@ static void open_selected_photo(ap_app *app)
 static void drive_grid_input(ap_app *app)
 {
     if (!app->library || !app->grid) return;
-    int n = ap_library_photo_count(app->library);
+    int n = app->grid_map_count;
     if (n <= 0) return;
 
     ImGuiIO *io = igGetIO_Nil();
@@ -881,7 +1016,7 @@ static void draw_selection_overlay(ap_app *app)
 static void draw_grid_labels(ap_app *app)
 {
     if (!app->library || !app->grid) return;
-    int n = ap_library_photo_count(app->library);
+    int n = app->grid_map_count;
     if (n <= 0) return;
 
     ImGuiIO *io = igGetIO_Nil();
@@ -895,11 +1030,12 @@ static void draw_grid_labels(ap_app *app)
     if (!dl) return;
 
     const float band_h = 18.0f;
-    for (int i = 0; i < n; i++) {
+    for (int c = 0; c < n; c++) {
+        int i = app->grid_map[c];
         const char *rel = ap_library_photo_relative_path(app->library, i);
         if (!rel) continue;
         float cx, cy, cw, ch;
-        if (ap_grid_cell_rect(app->grid, i, win_w, win_h, &cx, &cy, &cw, &ch) != 0) {
+        if (ap_grid_cell_rect(app->grid, c, win_w, win_h, &cx, &cy, &cw, &ch) != 0) {
             continue;
         }
 
@@ -1007,11 +1143,10 @@ static void toggle_rendered_thumbnails(ap_app *app)
     if (!app->library) return;
     int n = ap_library_photo_count(app->library);
     for (int i = 0; i < n; i++) {
-        if (app->grid) {
-            ap_grid_set_thumbnail(app->grid, i,
-                                  VK_NULL_HANDLE, VK_NULL_HANDLE);
-        }
         ap_library_invalidate_thumbnail(app->library, i);
+    }
+    for (int c = 0; c < app->grid_map_count && app->grid; c++) {
+        ap_grid_set_thumbnail(app->grid, c, VK_NULL_HANDLE, VK_NULL_HANDLE);
     }
 }
 
@@ -1027,9 +1162,12 @@ static void handle_thumb_complete(ap_app *app, thumb_job *j)
         ap_thumbnail *t = ap_thumbnail_upload(app->gpu, j->rgba, j->w, j->h);
         if (t) {
             ap_library_set_thumbnail(app->library, j->idx, t);
-            ap_grid_set_thumbnail(app->grid, j->idx,
-                                  ap_thumbnail_view(t),
-                                  ap_thumbnail_sampler(t));
+            int cell = cell_for_photo(app, j->idx);
+            if (cell >= 0) {
+                ap_grid_set_thumbnail(app->grid, cell,
+                                      ap_thumbnail_view(t),
+                                      ap_thumbnail_sampler(t));
+            }
         }
     }
     free(j->cache_jpeg);
