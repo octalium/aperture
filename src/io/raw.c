@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 
 // Format `value` as %g into the metadata slot. Suffix appended when
@@ -98,6 +99,54 @@ static void extract_metadata(libraw_data_t *raw, ap_photo_metadata *m)
 
     ap_photo_metadata_set(m, AP_META_ARTIST,      raw->other.artist);
     ap_photo_metadata_set(m, AP_META_DESCRIPTION, raw->other.desc);
+}
+
+static const char *const RAW_EXTENSIONS[] = {
+    ".nef", ".cr2", ".cr3", ".raf", ".arw",
+    ".dng", ".orf", ".rw2", ".pef", ".srw",
+    NULL,
+};
+
+bool ap_raw_is_raw_path(const char *path)
+{
+    if (!path) {
+        return false;
+    }
+    const char *dot = strrchr(path, '.');
+    if (!dot) {
+        return false;
+    }
+    for (int i = 0; RAW_EXTENSIONS[i]; i++) {
+        if (strcasecmp(dot, RAW_EXTENSIONS[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int ap_raw_capture_time(const char *path, time_t *out)
+{
+    if (!path || !out) {
+        return -1;
+    }
+    libraw_data_t *raw = libraw_init(0);
+    if (!raw) {
+        return -1;
+    }
+    // open_file parses the metadata (incl. other.timestamp); no
+    // libraw_unpack — the pixel data isn't needed here.
+    int err = libraw_open_file(raw, path);
+    if (err != LIBRAW_SUCCESS) {
+        libraw_close(raw);
+        return -1;
+    }
+    time_t ts = raw->other.timestamp;
+    libraw_close(raw);
+    if (ts == 0) {
+        return -1;
+    }
+    *out = ts;
+    return 0;
 }
 
 int ap_raw_load(const char *path, ap_raw_image *out)

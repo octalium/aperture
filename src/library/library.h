@@ -128,6 +128,15 @@ int64_t     ap_library_default_pipeline_id(const ap_library *lib);
 // the library reverts to the registry default. Returns 0 on success.
 int         ap_library_set_default_pipeline_id(ap_library *lib, int64_t id);
 
+// Generic per-library key/value settings (per-library db). _get writes
+// a NUL-terminated string into `out`; returns 0 on success, -1 when the
+// key is missing or on error. _set upserts; pass NULL or empty `value`
+// to remove the key. Returns 0 on success.
+int         ap_library_setting_get(const ap_library *lib, const char *key,
+                                   char *out, size_t out_len);
+int         ap_library_setting_set(ap_library *lib, const char *key,
+                                   const char *value);
+
 // Relative path of the n-th photo (n in [0, count)). Owned by the
 // library; valid until close.
 const char *ap_library_photo_relative_path(const ap_library *lib, int index);

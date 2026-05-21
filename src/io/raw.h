@@ -3,7 +3,9 @@
 
 #include "photo/metadata.h"
 
+#include <stdbool.h>
 #include <stdint.h>
+#include <time.h>
 
 // Per-image metadata that downstream stages consume independently of the
 // CPU-side raw buffer.
@@ -49,5 +51,16 @@ typedef struct {
 
 int  ap_raw_load(const char *path, ap_raw_image *out);
 void ap_raw_image_free(ap_raw_image *img);
+
+// Read just the capture timestamp from a raw file's metadata — parses
+// the file header without decoding pixels. Writes *out and returns 0
+// on success; returns non-zero when the file can't be read or carries
+// no timestamp.
+int  ap_raw_capture_time(const char *path, time_t *out);
+
+// True when `path` (or a bare filename) ends in a supported raw-file
+// extension. The single source of truth for which formats the app
+// treats as raw photos.
+bool ap_raw_is_raw_path(const char *path);
 
 #endif

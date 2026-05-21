@@ -6,6 +6,7 @@
 #include "core/log.h"
 #include "edit/stack.h"
 #include "edit/stack_toml.h"
+#include "io/raw.h"
 #include "modules/module.h"
 #include "photo/thumbnail.h"
 #include "sidecar/sidecar.h"
@@ -29,12 +30,6 @@
 #ifndef APERTURE_VERSION
 #error "APERTURE_VERSION must be defined at compile time (set via meson)"
 #endif
-
-static const char *RAW_EXTENSIONS[] = {
-    ".nef", ".cr2", ".cr3", ".raf", ".arw",
-    ".dng", ".orf", ".rw2", ".pef", ".srw",
-    NULL,
-};
 
 struct ap_library {
     char     *root;        // absolute path to the photo directory
@@ -821,14 +816,7 @@ static int set_schema_kv(sqlite3 *db, const char *key, const char *value)
 
 static bool is_raw_file(const char *name)
 {
-    const char *dot = strrchr(name, '.');
-    if (!dot) return false;
-    for (int i = 0; RAW_EXTENSIONS[i]; i++) {
-        if (strcasecmp(dot, RAW_EXTENSIONS[i]) == 0) {
-            return true;
-        }
-    }
-    return false;
+    return ap_raw_is_raw_path(name);
 }
 
 static int append_path(ap_library *lib, const char *rel)
@@ -1181,6 +1169,59 @@ int ap_library_set_default_pipeline_id(ap_library *lib, int64_t id)
     }
     sqlite3_bind_text(st, 1, LIB_SETTING_DEFAULT_PIPELINE,
                       -1, SQLITE_STATIC);
+    sqlite3_bind_text(st, 2, value, -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+int ap_library_setting_get(const ap_library *lib, const char *key,
+                           char *out, size_t out_len)
+{
+    if (!lib || !lib->db || !key || !out || out_len == 0) return -1;
+    out[0] = '\0';
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(lib->db,
+            "SELECT value FROM settings WHERE key = ?;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return -1;
+    }
+    sqlite3_bind_text(st, 1, key, -1, SQLITE_STATIC);
+    int rc = -1;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        const char *v = (const char *)sqlite3_column_text(st, 0);
+        if (v) {
+            snprintf(out, out_len, "%s", v);
+            rc = 0;
+        }
+    }
+    sqlite3_finalize(st);
+    return rc;
+}
+
+int ap_library_setting_set(ap_library *lib, const char *key,
+                           const char *value)
+{
+    if (!lib || !lib->db || !key) return -1;
+    sqlite3_stmt *st = NULL;
+    if (!value || !*value) {
+        if (sqlite3_prepare_v2(lib->db,
+                "DELETE FROM settings WHERE key = ?;",
+                -1, &st, NULL) != SQLITE_OK) {
+            return -1;
+        }
+        sqlite3_bind_text(st, 1, key, -1, SQLITE_STATIC);
+        int rc = sqlite3_step(st);
+        sqlite3_finalize(st);
+        return (rc == SQLITE_DONE) ? 0 : -1;
+    }
+    if (sqlite3_prepare_v2(lib->db,
+            "INSERT INTO settings(key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return -1;
+    }
+    sqlite3_bind_text(st, 1, key,   -1, SQLITE_STATIC);
     sqlite3_bind_text(st, 2, value, -1, SQLITE_TRANSIENT);
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
