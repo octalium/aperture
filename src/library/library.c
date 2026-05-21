@@ -43,6 +43,10 @@ struct ap_library {
 
     ap_thumbnail **thumbs; // photo_count entries, NULL = not loaded
     int            thumb_cursor; // next idx to try; rolled forward
+
+    // In-memory group index: photo_count entries, built from the
+    // sidecars when the library is opened.
+    ap_photo_groups *photo_groups;
 };
 
 // ----- registry: <app_root>/aperture.db, libraries(id, path, created_at) -----
@@ -933,6 +937,28 @@ static int load_photo_cache(ap_library *lib)
     return 0;
 }
 
+// Build the in-memory group index by reading each photo's sidecar.
+// Photos with no sidecar (or no groups) simply contribute nothing.
+static int load_group_cache(ap_library *lib)
+{
+    if (lib->photo_count <= 0) {
+        return 0;
+    }
+    lib->photo_groups = calloc((size_t)lib->photo_count,
+                               sizeof(*lib->photo_groups));
+    if (!lib->photo_groups) {
+        AP_ERROR("library: group index alloc failed");
+        return -1;
+    }
+    for (int i = 0; i < lib->photo_count; i++) {
+        char path[4096];
+        if (ap_library_photo_absolute_path(lib, i, path, sizeof(path)) == 0) {
+            ap_sidecar_load_groups(path, &lib->photo_groups[i]);
+        }
+    }
+    return 0;
+}
+
 ap_library *ap_library_open(const char *path)
 {
     if (!path) {
@@ -1031,6 +1057,8 @@ ap_library *ap_library_open(const char *path)
         }
     }
 
+    if (load_group_cache(lib) < 0) goto fail;
+
     AP_INFO("library: %s [%s] (%d photos)",
             lib->root, lib->id, lib->photo_count);
     return lib;
@@ -1053,6 +1081,7 @@ void ap_library_close(ap_library *lib)
         free(lib->photo_paths[i]);
     }
     free(lib->photo_paths);
+    free(lib->photo_groups);
     if (lib->db) {
         sqlite3_close(lib->db);
     }
@@ -1402,11 +1431,13 @@ int ap_library_apply_pipeline_to_photo(ap_library *lib, int index,
     ap_photo_metadata user_meta;
     ap_photo_metadata_clear(&user_meta);
     bool user_set[AP_META_FIELD_COUNT] = {0};
+    ap_photo_groups groups;
+    groups.count = 0;
     ap_sidecar_load(path, &existing_stack, &respect_orientation,
-                    &user_meta, user_set);
+                    &user_meta, user_set, &groups);
 
     return ap_sidecar_save(path, &new_stack, respect_orientation,
-                           &user_meta, user_set);
+                           &user_meta, user_set, &groups);
 }
 
 int ap_library_apply_metadata_patch(ap_library *lib, int index,
@@ -1428,8 +1459,10 @@ int ap_library_apply_metadata_patch(ap_library *lib, int index,
     ap_photo_metadata_clear(&user_meta);
     bool user_set[AP_META_FIELD_COUNT] = {0};
 
+    ap_photo_groups groups;
+    groups.count = 0;
     bool had_sidecar = (ap_sidecar_load(path, &stack, &respect_orientation,
-                                        &user_meta, user_set) == 0);
+                                        &user_meta, user_set, &groups) == 0);
     if (!had_sidecar) seed_default_stack(&stack);
 
     for (int i = 0; i < AP_META_FIELD_COUNT; i++) {
@@ -1440,5 +1473,136 @@ int ap_library_apply_metadata_patch(ap_library *lib, int index,
     }
 
     return ap_sidecar_save(path, &stack, respect_orientation,
-                           &user_meta, user_set);
+                           &user_meta, user_set, &groups);
+}
+
+// Load-modify-save the n-th photo's sidecar so its on-disk `groups`
+// match the in-memory index. Mirrors apply_metadata_patch: preserves
+// the edit stack, orientation and metadata, seeding the default
+// pipeline when the photo has no sidecar yet.
+static int write_photo_sidecar_groups(ap_library *lib, int index)
+{
+    char path[4096];
+    if (ap_library_photo_absolute_path(lib, index, path, sizeof(path)) != 0) {
+        return -1;
+    }
+    ap_edit_stack stack;
+    ap_edit_stack_init(&stack);
+    bool respect_orientation = true;
+    ap_photo_metadata user_meta;
+    ap_photo_metadata_clear(&user_meta);
+    bool user_set[AP_META_FIELD_COUNT] = {0};
+    ap_photo_groups discard;
+    discard.count = 0;
+
+    bool had = (ap_sidecar_load(path, &stack, &respect_orientation,
+                                &user_meta, user_set, &discard) == 0);
+    if (!had) seed_default_stack(&stack);
+
+    return ap_sidecar_save(path, &stack, respect_orientation,
+                           &user_meta, user_set, &lib->photo_groups[index]);
+}
+
+const ap_photo_groups *ap_library_photo_groups(const ap_library *lib,
+                                               int index)
+{
+    if (!lib || !lib->photo_groups ||
+        index < 0 || index >= lib->photo_count) {
+        return NULL;
+    }
+    return &lib->photo_groups[index];
+}
+
+int ap_library_group_list(const ap_library *lib,
+                          char names[][AP_GROUP_NAME_LEN], int max)
+{
+    if (!lib || !lib->photo_groups || !names || max <= 0) {
+        return 0;
+    }
+    int n = 0;
+    for (int p = 0; p < lib->photo_count && n < max; p++) {
+        const ap_photo_groups *g = &lib->photo_groups[p];
+        for (int i = 0; i < g->count && n < max; i++) {
+            bool dup = false;
+            for (int k = 0; k < n; k++) {
+                if (strcmp(names[k], g->names[i]) == 0) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) {
+                snprintf(names[n], AP_GROUP_NAME_LEN, "%s", g->names[i]);
+                n++;
+            }
+        }
+    }
+    return n;
+}
+
+int ap_library_set_photo_group(ap_library *lib, int index,
+                               const char *group, bool member)
+{
+    if (!lib || !lib->photo_groups || !group || !*group) return -1;
+    if (index < 0 || index >= lib->photo_count) return -1;
+
+    ap_photo_groups *g = &lib->photo_groups[index];
+    int found = -1;
+    for (int i = 0; i < g->count; i++) {
+        if (strcmp(g->names[i], group) == 0) {
+            found = i;
+            break;
+        }
+    }
+    if (member) {
+        if (found >= 0) return 0;                 // already a member
+        if (g->count >= AP_GROUPS_MAX) {
+            AP_WARN("library: photo %d is already in the max %d groups",
+                    index, AP_GROUPS_MAX);
+            return -1;
+        }
+        snprintf(g->names[g->count], AP_GROUP_NAME_LEN, "%s", group);
+        g->count++;
+    } else {
+        if (found < 0) return 0;                  // not a member
+        for (int i = found; i + 1 < g->count; i++) {
+            memcpy(g->names[i], g->names[i + 1], AP_GROUP_NAME_LEN);
+        }
+        g->count--;
+    }
+    return write_photo_sidecar_groups(lib, index);
+}
+
+int ap_library_rename_group(ap_library *lib, const char *old_name,
+                            const char *new_name)
+{
+    if (!lib || !lib->photo_groups ||
+        !old_name || !*old_name || !new_name || !*new_name) {
+        return -1;
+    }
+    if (strcmp(old_name, new_name) == 0) return 0;
+
+    for (int p = 0; p < lib->photo_count; p++) {
+        const ap_photo_groups *g = &lib->photo_groups[p];
+        bool has = false;
+        for (int i = 0; i < g->count; i++) {
+            if (strcmp(g->names[i], old_name) == 0) {
+                has = true;
+                break;
+            }
+        }
+        if (has) {
+            ap_library_set_photo_group(lib, p, old_name, false);
+            ap_library_set_photo_group(lib, p, new_name, true);
+        }
+    }
+    return 0;
+}
+
+int ap_library_delete_group(ap_library *lib, const char *group)
+{
+    if (!lib || !group || !*group) return -1;
+    for (int p = 0; p < lib->photo_count; p++) {
+        ap_library_set_photo_group(lib, p, group, false);
+    }
+    return 0;
 }
