@@ -150,10 +150,14 @@ int         ap_library_setting_set(ap_library *lib, const char *key,
 const ap_photo_groups *ap_library_photo_groups(const ap_library *lib,
                                                int index);
 
-// Collect the distinct group names across the whole library into
-// `names`. Returns the count written (<= max).
+// Collect the registered group names into `names`. Returns the count
+// written (<= max).
 int ap_library_group_list(const ap_library *lib,
                           char names[][AP_GROUP_NAME_LEN], int max);
+
+// Register a new (possibly empty) group. Idempotent — a no-op when the
+// group already exists. Returns 0 on success.
+int ap_library_group_create(ap_library *lib, const char *name);
 
 // Add (member=true) or remove (member=false) the n-th photo's
 // membership in `group`. Updates the index and rewrites the photo's

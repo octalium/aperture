@@ -27,6 +27,9 @@
 
 #define APERTURE_DB_VERSION "1"
 
+// In-memory cap on the per-library group registry.
+#define AP_LIBRARY_GROUPS_MAX 256
+
 #ifndef APERTURE_VERSION
 #error "APERTURE_VERSION must be defined at compile time (set via meson)"
 #endif
@@ -47,6 +50,11 @@ struct ap_library {
     // In-memory group index: photo_count entries, built from the
     // sidecars when the library is opened.
     ap_photo_groups *photo_groups;
+
+    // Group registry — the names of groups that exist, independent of
+    // membership. Loaded from the `groups` table on open.
+    char group_names[AP_LIBRARY_GROUPS_MAX][AP_GROUP_NAME_LEN];
+    int  group_count;
 };
 
 // ----- registry: <app_root>/aperture.db, libraries(id, path, created_at) -----
@@ -782,6 +790,12 @@ static const char *LIBRARY_SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS settings ("
     "    key   TEXT PRIMARY KEY,"
     "    value TEXT NOT NULL"
+    ");"
+    // Registry of group names. Membership lives in the photo sidecars;
+    // this table records which groups exist, so an empty group (one
+    // with no photos) still persists.
+    "CREATE TABLE IF NOT EXISTS groups ("
+    "    name TEXT PRIMARY KEY"
     ");";
 
 static int exec_simple(sqlite3 *db, const char *sql)
@@ -937,10 +951,90 @@ static int load_photo_cache(ap_library *lib)
     return 0;
 }
 
-// Build the in-memory group index by reading each photo's sidecar.
-// Photos with no sidecar (or no groups) simply contribute nothing.
+// Index of a group name in the in-memory registry, or -1.
+static int registry_index(const ap_library *lib, const char *name)
+{
+    for (int i = 0; i < lib->group_count; i++) {
+        if (strcmp(lib->group_names[i], name) == 0) return i;
+    }
+    return -1;
+}
+
+// Register a group name — into the in-memory registry and the `groups`
+// table. Idempotent.
+static void registry_add(ap_library *lib, const char *name)
+{
+    if (!name || !*name || registry_index(lib, name) >= 0) {
+        return;
+    }
+    if (lib->group_count < AP_LIBRARY_GROUPS_MAX) {
+        snprintf(lib->group_names[lib->group_count], AP_GROUP_NAME_LEN,
+                 "%s", name);
+        lib->group_count++;
+    } else {
+        AP_WARN("library: group registry full (%d)", AP_LIBRARY_GROUPS_MAX);
+    }
+    if (lib->db) {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(lib->db,
+                "INSERT OR IGNORE INTO groups(name) VALUES (?);",
+                -1, &st, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+            sqlite3_step(st);
+            sqlite3_finalize(st);
+        }
+    }
+}
+
+// Remove a group name from the registry + the `groups` table. Photo
+// membership in the sidecars is the caller's separate responsibility.
+static void registry_remove(ap_library *lib, const char *name)
+{
+    int idx = registry_index(lib, name);
+    if (idx >= 0) {
+        for (int i = idx; i + 1 < lib->group_count; i++) {
+            memcpy(lib->group_names[i], lib->group_names[i + 1],
+                   AP_GROUP_NAME_LEN);
+        }
+        lib->group_count--;
+    }
+    if (lib->db) {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(lib->db,
+                "DELETE FROM groups WHERE name = ?;",
+                -1, &st, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+            sqlite3_step(st);
+            sqlite3_finalize(st);
+        }
+    }
+}
+
+// Build the group registry + per-photo membership index. The `groups`
+// table seeds the registry; any group a sidecar references that the
+// table is missing gets folded in, keeping the registry a superset of
+// all membership.
 static int load_group_cache(ap_library *lib)
 {
+    lib->group_count = 0;
+    if (lib->db) {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(lib->db,
+                "SELECT name FROM groups ORDER BY name;",
+                -1, &st, NULL) == SQLITE_OK) {
+            while (sqlite3_step(st) == SQLITE_ROW &&
+                   lib->group_count < AP_LIBRARY_GROUPS_MAX) {
+                const char *n = (const char *)sqlite3_column_text(st, 0);
+                if (n) {
+                    snprintf(lib->group_names[lib->group_count],
+                             AP_GROUP_NAME_LEN, "%s", n);
+                    lib->group_count++;
+                }
+            }
+            sqlite3_finalize(st);
+        }
+    }
+
     if (lib->photo_count <= 0) {
         return 0;
     }
@@ -952,8 +1046,12 @@ static int load_group_cache(ap_library *lib)
     }
     for (int i = 0; i < lib->photo_count; i++) {
         char path[4096];
-        if (ap_library_photo_absolute_path(lib, i, path, sizeof(path)) == 0) {
-            ap_sidecar_load_groups(path, &lib->photo_groups[i]);
+        if (ap_library_photo_absolute_path(lib, i, path, sizeof(path)) != 0) {
+            continue;
+        }
+        ap_sidecar_load_groups(path, &lib->photo_groups[i]);
+        for (int g = 0; g < lib->photo_groups[i].count; g++) {
+            registry_add(lib, lib->photo_groups[i].names[g]);
         }
     }
     return 0;
@@ -1516,27 +1614,21 @@ const ap_photo_groups *ap_library_photo_groups(const ap_library *lib,
 int ap_library_group_list(const ap_library *lib,
                           char names[][AP_GROUP_NAME_LEN], int max)
 {
-    if (!lib || !lib->photo_groups || !names || max <= 0) {
+    if (!lib || !names || max <= 0) {
         return 0;
     }
-    int n = 0;
-    for (int p = 0; p < lib->photo_count && n < max; p++) {
-        const ap_photo_groups *g = &lib->photo_groups[p];
-        for (int i = 0; i < g->count && n < max; i++) {
-            bool dup = false;
-            for (int k = 0; k < n; k++) {
-                if (strcmp(names[k], g->names[i]) == 0) {
-                    dup = true;
-                    break;
-                }
-            }
-            if (!dup) {
-                snprintf(names[n], AP_GROUP_NAME_LEN, "%s", g->names[i]);
-                n++;
-            }
-        }
+    int n = (lib->group_count < max) ? lib->group_count : max;
+    for (int i = 0; i < n; i++) {
+        snprintf(names[i], AP_GROUP_NAME_LEN, "%s", lib->group_names[i]);
     }
     return n;
+}
+
+int ap_library_group_create(ap_library *lib, const char *name)
+{
+    if (!lib || !name || !*name) return -1;
+    registry_add(lib, name);
+    return 0;
 }
 
 int ap_library_set_photo_group(ap_library *lib, int index,
@@ -1562,6 +1654,7 @@ int ap_library_set_photo_group(ap_library *lib, int index,
         }
         snprintf(g->names[g->count], AP_GROUP_NAME_LEN, "%s", group);
         g->count++;
+        registry_add(lib, group);                 // ensure the group exists
     } else {
         if (found < 0) return 0;                  // not a member
         for (int i = found; i + 1 < g->count; i++) {
@@ -1575,8 +1668,7 @@ int ap_library_set_photo_group(ap_library *lib, int index,
 int ap_library_rename_group(ap_library *lib, const char *old_name,
                             const char *new_name)
 {
-    if (!lib || !lib->photo_groups ||
-        !old_name || !*old_name || !new_name || !*new_name) {
+    if (!lib || !old_name || !*old_name || !new_name || !*new_name) {
         return -1;
     }
     if (strcmp(old_name, new_name) == 0) return 0;
@@ -1595,6 +1687,8 @@ int ap_library_rename_group(ap_library *lib, const char *old_name,
             ap_library_set_photo_group(lib, p, new_name, true);
         }
     }
+    registry_remove(lib, old_name);
+    registry_add(lib, new_name);
     return 0;
 }
 
@@ -1604,5 +1698,6 @@ int ap_library_delete_group(ap_library *lib, const char *group)
     for (int p = 0; p < lib->photo_count; p++) {
         ap_library_set_photo_group(lib, p, group, false);
     }
+    registry_remove(lib, group);
     return 0;
 }
