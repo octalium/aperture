@@ -5,25 +5,32 @@
 extern "C" {
 #endif
 
-// Derive the camera-RGB -> linear-sRGB 3x3 colour matrix from a
-// matrix/shaper ICC profile.
+// Edge length of the baked colour LUT. 33 is the de-facto standard
+// grid size for camera / display profiles (Adobe uses it); trilinear
+// interpolation of a 33^3 grid reproduces a matrix transform exactly
+// and resolves a cLUT profile's curvature well.
+#define AP_ICC_LUT_DIM 33
+
+// Bake an ICC profile into a 3D colour LUT.
 //
-// `path` is a filesystem path to a `.icc` profile. `out` receives the
-// 3x3 matrix as 9 floats, row-major (out[row*3 + col]); it maps a
-// linear camera-RGB triple to linear sRGB, the same convention the
-// camera-native matrix in ap_raw_metadata uses, so the result is a
-// drop-in replacement for the Color Profile push constant.
+// `path` is a filesystem path to a `.icc` profile (matrix/shaper or
+// cLUT — both are handled). The profile's camera-RGB -> linear-sRGB
+// transform is sampled on a regular AP_ICC_LUT_DIM^3 grid over the
+// [0,1]^3 device cube.
+//
+// `out` must point to AP_ICC_LUT_DIM^3 * 4 floats. It receives RGBA
+// texels (alpha = 1), laid out red-fastest:
+//   out[(((b * DIM) + g) * DIM + r) * 4 + channel]
+// which is exactly the row-major content of a DIM-wide,
+// DIM*DIM-tall 2D image — the form the pipeline graph uploads.
 //
 // Returns 0 on success. Returns non-zero — and leaves `out`
-// untouched — when the file is missing or unreadable, or the profile
-// is not an RGB matrix/shaper profile (cLUT profiles carry a colour
-// lookup table that a 3x3 cannot represent; those are handled by the
-// 3D-LUT path, not here). Callers should fall back to the camera-
-// native matrix on a non-zero return.
+// untouched — when the file is missing, unreadable, or not an RGB
+// profile. Callers treat a non-zero return as "profile not applied".
 //
-// Results are cached by path, so calling this every frame from a
-// module's pack_push is cheap after the first lookup.
-int ap_icc_camera_matrix(const char *path, float out[9]);
+// This is not cheap (DIM^3 colour-managed conversions); it is meant
+// to be called once when the pipeline graph is built, not per frame.
+int ap_icc_bake_lut(const char *path, float *out);
 
 #ifdef __cplusplus
 }

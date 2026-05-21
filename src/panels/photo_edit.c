@@ -523,19 +523,22 @@ static void config_window(ap_app *app, ap_photo *photo,
             igSeparator();
         }
 
+        bool want_rebuild = false;
         if (m->render_params) {
             ap_module_render_ctx ctx = {
-                .image_width  = ap_photo_width(photo),
-                .image_height = ap_photo_height(photo),
-                .str_params   = e->str_params,
+                .image_width     = ap_photo_width(photo),
+                .image_height    = ap_photo_height(photo),
+                .str_params      = e->str_params,
+                .request_rebuild = &want_rebuild,
             };
             m->render_params(m, e->params, &ctx);
         } else {
             igTextDisabled("(no parameters)");
         }
 
-        if (has_variants &&
-            (int)e->params[m->variant_param_slot] != (int)old_variant_val) {
+        if (want_rebuild ||
+            (has_variants &&
+             (int)e->params[m->variant_param_slot] != (int)old_variant_val)) {
             ap_app_rebuild_photo_graph(app);
         }
     }
