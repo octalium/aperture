@@ -7,6 +7,7 @@
 #include <cstdint>
 
 extern "C" {
+#include "app/root.h"
 #include "core/log.h"
 #include "ui/imgui.h"
 }
@@ -14,6 +15,8 @@ extern "C" {
 namespace {
 VkDevice         g_device          = VK_NULL_HANDLE;
 VkDescriptorPool g_descriptor_pool = VK_NULL_HANDLE;
+// Backing store for io.IniFilename — ImGui keeps the pointer, not a copy.
+char             g_ini_path[4096]  = {0};
 }
 
 extern "C" bool ap_imgui_init(GLFWwindow *window,
@@ -47,11 +50,17 @@ extern "C" bool ap_imgui_init(GLFWwindow *window,
     ImGuiIO &io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-    // Disable ImGui's auto-load/auto-save. Layouts live as named
-    // profiles managed by src/app/layout_profiles.c; user drags
-    // during a session don't persist unless the user explicitly
-    // saves them as a profile. See issue #102.
-    io.IniFilename = nullptr;
+    // Auto-persist the working layout to <app_root>/imgui.ini — ImGui
+    // loads it on the first frame and saves changes back, so panel
+    // arrangement is remembered across sessions. Named layout profiles
+    // (src/app/layout_profiles.c) are explicit snapshots layered on
+    // top of this always-remembered layout.
+    if (ap_app_root_ensure() == 0 &&
+        ap_app_root_join("imgui.ini", g_ini_path, sizeof(g_ini_path)) == 0) {
+        io.IniFilename = g_ini_path;
+    } else {
+        io.IniFilename = nullptr;   // no app root — run without persistence
+    }
 
     ImGui::StyleColorsDark();
 
@@ -95,6 +104,11 @@ extern "C" void ap_imgui_shutdown(void)
 
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplGlfw_Shutdown();
+    // Capture the final layout — ImGui's periodic auto-save may not
+    // have caught a change made just before quitting.
+    if (ImGui::GetIO().IniFilename != nullptr) {
+        ImGui::SaveIniSettingsToDisk(ImGui::GetIO().IniFilename);
+    }
     ImGui::DestroyContext();
 
     if (g_descriptor_pool != VK_NULL_HANDLE) {

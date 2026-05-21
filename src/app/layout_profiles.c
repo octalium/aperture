@@ -107,18 +107,17 @@ int ap_layout_init(void)
 {
     if (layouts_dir_ensure() < 0) return -1;
 
+    // The working layout is auto-persisted by ImGui itself
+    // (io.IniFilename -> <app_root>/imgui.ini) and loads on the first
+    // frame. ap_layout_init only records which named profile was last
+    // made active, for the View > Layout menu — it does not force a
+    // profile load at startup.
     char name[AP_LAYOUT_NAME_LEN];
-    if (read_pointer(name, sizeof(name)) != 0 || !*name) {
-        // No active profile — leave runtime state alone; the dock
-        // builder will produce the first-launch default.
+    if (read_pointer(name, sizeof(name)) == 0 && *name) {
+        snprintf(g_active_name, sizeof(g_active_name), "%s", name);
+    } else {
         g_active_name[0] = '\0';
-        return 0;
     }
-
-    char path[4096];
-    if (profile_path(name, path, sizeof(path)) < 0) return -1;
-    ap_imgui_load_layout(path);
-    snprintf(g_active_name, sizeof(g_active_name), "%s", name);
     return 0;
 }
 

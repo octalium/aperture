@@ -10,18 +10,19 @@ extern "C" {
 
 // Named ImGui layout state stored under <app_root>/layouts/.
 //
-// ap_imgui_init turns off ImGui's auto-persist; this module owns
-// explicit load/save and the "what's currently active" pointer.
-// Drags during a session don't reach disk unless the user clicks
-// "Save Current As…".
+// The working layout is auto-persisted by ImGui itself
+// (io.IniFilename). This module manages named layout profiles —
+// explicit snapshots saved under <app_root>/layouts/ and switchable
+// on top of the always-remembered working layout.
 
 #define AP_LAYOUT_NAME_LEN  64
 #define AP_LAYOUT_MAX_ENUM  64
 
-// Resolve <app_root>/layouts, create if missing, and load whatever
-// profile the .current pointer named (if any). Safe to call before
-// the dockspace exists — the load just stashes ini data; ImGui
-// applies it when the windows are next drawn. Returns 0 on success.
+// Resolve <app_root>/layouts (create if missing) and record which
+// named profile was last active, for the View > Layout menu. The
+// working layout itself is auto-persisted by ImGui and loads on the
+// first frame — this does not force a profile load. Returns 0 on
+// success.
 int  ap_layout_init(void);
 
 // Snapshot of saved profile names. Returns count written (≤ max),
