@@ -14,6 +14,7 @@
 #include "panels/panels.h"
 #include "photo/photo.h"
 #include "photo/thumbnail.h"
+#include "ui/file_dialog.h"
 #include "ui/imgui.h"
 
 #include "cimgui.h"
@@ -124,8 +125,6 @@ struct ap_app {
                                                // renders (default) vs
                                                // camera-embedded
                                                // previews.
-    bool             open_library_modal;   // File -> Open Library
-    char             open_library_input[4096];
     bool             rename_library_modal; // Library indicator -> Rename
     char             rename_library_input[128];
     bool             save_layout_modal;    // View -> Layout -> Save Current As
@@ -1197,10 +1196,12 @@ static void draw_menubar(ap_app *app)
 
     if (igBeginMenu("File", true)) {
         if (igMenuItem_Bool("Open Library", NULL, false, true)) {
-            const char *root = app->library ? ap_library_root(app->library) : "";
-            snprintf(app->open_library_input,
-                     sizeof(app->open_library_input), "%s", root ? root : "");
-            app->open_library_modal = true;
+            const char *root = app->library ? ap_library_root(app->library)
+                                            : NULL;
+            char picked[4096];
+            if (ap_file_dialog_pick_folder(picked, sizeof(picked), root)) {
+                ap_app_open_library(app, picked);
+            }
         }
 
         igSeparator();
@@ -1372,33 +1373,6 @@ static void draw_menubar(ap_app *app)
     igEndMainMenuBar();
 }
 
-static void draw_open_library_modal(ap_app *app)
-{
-    if (app->open_library_modal) {
-        igOpenPopup_Str("Open Library", 0);
-        app->open_library_modal = false;
-    }
-    if (!igBeginPopupModal("Open Library", NULL, 0)) return;
-
-    igText("Path to a directory holding raw photos:");
-    igInputText("##path", app->open_library_input,
-                sizeof(app->open_library_input), 0, NULL, NULL);
-
-    bool submit = igButton("Open", (ImVec2_c){ 120.0f, 0.0f });
-    igSameLine(0.0f, -1.0f);
-    bool cancel = igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f });
-
-    if (submit && app->open_library_input[0]) {
-        if (ap_app_open_library(app, app->open_library_input) == 0) {
-            app->open_library_input[0] = '\0';
-            igCloseCurrentPopup();
-        }
-    } else if (cancel) {
-        igCloseCurrentPopup();
-    }
-    igEndPopup();
-}
-
 static void draw_rename_library_modal(ap_app *app)
 {
     if (app->rename_library_modal) {
@@ -1557,7 +1531,6 @@ int ap_app_run_frame(ap_app *app)
     ap_imgui_new_frame();
 
     draw_menubar(app);
-    draw_open_library_modal(app);
     draw_rename_library_modal(app);
     draw_save_layout_modal(app);
     drive_global_hotkeys(app);

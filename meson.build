@@ -28,6 +28,7 @@ libjpeg_dep = dependency('libjpeg')
 # would otherwise be picked ahead of it; vendoring keeps the colour
 # engine version deterministic across machines.
 lcms2_dep   = subproject('lcms2').get_variable('lcms2_dep')
+nfd_dep     = dependency('nativefiledialog-extended')
 threads_dep = dependency('threads')
 
 aperture_inc = include_directories('src')
@@ -45,6 +46,7 @@ aperture_deps = [
   tomlc99_dep,
   libjpeg_dep,
   lcms2_dep,
+  nfd_dep,
   threads_dep,
   shaders_dep,
 ]
