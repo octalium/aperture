@@ -9,6 +9,7 @@
 #include "gpu/gpu.h"
 #include "gpu/grid.h"
 #include "gpu/pipeline_graph.h"
+#include "library/import.h"
 #include "library/library.h"
 #include "output/jpeg.h"
 #include "panels/panels.h"
@@ -125,6 +126,10 @@ struct ap_app {
                                                // renders (default) vs
                                                // camera-embedded
                                                // previews.
+    bool               import_modal;        // File -> Import
+    char               import_source[4096];
+    ap_import_settings import_settings;
+    char               import_status[160];
     bool             rename_library_modal; // Library indicator -> Rename
     char             rename_library_input[128];
     bool             save_layout_modal;    // View -> Layout -> Save Current As
@@ -1204,6 +1209,13 @@ static void draw_menubar(ap_app *app)
             }
         }
 
+        if (igMenuItem_Bool("Import...", NULL, false, app->library != NULL)) {
+            ap_import_settings_load(app->library, &app->import_settings);
+            app->import_source[0] = '\0';
+            app->import_status[0] = '\0';
+            app->import_modal     = true;
+        }
+
         igSeparator();
 
         if (igMenuItem_Bool("Close Photo", "Esc",
@@ -1373,6 +1385,86 @@ static void draw_menubar(ap_app *app)
     igEndMainMenuBar();
 }
 
+static void draw_import_modal(ap_app *app)
+{
+    if (app->import_modal) {
+        igOpenPopup_Str("Import Photos", 0);
+        app->import_modal = false;
+    }
+    if (!igBeginPopupModal("Import Photos", NULL,
+                           ImGuiWindowFlags_AlwaysAutoResize)) {
+        return;
+    }
+    if (!app->library) {
+        igText("No library open.");
+        if (igButton("Close", (ImVec2_c){ 120.0f, 0.0f })) {
+            igCloseCurrentPopup();
+        }
+        igEndPopup();
+        return;
+    }
+
+    ap_import_settings *s = &app->import_settings;
+
+    igText("Source folder:");
+    igTextDisabled("%s", app->import_source[0] ? app->import_source
+                                               : "(none chosen)");
+    if (igButton("Choose Source...", (ImVec2_c){ 0.0f, 0.0f })) {
+        ap_file_dialog_pick_folder(app->import_source,
+                                   sizeof(app->import_source), NULL);
+    }
+
+    igSeparator();
+
+    igInputText("Destination subdir", s->subdir, sizeof(s->subdir),
+                0, NULL, NULL);
+
+    static const char *const naming_items[] = {
+        "Keep original names", "Rename by pattern",
+    };
+    igCombo_Str_arr("Naming", &s->naming, naming_items, 2, -1);
+    if (s->naming == AP_IMPORT_NAME_PATTERN) {
+        igInputText("Pattern", s->pattern, sizeof(s->pattern), 0, NULL, NULL);
+        igTextDisabled("tokens: {ORIG} {YYYY} {MM} {DD} {HH} {MIN} {SEC} {SEQ}");
+    }
+
+    static const char *const collide_items[] = {
+        "Skip", "Overwrite", "Auto-suffix",
+    };
+    igCombo_Str_arr("On name collision", &s->collision, collide_items, 3, -1);
+
+    igSeparator();
+
+    bool can_import = app->import_source[0] != '\0';
+    if (!can_import) igBeginDisabled(true);
+    if (igButton("Import", (ImVec2_c){ 120.0f, 0.0f })) {
+        ap_import_settings_save(app->library, s);
+        char root[4096];
+        snprintf(root, sizeof(root), "%s", ap_library_root(app->library));
+        int n = 0;
+        if (ap_import_run(app->library, app->import_source, s, &n) == 0) {
+            // Re-scan by reopening the library so the new files appear.
+            ap_app_open_library(app, root);
+            snprintf(app->import_status, sizeof(app->import_status),
+                     "Imported %d photo%s.", n, n == 1 ? "" : "s");
+        } else {
+            snprintf(app->import_status, sizeof(app->import_status),
+                     "Import failed - see the log.");
+        }
+    }
+    if (!can_import) igEndDisabled();
+    igSameLine(0.0f, -1.0f);
+    if (igButton("Close", (ImVec2_c){ 120.0f, 0.0f })) {
+        igCloseCurrentPopup();
+    }
+
+    if (app->import_status[0]) {
+        igTextWrapped("%s", app->import_status);
+    }
+
+    igEndPopup();
+}
+
 static void draw_rename_library_modal(ap_app *app)
 {
     if (app->rename_library_modal) {
@@ -1531,6 +1623,7 @@ int ap_app_run_frame(ap_app *app)
     ap_imgui_new_frame();
 
     draw_menubar(app);
+    draw_import_modal(app);
     draw_rename_library_modal(app);
     draw_save_layout_modal(app);
     drive_global_hotkeys(app);
