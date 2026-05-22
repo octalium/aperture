@@ -214,6 +214,13 @@ int  ap_library_pending_thumbnail_idx(const ap_library *lib);
 // edit-cache thumbnail.
 void ap_library_invalidate_thumbnail(ap_library *lib, int index);
 
+// Record that decoding the n-th photo's thumbnail failed. The slot
+// stays NULL but is excluded from future pending_thumbnail_idx results
+// so the pump does not spin trying to re-submit it. A subsequent
+// ap_library_invalidate_thumbnail call clears the flag and allows a
+// fresh attempt.
+void ap_library_mark_thumbnail_failed(ap_library *lib, int index);
+
 // ----- edit-render thumbnail blobs (persisted in the library db) -----
 //
 // The `thumbnails` table stores a small JPEG of each photo rendered

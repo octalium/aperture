@@ -1262,18 +1262,22 @@ static void handle_thumb_complete(ap_app *app, thumb_job *j)
     // Discard jobs submitted before the last thumbnail-mode toggle:
     // their pixels reflect the old mode (rendered vs camera preview).
     bool stale = (j->gen != app->thumb_load_gen);
-    if (!stale && app->library && app->grid && j->ok && j->rgba
+    if (!stale && app->library
         && j->idx >= 0 && j->idx < ap_library_photo_count(app->library))
     {
-        ap_thumbnail *t = ap_thumbnail_upload(app->gpu, j->rgba, j->w, j->h);
-        if (t) {
-            ap_library_set_thumbnail(app->library, j->idx, t);
-            int cell = cell_for_photo(app, j->idx);
-            if (cell >= 0) {
-                ap_grid_set_thumbnail(app->grid, cell,
-                                      ap_thumbnail_view(t),
-                                      ap_thumbnail_sampler(t));
+        if (j->ok && j->rgba && app->grid) {
+            ap_thumbnail *t = ap_thumbnail_upload(app->gpu, j->rgba, j->w, j->h);
+            if (t) {
+                ap_library_set_thumbnail(app->library, j->idx, t);
+                int cell = cell_for_photo(app, j->idx);
+                if (cell >= 0) {
+                    ap_grid_set_thumbnail(app->grid, cell,
+                                          ap_thumbnail_view(t),
+                                          ap_thumbnail_sampler(t));
+                }
             }
+        } else if (!j->ok) {
+            ap_library_mark_thumbnail_failed(app->library, j->idx);
         }
     }
     free(j->cache_jpeg);

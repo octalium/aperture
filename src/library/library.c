@@ -45,8 +45,9 @@ struct ap_library {
     int       photo_count;
     int       photo_capacity;
 
-    ap_thumbnail **thumbs; // photo_count entries, NULL = not loaded
-    int            thumb_cursor; // next idx to try; rolled forward
+    ap_thumbnail **thumbs;        // photo_count entries, NULL = not loaded
+    bool          *thumb_failed;  // photo_count entries, true = decode failed
+    int            thumb_cursor;  // next idx to try; rolled forward
 
     // In-memory group index: photo_count entries, built from the
     // sidecars when the library is opened.
@@ -1224,6 +1225,12 @@ ap_library *ap_library_open(const char *path)
             AP_ERROR("library: thumbnail cache alloc failed");
             goto fail;
         }
+        lib->thumb_failed = calloc((size_t)lib->photo_count,
+                                   sizeof(*lib->thumb_failed));
+        if (!lib->thumb_failed) {
+            AP_ERROR("library: thumbnail failed-flag alloc failed");
+            goto fail;
+        }
     }
 
     if (load_group_cache(lib) < 0) goto fail;
@@ -1246,6 +1253,7 @@ void ap_library_close(ap_library *lib)
         }
         free(lib->thumbs);
     }
+    free(lib->thumb_failed);
     for (int i = 0; i < lib->photo_count; i++) {
         free(lib->photo_paths[i]);
     }
@@ -1498,6 +1506,10 @@ int ap_library_photo_remove(ap_library *lib, int index)
             memmove(&lib->thumbs[index], &lib->thumbs[index + 1],
                     (size_t)tail * sizeof(*lib->thumbs));
         }
+        if (lib->thumb_failed) {
+            memmove(&lib->thumb_failed[index], &lib->thumb_failed[index + 1],
+                    (size_t)tail * sizeof(*lib->thumb_failed));
+        }
         if (lib->photo_groups) {
             memmove(&lib->photo_groups[index], &lib->photo_groups[index + 1],
                     (size_t)tail * sizeof(*lib->photo_groups));
@@ -1507,6 +1519,9 @@ int ap_library_photo_remove(ap_library *lib, int index)
     lib->photo_paths[lib->photo_count] = NULL;
     if (lib->thumbs) {
         lib->thumbs[lib->photo_count] = NULL;
+    }
+    if (lib->thumb_failed) {
+        lib->thumb_failed[lib->photo_count] = false;
     }
     if (lib->thumb_cursor > index) {
         lib->thumb_cursor--;
@@ -1540,7 +1555,8 @@ int ap_library_pending_thumbnail_idx(const ap_library *lib)
     ap_library *m = (ap_library *)lib;
     while (m->thumb_cursor < m->photo_count) {
         int idx = m->thumb_cursor++;
-        if (!m->thumbs[idx]) return idx;
+        if (!m->thumbs[idx] && !(m->thumb_failed && m->thumb_failed[idx]))
+            return idx;
     }
     return -1;
 }
@@ -1552,8 +1568,18 @@ void ap_library_invalidate_thumbnail(ap_library *lib, int index)
         ap_thumbnail_destroy(lib->thumbs[index]);
         lib->thumbs[index] = NULL;
     }
+    if (lib->thumb_failed) {
+        lib->thumb_failed[index] = false;
+    }
     // Rewind the cursor so the per-frame pump revisits this slot.
     if (lib->thumb_cursor > index) lib->thumb_cursor = index;
+}
+
+void ap_library_mark_thumbnail_failed(ap_library *lib, int index)
+{
+    if (!lib || !lib->thumb_failed || index < 0 || index >= lib->photo_count)
+        return;
+    lib->thumb_failed[index] = true;
 }
 
 int ap_library_thumbnail_blob(const ap_library *lib, int index,
