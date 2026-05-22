@@ -189,6 +189,21 @@ ap_library_sort ap_app_sort(const ap_app *app);
 void        ap_app_set_search(ap_app *app, const char *query);
 const char *ap_app_search(const ap_app *app);
 
+// Before/after compare: bypass all user-edit stages in the current
+// photo's pipeline graph without a graph rebuild. While active the
+// canvas shows the demosaic'd, unedited image (only the transport
+// stages — demosaic + output_transfer — run). Stages with no edit-
+// stack entry (transport stages, entry_idx == -1) are always left
+// running so the display pipeline stays coherent.
+//
+// Calling with `on = true` skips every user-edit stage; `on = false`
+// restores them. The bypass is not persisted — it resets automatically
+// when the photo is closed or replaced.
+//
+// No-op when no photo is open or the photo has no pipeline graph yet.
+void ap_app_set_compare_original(ap_app *app, bool on);
+bool ap_app_compare_original(const ap_app *app);
+
 #ifdef __cplusplus
 }
 #endif
