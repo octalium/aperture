@@ -50,6 +50,10 @@ struct ap_photo {
     // Group membership, persisted in the sidecar. Carried through so a
     // sidecar save on close preserves it.
     ap_photo_groups   groups;
+
+    // Keyword list, persisted in the sidecar's [metadata] `keywords`
+    // array. Carried through so a sidecar save on close preserves it.
+    ap_photo_keywords keywords;
 };
 
 static char *strdup_or_null(const char *s)
@@ -139,10 +143,12 @@ ap_photo *ap_photo_open_with_raw(ap_gpu *g, const char *path,
     ap_photo_metadata_clear(&photo->user_meta);
     for (int i = 0; i < AP_META_FIELD_COUNT; i++) photo->user_set[i] = false;
     ap_photo_culling_clear(&photo->culling);
+    ap_photo_keywords_clear(&photo->keywords);
 
     if (ap_sidecar_load(path, &photo->stack, &photo->respect_orientation,
                         &photo->user_meta, photo->user_set,
-                        &photo->culling, &photo->groups) == 0) {
+                        &photo->culling, &photo->groups,
+                        &photo->keywords) == 0) {
         AP_INFO("photo: loaded sidecar for %s", path);
     } else {
         // First open of this photo (or schema mismatch). Seed the
@@ -223,7 +229,8 @@ void ap_photo_close(ap_photo *photo)
         if (ap_sidecar_save(photo->path, &photo->stack,
                             photo->respect_orientation,
                             &photo->user_meta, photo->user_set,
-                            &photo->culling, &photo->groups) != 0) {
+                            &photo->culling, &photo->groups,
+                            &photo->keywords) != 0) {
             AP_WARN("photo: failed to save sidecar for %s", photo->path);
         }
     }
@@ -339,6 +346,23 @@ void ap_photo_set_color_label(ap_photo *photo, ap_color_label color)
 {
     if (!photo) return;
     photo->culling.color = color;
+}
+
+const ap_photo_keywords *ap_photo_get_keywords(const ap_photo *photo)
+{
+    return photo ? &photo->keywords : NULL;
+}
+
+bool ap_photo_keyword_add(ap_photo *photo, const char *kw)
+{
+    if (!photo) return false;
+    return ap_photo_keywords_add(&photo->keywords, kw);
+}
+
+bool ap_photo_keyword_remove(ap_photo *photo, const char *kw)
+{
+    if (!photo) return false;
+    return ap_photo_keywords_remove(&photo->keywords, kw);
 }
 
 bool ap_photo_view_raw(const ap_photo *photo)

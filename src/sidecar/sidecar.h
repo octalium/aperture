@@ -4,6 +4,7 @@
 #include "edit/stack.h"
 #include "photo/culling.h"
 #include "photo/groups.h"
+#include "photo/keywords.h"
 #include "photo/metadata.h"
 
 #include <stdbool.h>
@@ -17,9 +18,11 @@ extern "C" {
 // entries; `*respect_orientation` is filled from the top-level
 // [aperture] table (defaults to true when missing); the [metadata]
 // table populates `*user_meta` / `user_set` (slots not present in
-// the table are left empty / false) and `*culling` (rating / flag /
-// color, cleared to their defaults when absent); `*groups` is filled
-// from the [aperture] table's `groups` array (empty when absent).
+// the table are left empty / false), `*culling` (rating / flag /
+// color, cleared to their defaults when absent), and `*keywords`
+// (the `keywords` string array, cleared when absent); `*groups` is
+// filled from the [aperture] table's `groups` array (empty when
+// absent).
 //
 // Returns 0 on success, nonzero on missing / unparseable file -
 // callers leave the out-params at their caller-seeded defaults in
@@ -30,18 +33,20 @@ int ap_sidecar_load(const char *source_path,
                     ap_photo_metadata *user_meta,
                     bool user_set[AP_META_FIELD_COUNT],
                     ap_photo_culling *culling,
-                    ap_photo_groups *groups);
+                    ap_photo_groups *groups,
+                    ap_photo_keywords *keywords);
 
 // Atomically write the edit stack, photo flags, metadata overrides,
-// culling state, and group membership to `<source_path>.aperture`.
-// Returns 0 on success.
+// culling state, group membership, and keywords to
+// `<source_path>.aperture`. Returns 0 on success.
 int ap_sidecar_save(const char *source_path,
                     const ap_edit_stack *stack,
                     bool respect_orientation,
                     const ap_photo_metadata *user_meta,
                     const bool user_set[AP_META_FIELD_COUNT],
                     const ap_photo_culling *culling,
-                    const ap_photo_groups *groups);
+                    const ap_photo_groups *groups,
+                    const ap_photo_keywords *keywords);
 
 // Read only the culling fields (rating / flag / color) from a sidecar
 // — a lightweight parse that skips the edit stack and string

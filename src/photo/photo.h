@@ -8,6 +8,7 @@
 #include "gpu/pipeline_graph.h"
 #include "io/raw.h"
 #include "photo/culling.h"
+#include "photo/keywords.h"
 #include "photo/metadata.h"
 
 #include <stdbool.h>
@@ -106,6 +107,14 @@ void             ap_photo_set_rating(ap_photo *photo, int rating);
 void             ap_photo_set_flag(ap_photo *photo, ap_flag flag);
 void             ap_photo_set_color_label(ap_photo *photo,
                                           ap_color_label color);
+
+// Keyword accessors. Keywords are flat strings with hierarchy encoded
+// via AP_KW_SEPARATOR ('|'). The list is owned by the photo and
+// persisted in the sidecar's [metadata] `keywords` array. Mutations
+// are in-memory only until sidecar save (photo close).
+const ap_photo_keywords *ap_photo_get_keywords(const ap_photo *photo);
+bool ap_photo_keyword_add(ap_photo *photo, const char *kw);
+bool ap_photo_keyword_remove(ap_photo *photo, const char *kw);
 
 // Per-photo undo/redo. ap_photo_edit_snapshot captures the current
 // edit stack into the history ring before a mutation. ap_photo_undo /

@@ -67,6 +67,24 @@ static void read_culling(toml_table_t *metadata, ap_photo_culling *out)
     }
 }
 
+// Fill `out` from the [metadata] table's `keywords` array of strings.
+// Each element is passed through ap_photo_keywords_add so normalisation
+// (separator, whitespace) is applied consistently on read.
+static void read_keywords(toml_table_t *metadata, ap_photo_keywords *out)
+{
+    ap_photo_keywords_clear(out);
+    toml_array_t *arr = toml_array_in(metadata, "keywords");
+    if (!arr) return;
+    int n = toml_array_nelem(arr);
+    for (int i = 0; i < n; i++) {
+        toml_datum_t v = toml_string_at(arr, i);
+        if (v.ok) {
+            ap_photo_keywords_add(out, v.u.s);
+            free(v.u.s);
+        }
+    }
+}
+
 // Fill `out` from the [aperture] table's `groups` array of strings.
 static void read_groups(toml_table_t *aperture, ap_photo_groups *out)
 {
@@ -89,7 +107,8 @@ int ap_sidecar_load(const char *source_path, ap_edit_stack *stack,
                     ap_photo_metadata *user_meta,
                     bool user_set[AP_META_FIELD_COUNT],
                     ap_photo_culling *culling,
-                    ap_photo_groups *groups)
+                    ap_photo_groups *groups,
+                    ap_photo_keywords *keywords)
 {
     if (!source_path || !stack) return -1;
 
@@ -130,11 +149,13 @@ int ap_sidecar_load(const char *source_path, ap_edit_stack *stack,
         for (int i = 0; i < AP_META_FIELD_COUNT; i++) user_set[i] = false;
     }
     if (culling) ap_photo_culling_clear(culling);
+    if (keywords) ap_photo_keywords_clear(keywords);
 
     // [metadata] is sparse: only fields the user has overridden are
     // written. A present key with an empty string is a deliberate
     // override (the user blanked the field). The same table also
-    // carries the typed culling fields (rating / flag / color).
+    // carries the typed culling fields (rating / flag / color) and
+    // the `keywords` string array.
     toml_table_t *metadata = toml_table_in(root, "metadata");
     if (metadata && user_meta && user_set) {
         for (int i = 0; i < AP_META_FIELD_COUNT; i++) {
@@ -148,6 +169,9 @@ int ap_sidecar_load(const char *source_path, ap_edit_stack *stack,
     }
     if (metadata && culling) {
         read_culling(metadata, culling);
+    }
+    if (metadata && keywords) {
+        read_keywords(metadata, keywords);
     }
 
     toml_free(root);
@@ -186,7 +210,8 @@ int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
                     const ap_photo_metadata *user_meta,
                     const bool user_set[AP_META_FIELD_COUNT],
                     const ap_photo_culling *culling,
-                    const ap_photo_groups *groups)
+                    const ap_photo_groups *groups,
+                    const ap_photo_keywords *keywords)
 {
     if (!source_path || !stack) return -1;
 
@@ -226,9 +251,9 @@ int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
     if (ap_edit_stack_write_toml(stack, f) != 0) goto io_fail;
 
     // Sparse [metadata] table: the string overrides the user has set,
-    // plus the typed culling fields (rating / flag / color) whenever
-    // they are off their defaults. The table header is emitted once,
-    // only when at least one of the two has content.
+    // plus the typed culling fields (rating / flag / color) and the
+    // `keywords` array whenever they are off their defaults. The table
+    // header is emitted once, only when at least one section has content.
     {
         bool any_meta = false;
         if (user_meta && user_set) {
@@ -236,8 +261,9 @@ int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
                 if (user_set[i]) { any_meta = true; break; }
             }
         }
-        bool any_culling = culling && !ap_photo_culling_is_empty(culling);
-        if (any_meta || any_culling) {
+        bool any_culling  = culling  && !ap_photo_culling_is_empty(culling);
+        bool any_keywords = keywords && !ap_photo_keywords_is_empty(keywords);
+        if (any_meta || any_culling || any_keywords) {
             if (fprintf(f, "\n[metadata]\n") < 0) goto io_fail;
         }
         if (any_meta) {
@@ -272,6 +298,14 @@ int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
                 }
                 if (fputc('\n', f) == EOF) goto io_fail;
             }
+        }
+        if (any_keywords) {
+            if (fputs("keywords = [", f) == EOF) goto io_fail;
+            for (int i = 0; i < keywords->count; i++) {
+                if (i > 0 && fputs(", ", f) == EOF) goto io_fail;
+                if (write_escaped_string(f, keywords->kw[i]) != 0) goto io_fail;
+            }
+            if (fputs("]\n", f) == EOF) goto io_fail;
         }
     }
 
