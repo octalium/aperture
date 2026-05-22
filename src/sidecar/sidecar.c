@@ -260,3 +260,17 @@ int ap_sidecar_load_groups(const char *source_path, ap_photo_groups *out)
     toml_free(root);
     return 0;
 }
+
+int ap_sidecar_remove(const char *source_path)
+{
+    if (!source_path) return -1;
+
+    char path[4096];
+    if (sidecar_path(source_path, path, sizeof(path)) < 0) return -1;
+
+    if (unlink(path) != 0 && errno != ENOENT) {
+        AP_WARN("sidecar: unlink %s: %s", path, strerror(errno));
+        return -1;
+    }
+    return 0;
+}

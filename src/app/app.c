@@ -145,6 +145,7 @@ struct ap_app {
     char             rename_library_input[128];
     bool             save_layout_modal;    // View -> Layout -> Save Current As
     char             save_layout_input[AP_LAYOUT_NAME_LEN];
+    bool             delete_modal;         // Delete key -> confirm prompt
     bool             quit_requested;
 };
 
@@ -942,6 +943,49 @@ static void open_selected_photo(ap_app *app)
     }
 }
 
+// De-index and delete every selected library photo from disk. Drains
+// worker + GPU work first so no in-flight job acts on a library index
+// this removal is about to shift.
+static void delete_grid_selection(ap_app *app)
+{
+    if (!app->library || !app->grid) return;
+    if (ap_grid_selection_count(app->grid) <= 0) return;
+
+    drain_all_workers(app);
+    ap_app_wait_idle(app);
+
+    int focus_cell = ap_grid_selected(app->grid);
+    int removed    = 0;
+
+    // grid_map is ascending in library index, so walking cells
+    // high-to-low removes photos from the back — the indices of the
+    // photos still pending stay valid as we go.
+    for (int c = app->grid_map_count - 1; c >= 0; c--) {
+        if (!ap_grid_is_selected(app->grid, c)) continue;
+        int i = app->grid_map[c];
+        // Leave the open photo — deleting its file out from under the
+        // edit view would strand it. It can be deleted after closing.
+        if (app->photo && i == app->photo_library_idx) continue;
+        if (ap_library_photo_remove(app->library, i) != 0) continue;
+        if (app->photo && i < app->photo_library_idx) {
+            app->photo_library_idx--;
+        }
+        removed++;
+    }
+    if (removed == 0) return;
+
+    rebuild_grid_map(app);
+    if (app->grid_map_count > 0) {
+        int target = focus_cell;
+        if (target >= app->grid_map_count) {
+            target = app->grid_map_count - 1;
+        }
+        if (target < 0) target = 0;
+        ap_grid_select_only(app->grid, target);
+    }
+    AP_INFO("library: deleted %d photo(s)", removed);
+}
+
 static void drive_grid_input(ap_app *app)
 {
     if (!app->library || !app->grid) return;
@@ -950,6 +994,10 @@ static void drive_grid_input(ap_app *app)
 
     ImGuiIO *io = igGetIO_Nil();
     if (!io) return;
+
+    // A popup (confirm modal, context menu) owns input while open —
+    // don't also drive the grid behind it.
+    if (igIsPopupOpen_Str(NULL, ImGuiPopupFlags_AnyPopup)) return;
 
     int win_w = (int)io->DisplaySize.x;
     int win_h = (int)io->DisplaySize.y;
@@ -1013,6 +1061,19 @@ static void drive_grid_input(ap_app *app)
     if (!io->KeyCtrl && (igIsKeyPressed_Bool(ImGuiKey_Enter, false) ||
                          igIsKeyPressed_Bool(ImGuiKey_Space, false))) {
         open_selected_photo(app);
+    }
+
+    // Delete: confirm-then-remove the selection; Shift+Delete skips
+    // the prompt. Gated on WantTextInput so it doesn't fire while a
+    // panel text field (e.g. group rename) is focused.
+    if (!io->WantTextInput &&
+        igIsKeyPressed_Bool(ImGuiKey_Delete, false) &&
+        ap_grid_selection_count(app->grid) > 0) {
+        if (io->KeyShift) {
+            delete_grid_selection(app);
+        } else {
+            app->delete_modal = true;
+        }
     }
 }
 
@@ -1699,6 +1760,44 @@ static void draw_save_layout_modal(ap_app *app)
     igEndPopup();
 }
 
+static void draw_delete_modal(ap_app *app)
+{
+    if (app->delete_modal) {
+        igOpenPopup_Str("Delete Photos", 0);
+        app->delete_modal = false;
+    }
+    if (!igBeginPopupModal("Delete Photos", NULL,
+                           ImGuiWindowFlags_AlwaysAutoResize)) {
+        return;
+    }
+
+    int n = (app->library && app->grid)
+                ? ap_grid_selection_count(app->grid) : 0;
+    if (n <= 0) {
+        igCloseCurrentPopup();
+        igEndPopup();
+        return;
+    }
+
+    const char *s = (n == 1) ? "" : "s";
+    igText("Delete %d photo%s from disk?", n, s);
+    igTextDisabled("The raw file%s and sidecar%s will be removed. "
+                   "This cannot be undone.", s, s);
+    igSeparator();
+
+    bool confirm = igButton("Delete", (ImVec2_c){ 120.0f, 0.0f });
+    igSameLine(0.0f, -1.0f);
+    bool cancel = igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f });
+
+    if (confirm) {
+        delete_grid_selection(app);
+        igCloseCurrentPopup();
+    } else if (cancel) {
+        igCloseCurrentPopup();
+    }
+    igEndPopup();
+}
+
 static void drive_global_hotkeys(ap_app *app)
 {
     ImGuiIO *io = igGetIO_Nil();
@@ -1797,6 +1896,7 @@ int ap_app_run_frame(ap_app *app)
     draw_import_modal(app);
     draw_rename_library_modal(app);
     draw_save_layout_modal(app);
+    draw_delete_modal(app);
     drive_global_hotkeys(app);
 
     // Full-viewport invisible host window owns the dockspace that

@@ -24,6 +24,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 #define APERTURE_DB_VERSION "1"
 
@@ -1443,6 +1444,70 @@ int ap_library_photo_absolute_path(const ap_library *lib, int index,
     int n = snprintf(buf, buflen, "%s/%s", lib->root, lib->photo_paths[index]);
     if (n < 0 || (size_t)n >= buflen) {
         return -1;
+    }
+    return 0;
+}
+
+int ap_library_photo_remove(ap_library *lib, int index)
+{
+    if (!lib || index < 0 || index >= lib->photo_count) {
+        return -1;
+    }
+    const char *rel = lib->photo_paths[index];
+
+    // Delete the raw file and its sidecar from disk. The library holds
+    // an imported copy; the photographer's originals live elsewhere. A
+    // failure here (permissions, already gone) is logged but not fatal
+    // — the de-index proceeds and a later scan reconciles.
+    char abs[4096];
+    if (snprintf(abs, sizeof(abs), "%s/%s", lib->root, rel)
+            < (int)sizeof(abs)) {
+        if (unlink(abs) != 0 && errno != ENOENT) {
+            AP_WARN("library: unlink %s: %s", abs, strerror(errno));
+        }
+        ap_sidecar_remove(abs);
+    }
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(lib->db, "DELETE FROM photos WHERE path = ?;",
+                           -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, rel, -1, SQLITE_STATIC);
+        sqlite3_step(st);
+    }
+    sqlite3_finalize(st);
+    st = NULL;
+    if (sqlite3_prepare_v2(lib->db, "DELETE FROM thumbnails WHERE path = ?;",
+                           -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, rel, -1, SQLITE_STATIC);
+        sqlite3_step(st);
+    }
+    sqlite3_finalize(st);
+
+    free(lib->photo_paths[index]);
+    if (lib->thumbs && lib->thumbs[index]) {
+        ap_thumbnail_destroy(lib->thumbs[index]);
+    }
+
+    int tail = lib->photo_count - index - 1;
+    if (tail > 0) {
+        memmove(&lib->photo_paths[index], &lib->photo_paths[index + 1],
+                (size_t)tail * sizeof(*lib->photo_paths));
+        if (lib->thumbs) {
+            memmove(&lib->thumbs[index], &lib->thumbs[index + 1],
+                    (size_t)tail * sizeof(*lib->thumbs));
+        }
+        if (lib->photo_groups) {
+            memmove(&lib->photo_groups[index], &lib->photo_groups[index + 1],
+                    (size_t)tail * sizeof(*lib->photo_groups));
+        }
+    }
+    lib->photo_count--;
+    lib->photo_paths[lib->photo_count] = NULL;
+    if (lib->thumbs) {
+        lib->thumbs[lib->photo_count] = NULL;
+    }
+    if (lib->thumb_cursor > index) {
+        lib->thumb_cursor--;
     }
     return 0;
 }
