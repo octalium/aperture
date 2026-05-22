@@ -33,20 +33,22 @@ static void library_sort_search_draw(ap_app *app)
         "Filename",
         "Capture time",
         "Date added",
+        "Rating",
     };
     static const ap_library_sort sort_values[] = {
         AP_SORT_PATH,
         AP_SORT_CAPTURE_TIME,
         AP_SORT_ADDED_AT,
+        AP_SORT_RATING,
     };
     int cur_idx = 0;
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 4; i++) {
         if (sort_values[i] == cur_sort) { cur_idx = i; break; }
     }
 
     igSetNextItemWidth(-1.0f);
     if (igBeginCombo("##sort", sort_labels[cur_idx], 0)) {
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < 4; i++) {
             bool sel = (i == cur_idx);
             if (igSelectable_Bool(sort_labels[i], sel, 0,
                                   (ImVec2_c){ 0.0f, 0.0f }) && !sel) {

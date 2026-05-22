@@ -151,6 +151,7 @@ struct ap_app {
 
     ap_library_sort  sort;                     // current photo list order
     char             search_buf[256];          // substring filter; empty = show all
+    ap_culling_filter culling_filter;          // rating / flag / color filter
 
     // Library-grid rubber-band marquee: active while the user drags on
     // empty grid space. Coords are window-absolute screen pixels.
@@ -939,6 +940,19 @@ static void rebuild_grid_map(ap_app *app)
             }
         }
         if (show) {
+            const ap_culling_filter *cf = &app->culling_filter;
+            if (cf->rating_min > 0 || cf->flag != AP_FLAG_NONE ||
+                    cf->color != AP_COLOR_NONE) {
+                ap_photo_culling c = ap_library_photo_culling(app->library, i);
+                if (cf->rating_min > 0 && c.rating < cf->rating_min)
+                    show = false;
+                if (show && cf->flag != AP_FLAG_NONE && c.flag != cf->flag)
+                    show = false;
+                if (show && cf->color != AP_COLOR_NONE && c.color != cf->color)
+                    show = false;
+            }
+        }
+        if (show) {
             app->grid_map[app->grid_map_count++] = i;
         }
     }
@@ -1011,6 +1025,7 @@ int ap_app_open_library(ap_app *app, const char *path)
     app->group_filter_name[0] = '\0';
     app->sort                 = AP_SORT_PATH;
     app->search_buf[0]        = '\0';
+    app->culling_filter       = (ap_culling_filter){ 0, AP_FLAG_NONE, AP_COLOR_NONE };
     rebuild_grid_map(app);
     app->mode = AP_MODE_LIBRARY;
     bind_mode_view(app);
@@ -1265,6 +1280,19 @@ void ap_app_set_search(ap_app *app, const char *query)
 const char *ap_app_search(const ap_app *app)
 {
     return app ? app->search_buf : "";
+}
+
+ap_culling_filter ap_app_culling_filter(const ap_app *app)
+{
+    if (!app) return (ap_culling_filter){ 0, AP_FLAG_NONE, AP_COLOR_NONE };
+    return app->culling_filter;
+}
+
+void ap_app_set_culling_filter(ap_app *app, ap_culling_filter filter)
+{
+    if (!app) return;
+    app->culling_filter = filter;
+    rebuild_grid_map(app);
 }
 
 int ap_app_grid_selection_count(const ap_app *app)
