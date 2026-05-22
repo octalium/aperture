@@ -2,6 +2,7 @@
 
 #include "app/app.h"
 #include "edit/stack.h"
+#include "gpu/pipeline_graph.h"
 #include "library/library.h"
 #include "modules/module.h"
 #include "photo/photo.h"
@@ -160,6 +161,8 @@ static void edits_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
     int  drag_src       = -1;
     int  drag_dst       = -1;
     bool changed        = false;
+    int  toggled_idx    = -1;   // entry_idx of the last enable checkbox
+    bool toggled_val    = false; // new enabled value for that entry
 
     for (int i = 0; i < n; i++) {
         ap_edit_entry *e = ap_edit_stack_at(stack, i);
@@ -171,8 +174,10 @@ static void edits_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
 
         bool enabled = e->enabled;
         if (igCheckbox("##en", &enabled)) {
-            e->enabled = enabled;
-            changed = true;
+            e->enabled   = enabled;
+            toggled_idx  = i;
+            toggled_val  = enabled;
+            changed      = true;
         }
         igSameLine(0.0f, -1.0f);
 
@@ -255,7 +260,26 @@ static void edits_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
 
     igEnd();
 
-    if (changed) rebuild_after_change(app, photo);
+    if (changed) {
+        // A pure enable/disable toggle can update the stage skip flag
+        // in the existing graph without tearing it down and rebuilding.
+        // If set_stage_skip returns -1 the stage isn't in the graph
+        // (e.g. demosaic, which can't be skipped via copy), so fall
+        // back to a full rebuild. Any structural change (remove, reorder,
+        // reset) always rebuilds.
+        bool needs_rebuild = (drag_src >= 0 || do_reset >= 0 ||
+                              do_remove >= 0);
+        if (!needs_rebuild && toggled_idx >= 0) {
+            ap_pipeline_graph *graph = ap_photo_graph(photo);
+            if (!graph || ap_pipeline_graph_set_stage_skip(
+                              graph, toggled_idx, !toggled_val) != 0) {
+                needs_rebuild = true;
+            }
+        } else if (toggled_idx < 0) {
+            needs_rebuild = true;
+        }
+        if (needs_rebuild) rebuild_after_change(app, photo);
+    }
 }
 
 // ---- Tools window ---------------------------------------------------

@@ -31,6 +31,20 @@ typedef struct {
     VkImage                lut_image;
     VkDeviceMemory         lut_memory;
     VkImageView            lut_view;
+
+    // Runtime skip: when true, the stage is not dispatched. For
+    // single-pass stages and the last pass of multi-pass modules,
+    // the runner instead copies module_in_image -> write_image to
+    // preserve the ping-pong invariant. Intermediate passes of a
+    // multi-pass module (is_last_pass == false) are simply skipped
+    // with no copy — only the final pass's copy matters.
+    bool                   skip;
+    bool                   is_last_pass;   // true for single-pass and
+                                           // for the last pass of a
+                                           // multi-pass module
+    VkImage                module_in_image; // image feeding this module's
+                                            // first pass; used for the
+                                            // skip passthrough copy
 } graph_stage;
 
 struct ap_pipeline_graph {
