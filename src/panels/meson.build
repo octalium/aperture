@@ -4,5 +4,5 @@ aperture_sources += files(
   'library_pipelines.c',
   'photo_edit.c',
   'photo_metadata.c',
-  'registry.c',
+  'panel_table.c',
 )

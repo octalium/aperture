@@ -28,7 +28,7 @@ struct ap_panel {
 };
 
 // NULL-terminated array of registered panels. Defined in
-// src/panels/registry.c. Adding a panel: create a file in
+// src/panels/panel_table.c. Adding a panel: create a file in
 // src/panels/, declare a `const ap_panel panel_<name>`, add it to
 // the registry array, add to src/panels/meson.build.
 extern const ap_panel *const ap_panel_registry[];
