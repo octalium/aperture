@@ -11,7 +11,10 @@
 #include "gpu/pipeline_graph.h"
 #include "library/import.h"
 #include "library/library.h"
+#include "output/export.h"
 #include "output/jpeg.h"
+#include "output/png.h"
+#include "output/tiff.h"
 #include "panels/panels.h"
 #include "photo/photo.h"
 #include "photo/thumbnail.h"
@@ -26,6 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
 // Decode-on-worker job for one thumbnail. Submitter (main thread)
 // fills `path` + `idx`, and — when the library has a fresh
@@ -60,14 +64,20 @@ typedef struct {
     int          ok;
 } photo_open_job;
 
-// JPEG-encode-on-worker job for an interactive export. Main thread
-// does the GPU readback (fast), then submits this job with the RGBA
-// buffer + output path + quality. Worker writes the file and sets ok.
+// Encode-on-worker job for an interactive export. Main thread does the
+// GPU readback (fast), then submits this job with the framed RGBA
+// buffer + output path + format settings. Worker writes the file in
+// the configured format and sets ok. `format` selects which encoder
+// runs; the per-format fields are read only when they apply.
 typedef struct {
     ap_work_item base;
     uint8_t     *rgba;
     int          width, height;
-    int          quality;
+    int          format;          // ap_export_format
+    int          jpeg_quality;    // JPEG
+    int          png_depth;       // PNG  (ap_png_depth)
+    int          tiff_depth;      // TIFF (ap_tiff_depth)
+    int          tiff_compress;   // TIFF (ap_tiff_compress)
     char         out_path[4096];
     int          ok;
 } export_job;
@@ -159,6 +169,11 @@ struct ap_app {
     char               import_source[4096];
     ap_import_settings import_settings;
     char               import_status[160];
+
+    // Export mode: the contextual panels read and write this struct;
+    // it is loaded from the library on entering the mode and saved
+    // back after a successful export.
+    ap_export_settings export_settings;
     bool             rename_library_modal; // Library indicator -> Rename
     char             rename_library_input[128];
     bool             save_layout_modal;    // View -> Layout -> Save Current As
@@ -380,10 +395,11 @@ ap_mode ap_app_mode(const ap_app *app)
 static void bind_mode_view(ap_app *app)
 {
     if (!app || !app->gpu) return;
-    if (app->mode == AP_MODE_PHOTO) {
-        // Canvas binds whenever we are in photo mode, even before the
+    if (app->mode == AP_MODE_PHOTO || app->mode == AP_MODE_EXPORT) {
+        // Canvas binds in photo and export mode, even before the
         // photo's pipeline is built. With no input view, ap_canvas_record
-        // early-returns and draw_loading_overlay covers the gap.
+        // early-returns and draw_loading_overlay covers the gap. Export
+        // mode reuses the canvas as a live preview of the open photo.
         ap_gpu_set_grid(app->gpu, NULL);
         ap_gpu_set_canvas(app->gpu, app->canvas);
     } else {
@@ -628,16 +644,178 @@ int ap_app_request_jpeg_export(ap_app *app, ap_photo *photo,
         free(rgba);
         return -1;
     }
-    j->base.run = export_job_run;
-    j->rgba    = rgba;
-    j->width   = w;
-    j->height  = h;
-    j->quality = quality;
+    j->base.run     = export_job_run;
+    j->rgba         = rgba;
+    j->width        = w;
+    j->height       = h;
+    j->format       = AP_EXPORT_FORMAT_JPEG;
+    j->jpeg_quality = quality;
     snprintf(j->out_path, sizeof(j->out_path), "%s", out_path);
 
     app->export_inflight++;
     AP_INFO("export: queued %s (%dx%d, q=%d)", j->out_path, w, h, quality);
     ap_worker_pool_submit(app->workers, &j->base);
+    return 0;
+}
+
+// Read back the open photo's rendered output, frame it through its
+// viewport, and queue an encode job in the configured format. Shared
+// by ap_app_run_export; the caller owns the collision-policy and
+// directory-creation decisions and passes a final `out_path`.
+static int queue_export_job(ap_app *app, ap_photo *photo,
+                            const ap_export_settings *s,
+                            const char *out_path)
+{
+    int w = ap_photo_width(photo);
+    int h = ap_photo_height(photo);
+    if (w <= 0 || h <= 0) return -1;
+
+    size_t bytes = (size_t)w * (size_t)h * 4u;
+    uint8_t *rgba = malloc(bytes);
+    if (!rgba) {
+        AP_ERROR("export: out of memory (%zu bytes)", bytes);
+        return -1;
+    }
+    if (ap_pipeline_graph_readback(ap_photo_graph(photo), rgba, bytes) != 0) {
+        free(rgba);
+        return -1;
+    }
+
+    {
+        ap_viewport vp = ap_photo_viewport(photo);
+        int framed_w = 0, framed_h = 0;
+        uint8_t *framed = ap_viewport_resample_rgba8(&vp, rgba, w, h,
+                                                     &framed_w, &framed_h);
+        if (!framed) {
+            AP_ERROR("export: out of memory framing the export");
+            free(rgba);
+            return -1;
+        }
+        free(rgba);
+        rgba = framed;
+        w = framed_w;
+        h = framed_h;
+    }
+
+    export_job *j = calloc(1, sizeof(*j));
+    if (!j) {
+        AP_ERROR("export: job alloc failed");
+        free(rgba);
+        return -1;
+    }
+    j->base.run       = export_job_run;
+    j->rgba           = rgba;
+    j->width          = w;
+    j->height         = h;
+    j->format         = s->format;
+    j->jpeg_quality   = s->jpeg_quality;
+    j->png_depth      = s->png_depth;
+    j->tiff_depth     = s->tiff_depth;
+    j->tiff_compress  = s->tiff_compress;
+    snprintf(j->out_path, sizeof(j->out_path), "%s", out_path);
+
+    app->export_inflight++;
+    AP_INFO("export: queued %s (%dx%d, format=%d)",
+            j->out_path, w, h, s->format);
+    ap_worker_pool_submit(app->workers, &j->base);
+    return 0;
+}
+
+ap_export_settings *ap_app_export_settings(ap_app *app)
+{
+    return app ? &app->export_settings : NULL;
+}
+
+void ap_app_enter_export(ap_app *app)
+{
+    if (!app || !app->photo) return;
+    ap_export_settings_load(app->library, &app->export_settings);
+    app->mode = AP_MODE_EXPORT;
+    bind_mode_view(app);
+}
+
+int ap_app_run_export(ap_app *app)
+{
+    if (!app || !app->photo) return -1;
+    const ap_export_settings *s = &app->export_settings;
+
+    const char *src = ap_photo_path(app->photo);
+
+    // Source basename without its extension — the export stem builder
+    // works from this.
+    const char *slash = strrchr(src, '/');
+    const char *base  = slash ? slash + 1 : src;
+    char src_stem[1024];
+    snprintf(src_stem, sizeof(src_stem), "%s", base);
+    char *dot = strrchr(src_stem, '.');
+    if (dot) *dot = '\0';
+
+    char dir[4096];
+    if (ap_export_resolve_dir(s, src,
+                              app->library ? ap_library_root(app->library)
+                                           : NULL,
+                              dir, sizeof(dir)) != 0) {
+        ap_toast_push(AP_TOAST_ERROR, "Export: bad destination.");
+        return -1;
+    }
+    if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+        AP_ERROR("export: mkdir(%s): %s", dir, strerror(errno));
+        ap_toast_push(AP_TOAST_ERROR, "Export: cannot create folder.");
+        return -1;
+    }
+
+    // The capture-time / mtime feeding the naming tokens: the source
+    // file's modification time. EXIF capture time would be preferable
+    // but is not exposed off the metadata table here; mtime is a sane
+    // stand-in and matches what the import path falls back to.
+    time_t when = time(NULL);
+    {
+        struct stat st;
+        if (stat(src, &st) == 0) when = st.st_mtime;
+    }
+
+    char stem[1024];
+    ap_export_format_stem(s, src_stem, when, 1, stem, sizeof(stem));
+    const char *ext = ap_export_format_extension(s->format);
+
+    char out[4096];
+    int n = snprintf(out, sizeof(out), "%s/%s.%s", dir, stem, ext);
+    if (n <= 0 || (size_t)n >= sizeof(out)) {
+        AP_ERROR("export: output path too long");
+        ap_toast_push(AP_TOAST_ERROR, "Export: path too long.");
+        return -1;
+    }
+
+    // Collision policy. SKIP bails; SUFFIX walks _1, _2, ... until a
+    // free name is found; OVERWRITE leaves `out` as-is.
+    struct stat st;
+    if (stat(out, &st) == 0) {
+        if (s->collision == AP_EXPORT_COLLIDE_SKIP) {
+            ap_toast_push(AP_TOAST_INFO, "Export skipped — file exists.");
+            return 1;
+        }
+        if (s->collision == AP_EXPORT_COLLIDE_SUFFIX) {
+            int suffix = 1;
+            do {
+                n = snprintf(out, sizeof(out), "%s/%s_%d.%s",
+                             dir, stem, suffix, ext);
+                if (n <= 0 || (size_t)n >= sizeof(out)) {
+                    AP_ERROR("export: suffixed path too long");
+                    ap_toast_push(AP_TOAST_ERROR, "Export: path too long.");
+                    return -1;
+                }
+                suffix++;
+            } while (stat(out, &st) == 0 && suffix < 10000);
+        }
+    }
+
+    if (queue_export_job(app, app->photo, s, out) != 0) {
+        ap_toast_push(AP_TOAST_ERROR, "Export failed — see the log.");
+        return -1;
+    }
+
+    // Persist the settings now that the user has committed to them.
+    ap_export_settings_save(app->library, &app->export_settings);
     return 0;
 }
 
@@ -1083,34 +1261,12 @@ static void navigate_library_relative(ap_app *app, int dir)
     ap_app_open_photo(app, abs);
 }
 
-static void drive_canvas_input(ap_app *app)
+// Pan / zoom the canvas from the mouse and the F / 0 / 1 view keys.
+// Shared by photo mode and export mode — both present a single photo
+// on the canvas with the same manipulation feel. Skips entirely while
+// ImGui owns the mouse so panel drags don't pan the image.
+static void drive_canvas_view(ap_app *app, ImGuiIO *io)
 {
-    if (!app->canvas || !app->photo) return;
-
-    ImGuiIO *io = igGetIO_Nil();
-    if (!io) return;
-
-    if (igIsKeyPressed_Bool(ImGuiKey_Escape, false)) {
-        ap_app_close_photo(app);
-        return;
-    }
-
-    // Prev/next photo. Gate on WantTextInput, not WantCaptureKeyboard:
-    // the always-present docked panels keep WantCaptureKeyboard true,
-    // which would block navigation entirely. WantTextInput is only
-    // set while an actual text field (e.g. the rename box) is active,
-    // which is the one case where arrows should be left to ImGui.
-    if (!io->WantTextInput) {
-        if (igIsKeyPressed_Bool(ImGuiKey_RightArrow, true)) {
-            navigate_library_relative(app, +1);
-            return;
-        }
-        if (igIsKeyPressed_Bool(ImGuiKey_LeftArrow, true)) {
-            navigate_library_relative(app, -1);
-            return;
-        }
-    }
-
     if (io->WantCaptureMouse) return;
 
     int win_w = (int)io->DisplaySize.x;
@@ -1152,7 +1308,56 @@ static void drive_canvas_input(ap_app *app)
     } else if (igIsKeyPressed_Bool(ImGuiKey_1, false)) {
         ap_canvas_set_zoom(app->canvas, 1.0f, win_w, win_h);
     }
+}
 
+static void drive_canvas_input(ap_app *app)
+{
+    if (!app->canvas || !app->photo) return;
+
+    ImGuiIO *io = igGetIO_Nil();
+    if (!io) return;
+
+    if (igIsKeyPressed_Bool(ImGuiKey_Escape, false)) {
+        ap_app_close_photo(app);
+        return;
+    }
+
+    // Prev/next photo. Gate on WantTextInput, not WantCaptureKeyboard:
+    // the always-present docked panels keep WantCaptureKeyboard true,
+    // which would block navigation entirely. WantTextInput is only
+    // set while an actual text field (e.g. the rename box) is active,
+    // which is the one case where arrows should be left to ImGui.
+    if (!io->WantTextInput) {
+        if (igIsKeyPressed_Bool(ImGuiKey_RightArrow, true)) {
+            navigate_library_relative(app, +1);
+            return;
+        }
+        if (igIsKeyPressed_Bool(ImGuiKey_LeftArrow, true)) {
+            navigate_library_relative(app, -1);
+            return;
+        }
+    }
+
+    drive_canvas_view(app, io);
+}
+
+// Export-mode canvas input. The same pan / zoom feel as photo mode,
+// but Esc backs out to photo mode rather than closing the photo —
+// the photo is the export subject and stays open.
+static void drive_export_input(ap_app *app)
+{
+    if (!app->canvas || !app->photo) return;
+
+    ImGuiIO *io = igGetIO_Nil();
+    if (!io) return;
+
+    if (!io->WantTextInput && igIsKeyPressed_Bool(ImGuiKey_Escape, false)) {
+        app->mode = AP_MODE_PHOTO;
+        bind_mode_view(app);
+        return;
+    }
+
+    drive_canvas_view(app, io);
 }
 
 static void open_selected_photo(ap_app *app)
@@ -1767,8 +1972,30 @@ static void handle_photo_open_complete(ap_app *app, photo_open_job *j)
 static void export_job_run(ap_work_item *self)
 {
     export_job *j = (export_job *)self;
-    j->ok = (ap_export_jpeg(j->rgba, j->width, j->height,
-                            j->out_path, j->quality) == 0);
+    int rc;
+    switch (j->format) {
+    case AP_EXPORT_FORMAT_TIFF:
+        // The GPU readback is 8-bit sRGB RGBA; a UINT16 TIFF still
+        // gets a wider container (libtiff expands the 8-bit samples)
+        // even though no extra precision is recovered from the
+        // readback. No ICC blob is embedded yet — see issue #206.
+        rc = ap_export_tiff(j->rgba, NULL, j->width, j->height,
+                            (ap_tiff_depth)j->tiff_depth,
+                            (ap_tiff_compress)j->tiff_compress,
+                            NULL, 0, j->out_path);
+        break;
+    case AP_EXPORT_FORMAT_PNG:
+        rc = ap_export_png(j->rgba, j->width, j->height,
+                           (ap_png_depth)j->png_depth,
+                           NULL, 0, j->out_path);
+        break;
+    case AP_EXPORT_FORMAT_JPEG:
+    default:
+        rc = ap_export_jpeg(j->rgba, j->width, j->height,
+                            j->out_path, j->jpeg_quality);
+        break;
+    }
+    j->ok = (rc == 0);
     if (!j->ok) {
         AP_ERROR("export: failed to write %s", j->out_path);
     }
@@ -1939,9 +2166,14 @@ static void draw_menubar(ap_app *app)
 
         igSeparator();
 
-        if (igMenuItem_Bool("Export", "Ctrl+E",
+        if (igMenuItem_Bool("Quick Export", "Ctrl+E",
                             false, app->photo != NULL)) {
             trigger_quick_export(app);
+        }
+        if (igMenuItem_Bool("Export...", NULL,
+                            app->mode == AP_MODE_EXPORT,
+                            app->photo != NULL)) {
+            ap_app_enter_export(app);
         }
 
         igSeparator();
@@ -1978,7 +2210,8 @@ static void draw_menubar(ap_app *app)
     if (igBeginMenu("View", true)) {
         bool show = app->show_panels;
         const char *panels_sc =
-            (app->mode == AP_MODE_PHOTO) ? "Space" : NULL;
+            (app->mode == AP_MODE_PHOTO || app->mode == AP_MODE_EXPORT)
+                ? "Space" : NULL;
         if (igMenuItem_BoolPtr("Show Panels", panels_sc, &show, true)) {
             app->show_panels = show;
         }
@@ -2303,13 +2536,14 @@ static void drive_global_hotkeys(ap_app *app)
     ImGuiIO *io = igGetIO_Nil();
     if (!io) return;
 
-    // Bare Space in photo mode toggles panel visibility. The canvas
-    // owns the keyboard there and Space is otherwise idle. Library
-    // mode has no shortcut - bare Space there is "open selected
-    // photo" and the View menu still has a clickable toggle. The
-    // WantTextInput guard keeps text fields (the rename box, etc.)
+    // Bare Space in photo / export mode toggles panel visibility. The
+    // canvas owns the keyboard there and Space is otherwise idle.
+    // Library mode has no shortcut - bare Space there is "open
+    // selected photo" and the View menu still has a clickable toggle.
+    // The WantTextInput guard keeps text fields (the rename box, etc.)
     // typeable.
-    if (app->mode == AP_MODE_PHOTO && !io->WantTextInput
+    if ((app->mode == AP_MODE_PHOTO || app->mode == AP_MODE_EXPORT)
+        && !io->WantTextInput
         && igIsKeyPressed_Bool(ImGuiKey_Space, false)) {
         app->show_panels = !app->show_panels;
     }
@@ -2577,6 +2811,13 @@ int ap_app_run_frame(ap_app *app)
             igDockBuilderDockWindow("Pipelines##library",     right_bot);
             igDockBuilderDockWindow("Groups##library",        right_bot);
             igDockBuilderDockWindow("Sort & Search##library", right_bot);
+            // Export-mode panels: Format / Quality / Naming up the
+            // right column, Destination in the bottom-right slot with
+            // the action button. Mode-gated like the library panels.
+            igDockBuilderDockWindow("Format##export",      right_top);
+            igDockBuilderDockWindow("Quality##export",     right_mid);
+            igDockBuilderDockWindow("Naming##export",      right_mid);
+            igDockBuilderDockWindow("Destination##export", right_bot);
             igDockBuilderFinish(dockspace_id);
         }
         igDockSpace(dockspace_id,
@@ -2622,6 +2863,9 @@ int ap_app_run_frame(ap_app *app)
 
     if (app->mode == AP_MODE_PHOTO && !app->photo_loading) {
         drive_canvas_input(app);
+        draw_canvas_zoom_overlay(app);
+    } else if (app->mode == AP_MODE_EXPORT && !app->photo_loading) {
+        drive_export_input(app);
         draw_canvas_zoom_overlay(app);
     } else if (app->mode == AP_MODE_LIBRARY && !app->photo_loading) {
         drive_grid_input(app);

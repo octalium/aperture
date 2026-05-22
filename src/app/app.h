@@ -3,6 +3,7 @@
 
 #include "edit/stack.h"
 #include "library/library.h"
+#include "output/export.h"
 #include "photo/metadata.h"
 
 #include <stdbool.h>
@@ -75,6 +76,26 @@ void ap_app_rebuild_photo_graph(ap_app *app);
 // 0 if the readback succeeded and the encode job was queued.
 int       ap_app_request_jpeg_export(ap_app *app, ap_photo *photo,
                                      const char *out_path, int quality);
+
+// Export mode. AP_MODE_EXPORT shows the open photo on the canvas with
+// the contextual Format / Quality / Naming / Destination panels. The
+// app owns one ap_export_settings struct, loaded from the library on
+// entry and saved back on a successful export; the panels mutate it
+// in place.
+ap_export_settings *ap_app_export_settings(ap_app *app);
+
+// Enter Export mode. Requires an open photo (it is the export
+// subject). Loads the export settings from the library. No-op when no
+// photo is open.
+void ap_app_enter_export(ap_app *app);
+
+// Resolve the export settings into a concrete output path for the
+// currently-open photo and run the encode. Performs a synchronous GPU
+// readback, then queues the format-appropriate encode job on a worker.
+// Honours the collision policy (overwrite / auto-suffix / skip).
+// Returns 0 when the encode job was queued, 1 when the export was
+// skipped by the collision policy, -1 on error.
+int ap_app_run_export(ap_app *app);
 
 // Library lifecycle. Opening a library transitions to AP_MODE_LIBRARY
 // and closes any currently-open photo. Opening a different library
