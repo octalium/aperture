@@ -2618,6 +2618,13 @@ int ap_app_run_frame(ap_app *app)
             igDockBuilderDockWindow("Pipelines##library",     right_bot);
             igDockBuilderDockWindow("Groups##library",        right_bot);
             igDockBuilderDockWindow("Sort & Search##library", right_bot);
+            // Export-mode panels: Format / Quality / Naming up the
+            // right column, Destination in the bottom-right slot with
+            // the action button. Mode-gated like the library panels.
+            igDockBuilderDockWindow("Format##export",      right_top);
+            igDockBuilderDockWindow("Quality##export",     right_mid);
+            igDockBuilderDockWindow("Naming##export",      right_mid);
+            igDockBuilderDockWindow("Destination##export", right_bot);
             igDockBuilderFinish(dockspace_id);
         }
         igDockSpace(dockspace_id,
