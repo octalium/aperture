@@ -263,8 +263,40 @@ static int import_one(const char *src, const char *dest_dir,
 
 // ----- recursive walk -----------------------------------------------
 
-static void import_walk(const char *src_dir, const char *dest_dir,
-                        const ap_import_settings *s, int *seq, int *copied)
+// Dynamic list of raw-file paths collected during the directory walk.
+typedef struct {
+    char  **paths;
+    int     count;
+    int     capacity;
+} raw_list;
+
+static int raw_list_push(raw_list *list, const char *path)
+{
+    if (list->count == list->capacity) {
+        int cap = list->capacity ? list->capacity * 2 : 64;
+        char **p = realloc(list->paths, (size_t)cap * sizeof(*p));
+        if (!p) return -1;
+        list->paths = p;
+        list->capacity = cap;
+    }
+    list->paths[list->count] = strdup(path);
+    if (!list->paths[list->count]) return -1;
+    list->count++;
+    return 0;
+}
+
+static void raw_list_free(raw_list *list)
+{
+    for (int i = 0; i < list->count; i++) free(list->paths[i]);
+    free(list->paths);
+}
+
+static int cmp_str(const void *a, const void *b)
+{
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+static void import_collect(const char *src_dir, raw_list *list)
 {
     DIR *d = opendir(src_dir);
     if (!d) {
@@ -286,10 +318,9 @@ static void import_walk(const char *src_dir, const char *dest_dir,
             continue;
         }
         if (S_ISDIR(st.st_mode)) {
-            import_walk(child, dest_dir, s, seq, copied);
+            import_collect(child, list);
         } else if (S_ISREG(st.st_mode) && ap_raw_is_raw_path(ent->d_name)) {
-            (*seq)++;
-            *copied += import_one(child, dest_dir, s, *seq);
+            raw_list_push(list, child);
         }
     }
     closedir(d);
@@ -328,14 +359,23 @@ int ap_import_run(ap_library *lib, const char *src_dir,
         return -1;
     }
 
-    int seq = 0;
+    // Collect all raw paths, sort for deterministic {SEQ} numbering,
+    // then process in order.
+    raw_list list = {0};
+    import_collect(src_dir, &list);
+    qsort(list.paths, (size_t)list.count, sizeof(*list.paths), cmp_str);
+
     int copied = 0;
-    import_walk(src_dir, dest_dir, s, &seq, &copied);
+    for (int i = 0; i < list.count; i++) {
+        copied += import_one(list.paths[i], dest_dir, s, i + 1);
+    }
+    int total = list.count;
+    raw_list_free(&list);
 
     if (out_imported) {
         *out_imported = copied;
     }
     AP_INFO("import: copied %d of %d raw file(s) from %s into %s",
-            copied, seq, src_dir, dest_dir);
+            copied, total, src_dir, dest_dir);
     return 0;
 }
