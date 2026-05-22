@@ -189,6 +189,28 @@ ap_library_sort ap_app_sort(const ap_app *app);
 void        ap_app_set_search(ap_app *app, const char *query);
 const char *ap_app_search(const ap_app *app);
 
+// Library-grid culling filter. Each field is independent; unset fields
+// pass all photos. Rebuilds the grid map immediately.
+//
+// rating_min: only show photos with rating >= this value.
+//   0 = show all (no rating floor).
+// flag_filter: AP_FLAG_NONE = show all; AP_FLAG_PICK / AP_FLAG_REJECT
+//   = show only photos with that flag.
+// color_filter: AP_COLOR_NONE = show all; other values restrict to that
+//   label.
+//
+// ap_app_culling_filter returns the active filter by value.
+// ap_app_set_culling_filter replaces all three fields atomically.
+typedef struct {
+    int            rating_min;   // 0 = off; 1-5 = minimum inclusive
+    ap_flag        flag;         // AP_FLAG_NONE = off
+    ap_color_label color;        // AP_COLOR_NONE = off
+} ap_culling_filter;
+
+ap_culling_filter ap_app_culling_filter(const ap_app *app);
+void              ap_app_set_culling_filter(ap_app *app,
+                                            ap_culling_filter filter);
+
 #ifdef __cplusplus
 }
 #endif

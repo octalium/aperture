@@ -4,6 +4,7 @@ aperture_sources += files(
   'export_naming.c',
   'export_quality.c',
   'library_empty_state.c',
+  'library_filter.c',
   'library_groups.c',
   'library_metadata.c',
   'library_pipelines.c',
