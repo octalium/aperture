@@ -17,6 +17,7 @@
 #include "photo/thumbnail.h"
 #include "ui/file_dialog.h"
 #include "ui/imgui.h"
+#include "ui/toast.h"
 
 #include "cimgui.h"
 
@@ -61,13 +62,14 @@ typedef struct {
 
 // JPEG-encode-on-worker job for an interactive export. Main thread
 // does the GPU readback (fast), then submits this job with the RGBA
-// buffer + output path + quality. Worker writes the file.
+// buffer + output path + quality. Worker writes the file and sets ok.
 typedef struct {
     ap_work_item base;
     uint8_t     *rgba;
     int          width, height;
     int          quality;
     char         out_path[4096];
+    int          ok;
 } export_job;
 
 // Edit-render thumbnail encode job. Main thread does the sync GPU
@@ -1311,8 +1313,9 @@ static void handle_photo_open_complete(ap_app *app, photo_open_job *j)
 static void export_job_run(ap_work_item *self)
 {
     export_job *j = (export_job *)self;
-    if (ap_export_jpeg(j->rgba, j->width, j->height,
-                       j->out_path, j->quality) != 0) {
+    j->ok = (ap_export_jpeg(j->rgba, j->width, j->height,
+                            j->out_path, j->quality) == 0);
+    if (!j->ok) {
         AP_ERROR("export: failed to write %s", j->out_path);
     }
 }
@@ -1320,6 +1323,15 @@ static void export_job_run(ap_work_item *self)
 static void handle_export_complete(ap_app *app, export_job *j)
 {
     if (app->export_inflight > 0) app->export_inflight--;
+    if (j->ok) {
+        // Show only the filename component — paths can be long and the
+        // toast card is narrow.
+        const char *slash = strrchr(j->out_path, '/');
+        const char *name  = slash ? slash + 1 : j->out_path;
+        ap_toast_push(AP_TOAST_INFO, "Saved %s", name);
+    } else {
+        ap_toast_push(AP_TOAST_ERROR, "Export failed — see the log.");
+    }
     free(j->rgba);
     free(j);
 }
@@ -1624,6 +1636,28 @@ static void draw_menubar(ap_app *app)
             }
         }
         igEndMenu();
+    }
+
+    if (app->export_inflight > 0) {
+        // Right-align the in-flight indicator.  Build the label first so
+        // we know its width, then back-track the cursor to place it flush
+        // with the right edge of the menubar.
+        char exporting[40];
+        if (app->export_inflight == 1) {
+            snprintf(exporting, sizeof(exporting), "Exporting...");
+        } else {
+            snprintf(exporting, sizeof(exporting),
+                     "Exporting (%d)...", app->export_inflight);
+        }
+        ImVec2_c label_sz = igCalcTextSize(exporting, NULL, false, -1.0f);
+        ImGuiStyle *style = igGetStyle();
+        float right_x = igGetWindowWidth()
+                        - label_sz.x
+                        - style->FramePadding.x * 2.0f
+                        - style->ItemSpacing.x;
+        igSetCursorPosX(right_x);
+        ImVec4_c dim = { 0.75f, 0.75f, 0.75f, 1.0f };
+        igTextColored(dim, "%s", exporting);
     }
 
     igEndMainMenuBar();
@@ -2067,6 +2101,7 @@ int ap_app_run_frame(ap_app *app)
     }
     drain_one_completed_job(app);
     draw_loading_overlay(app);
+    ap_toast_draw();
 
     // Push the active viewport to the canvas every frame — the
     // pipeline renders full-frame, the canvas applies the Transform
