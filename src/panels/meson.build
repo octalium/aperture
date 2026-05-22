@@ -1,7 +1,9 @@
 aperture_sources += files(
+  'export_batch.c',
   'export_destination.c',
   'export_format.c',
   'export_naming.c',
+  'export_presets.c',
   'export_quality.c',
   'library_empty_state.c',
   'library_groups.c',
