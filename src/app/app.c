@@ -165,6 +165,10 @@ struct ap_app {
     ap_edit_stack      edit_clipboard;       // copy/paste edits between photos
     bool               edit_clipboard_valid; // true once copy has been called
 
+    bool               compare_original;    // hold-to-bypass: skip all user
+                                           // edit stages, show the unedited
+                                           // demosaic'd image.
+
     bool               import_modal;        // File -> Import
     char               import_source[4096];
     ap_import_settings import_settings;
@@ -428,6 +432,7 @@ static void photo_open_job_run(ap_work_item *self)
 static void release_photo(ap_app *app)
 {
     if (!app->photo) return;
+    app->compare_original = false;
     ap_app_wait_idle(app);
     ap_canvas_set_input(app->canvas, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
     ap_gpu_set_graph(app->gpu, NULL);
@@ -592,11 +597,56 @@ void ap_app_rebuild_photo_graph(ap_app *app)
                         ap_pipeline_graph_output_sampler(graph),
                         ap_pipeline_graph_output_width(graph),
                         ap_pipeline_graph_output_height(graph));
+
+    // If the before/after compare was active when the graph was rebuilt,
+    // re-apply the bypass to the new graph. The rebuild produced fresh
+    // stages with skip flags matching the entries' enabled state; we
+    // need to override them again.
+    if (app->compare_original) {
+        app->compare_original = false;   // clear so set_ sees a change
+        ap_app_set_compare_original(app, true);
+    }
 }
 
 bool ap_app_photo_loading(const ap_app *app)
 {
     return app ? app->photo_loading : false;
+}
+
+bool ap_app_compare_original(const ap_app *app)
+{
+    return app ? app->compare_original : false;
+}
+
+void ap_app_set_compare_original(ap_app *app, bool on)
+{
+    if (!app || !app->photo) return;
+    if (app->compare_original == on) return;
+    app->compare_original = on;
+
+    ap_pipeline_graph *graph = ap_photo_graph(app->photo);
+    if (!graph) return;
+
+    // Skip (or restore) every stage that belongs to a user-edit stack
+    // entry. Transport stages (demosaic, raw_passthrough, output_transfer)
+    // have entry_idx == -1 and are left untouched so the display pipeline
+    // stays coherent.
+    //
+    // When restoring (on = false) we reinstate the entry's own enabled
+    // flag rather than force-enabling everything: a disabled entry must
+    // stay skipped even after the compare ends.
+    const ap_edit_stack *stack = ap_photo_stack(app->photo);
+    int n = stack ? ap_edit_stack_count(stack) : 0;
+    for (int i = 0; i < n; i++) {
+        bool want_skip;
+        if (on) {
+            want_skip = true;
+        } else {
+            const ap_edit_entry *e = ap_edit_stack_at_const(stack, i);
+            want_skip = e ? !e->enabled : false;
+        }
+        ap_pipeline_graph_set_stage_skip(graph, i, want_skip);
+    }
 }
 
 int ap_app_request_jpeg_export(ap_app *app, ap_photo *photo,
@@ -2225,7 +2275,7 @@ static void draw_menubar(ap_app *app)
         }
         if (app->photo) {
             bool view_raw = ap_photo_view_raw(app->photo);
-            if (igMenuItem_Bool("View Raw", "`", view_raw, true)) {
+            if (igMenuItem_Bool("View Raw", NULL, view_raw, true)) {
                 ap_photo_set_view_raw(app->photo, !view_raw);
                 ap_app_rebuild_photo_graph(app);
             }
@@ -2577,17 +2627,23 @@ static void drive_global_hotkeys(ap_app *app)
         && igIsKeyPressed_Bool(ImGuiKey_Y, false) && app->photo) {
         ap_app_redo(app);
     }
-    if (igIsKeyPressed_Bool(ImGuiKey_GraveAccent, false)
-        && !io->WantTextInput) {
-        // Same key, two contexts: photo mode toggles the per-photo
-        // View Raw bypass; library mode toggles between rendered and
-        // camera-preview grid thumbnails. Photo mode wins when a
-        // photo is open.
+    if (!io->WantTextInput) {
+        // ` (grave accent) — two contexts:
+        //   Photo mode : hold to show the unedited original (before/after
+        //                compare). Skips all user-edit stages cheaply via
+        //                set_stage_skip; no graph rebuild. Released when
+        //                the key comes up.
+        //   Library mode: toggle between rendered and camera-preview
+        //                 thumbnails (unchanged behaviour).
         if (app->photo) {
-            ap_photo_set_view_raw(app->photo, !ap_photo_view_raw(app->photo));
-            ap_app_rebuild_photo_graph(app);
+            bool held = igIsKeyDown_Nil(ImGuiKey_GraveAccent);
+            if (held != app->compare_original) {
+                ap_app_set_compare_original(app, held);
+            }
         } else if (app->mode == AP_MODE_LIBRARY && app->library) {
-            toggle_rendered_thumbnails(app);
+            if (igIsKeyPressed_Bool(ImGuiKey_GraveAccent, false)) {
+                toggle_rendered_thumbnails(app);
+            }
         }
     }
     if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_0, false)) {
@@ -2672,6 +2728,29 @@ static void draw_canvas_zoom_overlay(ap_app *app)
     ImVec2_c bg_br = { x + text_sz.x + pad * 0.5f,
                        y + text_sz.y + pad * 0.5f };
     ImDrawList_AddRectFilled(dl, bg_tl, bg_br, 0xB8000000, 4.0f, 0);
+    ImDrawList_AddText_Vec2(dl, (ImVec2_c){ x, y }, 0xFFEEEEEE, label, NULL);
+}
+
+// "ORIGINAL" badge drawn over the top-left corner of the canvas while
+// the before/after compare bypass is active. Gives the user clear visual
+// feedback that edits are bypassed.
+static void draw_compare_overlay(ap_app *app)
+{
+    if (!app->compare_original || !app->photo) return;
+    ImGuiIO *io = igGetIO_Nil();
+    if (!io) return;
+    ImDrawList *dl = igGetForegroundDrawList_ViewportPtr(NULL);
+    if (!dl) return;
+
+    const char *label = "ORIGINAL";
+    ImVec2_c text_sz = igCalcTextSize(label, NULL, false, -1.0f);
+    const float pad = 8.0f;
+    float x = pad;
+    float y = pad + igGetFrameHeight();  // below the menubar
+    ImVec2_c bg_tl = { x - pad * 0.5f, y - pad * 0.5f };
+    ImVec2_c bg_br = { x + text_sz.x + pad * 0.5f,
+                       y + text_sz.y + pad * 0.5f };
+    ImDrawList_AddRectFilled(dl, bg_tl, bg_br, 0xCC000000, 4.0f, 0);
     ImDrawList_AddText_Vec2(dl, (ImVec2_c){ x, y }, 0xFFEEEEEE, label, NULL);
 }
 
@@ -2864,6 +2943,7 @@ int ap_app_run_frame(ap_app *app)
     if (app->mode == AP_MODE_PHOTO && !app->photo_loading) {
         drive_canvas_input(app);
         draw_canvas_zoom_overlay(app);
+        draw_compare_overlay(app);
     } else if (app->mode == AP_MODE_EXPORT && !app->photo_loading) {
         drive_export_input(app);
         draw_canvas_zoom_overlay(app);
