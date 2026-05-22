@@ -18,8 +18,7 @@
 #define GRID_MARGIN             16
 #define GRID_MIN_CELL_SIZE      64
 #define GRID_MAX_CELL_SIZE      512
-#define GRID_THUMB_CAP_INIT     4096   // starting descriptor array size
-#define GRID_THUMB_CAP_MAX      65536  // hard cap; matches MAX_THUMBS in grid.frag
+#define GRID_THUMB_CAP_MAX      65536  // descriptor array size; matches MAX_THUMBS in grid.frag
 
 typedef struct {
     float window_size_px[2];
@@ -173,8 +172,6 @@ static float max_scroll_for(const ap_grid *g, int win_w, int win_h)
     if (content_h <= win_h) return 0.0f;
     return (float)(content_h - win_h);
 }
-
-static int create_pipeline(ap_grid *grid);
 
 static int create_placeholder(ap_grid *grid)
 {
@@ -396,36 +393,6 @@ static int create_descriptors(ap_grid *grid, int capacity)
     return 0;
 }
 
-// Tear down descriptors + pipeline layout + pipeline (but not the
-// placeholder or GPU) and rebuild with a larger capacity. Called when
-// set_photo_count receives a count exceeding the current capacity.
-// The caller must have the GPU idle before invoking this.
-static int regrow_descriptors(ap_grid *grid, int new_capacity)
-{
-    VkDevice dev = grid->gpu->device;
-    if (grid->pipeline) {
-        vkDestroyPipeline(dev, grid->pipeline, NULL);
-        grid->pipeline = VK_NULL_HANDLE;
-    }
-    if (grid->pl) {
-        vkDestroyPipelineLayout(dev, grid->pl, NULL);
-        grid->pl = VK_NULL_HANDLE;
-    }
-    if (grid->pool) {
-        vkDestroyDescriptorPool(dev, grid->pool, NULL);
-        grid->pool = VK_NULL_HANDLE;
-    }
-    if (grid->dsl) {
-        vkDestroyDescriptorSetLayout(dev, grid->dsl, NULL);
-        grid->dsl = VK_NULL_HANDLE;
-    }
-    grid->ds = VK_NULL_HANDLE;
-
-    if (create_descriptors(grid, new_capacity) < 0) return -1;
-    if (create_pipeline(grid)                  < 0) return -1;
-    return 0;
-}
-
 static int create_pipeline(ap_grid *grid)
 {
     VkPushConstantRange push = {
@@ -571,9 +538,9 @@ ap_grid *ap_grid_create(ap_gpu *g)
     grid->selected_idx = 0;
     grid->hover_idx    = -1;
 
-    if (create_placeholder(grid)                    < 0) goto fail;
-    if (create_descriptors(grid, GRID_THUMB_CAP_INIT) < 0) goto fail;
-    if (create_pipeline(grid)                       < 0) goto fail;
+    if (create_placeholder(grid)                     < 0) goto fail;
+    if (create_descriptors(grid, GRID_THUMB_CAP_MAX) < 0) goto fail;
+    if (create_pipeline(grid)                        < 0) goto fail;
     return grid;
 
 fail:
@@ -624,25 +591,13 @@ void ap_grid_set_photo_count(ap_grid *grid, int count)
     if (!grid) return;
     if (count < 0) count = 0;
 
-    // Grow the descriptor capacity when the new photo count exceeds it.
-    // Cap at GRID_THUMB_CAP_MAX (matches MAX_THUMBS in grid.frag).
-    if (count > grid->thumb_capacity) {
-        if (count > GRID_THUMB_CAP_MAX) {
-            AP_WARN("grid: library has %d photos; only %d will be shown "
-                    "(GRID_THUMB_CAP_MAX)", count, GRID_THUMB_CAP_MAX);
-            count = GRID_THUMB_CAP_MAX;
-        }
-        // Double the capacity (clamped to GRID_THUMB_CAP_MAX) so repeated
-        // small grows don't each trigger a full rebuild.
-        int new_cap = grid->thumb_capacity * 2;
-        if (new_cap < count)         new_cap = count;
-        if (new_cap > GRID_THUMB_CAP_MAX) new_cap = GRID_THUMB_CAP_MAX;
-        AP_INFO("grid: growing descriptor capacity %d -> %d",
-                grid->thumb_capacity, new_cap);
-        if (regrow_descriptors(grid, new_cap) != 0) {
-            AP_ERROR("grid: descriptor regrow failed; keeping old capacity");
-            if (count > grid->thumb_capacity) count = grid->thumb_capacity;
-        }
+    // The descriptor array is sized to GRID_THUMB_CAP_MAX up front (it
+    // matches the fixed u_thumbs[] array in grid.frag); photos past it
+    // can't be bound.
+    if (count > GRID_THUMB_CAP_MAX) {
+        AP_WARN("grid: library has %d photos; only %d will be shown "
+                "(GRID_THUMB_CAP_MAX)", count, GRID_THUMB_CAP_MAX);
+        count = GRID_THUMB_CAP_MAX;
     }
 
     grid->photo_count = count;
