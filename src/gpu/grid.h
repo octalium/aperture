@@ -66,6 +66,10 @@ void ap_grid_ensure_visible(ap_grid *grid, int idx,
 void ap_grid_set_thumbnail(ap_grid *grid, int idx,
                            VkImageView view, VkSampler sampler);
 
+// How many full rows fit vertically in the active render rect. Used
+// by PageUp / PageDown to advance exactly one viewport of rows.
+int ap_grid_rows_per_page(const ap_grid *grid, int win_width, int win_height);
+
 // Restrict the grid render + layout to a sub-rect of the framebuffer.
 // Used by app.c to fit the grid to the ImGui dockspace's central node,
 // so docked panels don't paint over the thumb area and the grid

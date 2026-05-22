@@ -103,6 +103,17 @@ static void effective_rect(const ap_grid *g, int win_w, int win_h,
     }
 }
 
+int ap_grid_rows_per_page(const ap_grid *grid, int win_width, int win_height)
+{
+    if (!grid) return 1;
+    int rx, ry, rw, rh;
+    effective_rect(grid, win_width, win_height, &rx, &ry, &rw, &rh);
+    (void)rx; (void)ry; (void)rw;
+    int pitch_y = grid->cell_size + grid->cell_gap_y;
+    int rows    = (pitch_y > 0) ? (rh / pitch_y) : 1;
+    return (rows > 0) ? rows : 1;
+}
+
 void ap_grid_set_render_rect(ap_grid *grid, int x, int y, int w, int h)
 {
     if (!grid) return;

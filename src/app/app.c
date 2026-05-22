@@ -1056,10 +1056,19 @@ static void drive_grid_input(ap_app *app)
     int sel = ap_grid_selected(app->grid);
     int new_sel = sel;
     int cpr = ap_grid_cells_per_row(app->grid, win_w, win_h);
+
+    // Rows-per-page: how many full rows fit in the render rect height.
+    // Used by PageUp / PageDown to advance exactly one viewport of rows.
+    int rows_per_page = ap_grid_rows_per_page(app->grid, win_w, win_h);
+
     if      (igIsKeyPressed_Bool(ImGuiKey_RightArrow, true)) new_sel = sel + 1;
     else if (igIsKeyPressed_Bool(ImGuiKey_LeftArrow,  true)) new_sel = sel - 1;
-    else if (igIsKeyPressed_Bool(ImGuiKey_DownArrow, true))  new_sel = sel + cpr;
-    else if (igIsKeyPressed_Bool(ImGuiKey_UpArrow,   true))  new_sel = sel - cpr;
+    else if (igIsKeyPressed_Bool(ImGuiKey_DownArrow,  true)) new_sel = sel + cpr;
+    else if (igIsKeyPressed_Bool(ImGuiKey_UpArrow,    true)) new_sel = sel - cpr;
+    else if (igIsKeyPressed_Bool(ImGuiKey_Home,  false))     new_sel = 0;
+    else if (igIsKeyPressed_Bool(ImGuiKey_End,   false))     new_sel = n - 1;
+    else if (igIsKeyPressed_Bool(ImGuiKey_PageDown, true))   new_sel = sel + rows_per_page * cpr;
+    else if (igIsKeyPressed_Bool(ImGuiKey_PageUp,   true))   new_sel = sel - rows_per_page * cpr;
     if (new_sel != sel) {
         if (io->KeyShift) {
             ap_grid_select_range(app->grid, sel, new_sel);
