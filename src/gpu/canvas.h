@@ -1,6 +1,10 @@
 #ifndef APERTURE_GPU_CANVAS_H
 #define APERTURE_GPU_CANVAS_H
 
+// Default user-zoom at photo open / view reset. Slightly below 1.0
+// (fit-to-window) to leave a visible margin around the image.
+#define AP_CANVAS_DEFAULT_ZOOM 0.9f
+
 #include "edit/viewport.h"
 #include "gpu/gpu.h"
 
@@ -33,15 +37,24 @@ void ap_canvas_set_input(ap_canvas *canvas,
 void ap_canvas_set_viewport(ap_canvas *canvas, const ap_viewport *vp);
 
 // View-state controls. Pan units are window pixels; zoom is a
-// multiplier on top of fit-to-window (1.0 = fit).
+// multiplier on top of fit-to-window (1.0 = fit). win_width /
+// win_height are needed by ap_canvas_pan for clamp math; pass 0 for
+// both to skip clamping (e.g. in tests).
 void  ap_canvas_reset_view(ap_canvas *canvas);
-void  ap_canvas_pan(ap_canvas *canvas, float dx, float dy);
+void  ap_canvas_pan(ap_canvas *canvas, float dx, float dy,
+                    int win_width, int win_height);
 void  ap_canvas_zoom_at(ap_canvas *canvas, float factor,
                         float anchor_screen_x, float anchor_screen_y,
                         int win_width, int win_height);
 void  ap_canvas_set_zoom(ap_canvas *canvas, float zoom,
                          int win_width, int win_height);
 float ap_canvas_zoom(const ap_canvas *canvas);
+
+// Effective scale of the displayed image in screen-pixels per source-pixel,
+// combining user zoom and the fit-to-window factor. win_width / win_height
+// are the display dimensions. Returns 0 when the canvas has no input.
+float ap_canvas_effective_scale(const ap_canvas *canvas,
+                                int win_width, int win_height);
 
 // Records the canvas blit. Caller is responsible for being inside an
 // active vkCmdBeginRendering pass with a color attachment that matches
