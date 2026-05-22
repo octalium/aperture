@@ -1,6 +1,7 @@
 #ifndef APERTURE_PHOTO_H
 #define APERTURE_PHOTO_H
 
+#include "edit/history.h"
 #include "edit/stack.h"
 #include "edit/viewport.h"
 #include "gpu/gpu.h"
@@ -94,6 +95,19 @@ bool        ap_photo_metadata_is_user(const ap_photo *photo, ap_meta_field f);
 void        ap_photo_metadata_set_user(ap_photo *photo, ap_meta_field f,
                                        const char *value);
 void        ap_photo_metadata_reset(ap_photo *photo, ap_meta_field f);
+
+// Per-photo undo/redo. ap_photo_edit_snapshot captures the current
+// edit stack into the history ring before a mutation. ap_photo_undo /
+// ap_photo_redo restore a previous / next state into the edit stack
+// and return true when a state was available; false means the history
+// was exhausted and the stack was not touched.
+void              ap_photo_edit_snapshot(ap_photo *photo);
+bool              ap_photo_undo(ap_photo *photo);
+bool              ap_photo_redo(ap_photo *photo);
+
+// Direct access to the history ring. Used by the config window to push
+// a pre-render snapshot when a slider drag begins (coalescing).
+ap_edit_history  *ap_photo_history(ap_photo *photo);
 
 #ifdef __cplusplus
 }
