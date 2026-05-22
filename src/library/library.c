@@ -1671,6 +1671,31 @@ int ap_library_apply_pipeline_to_photo(ap_library *lib, int index,
                            &user_meta, user_set, &groups);
 }
 
+int ap_library_apply_stack_to_photo(ap_library *lib, int index,
+                                    const ap_edit_stack *stack)
+{
+    if (!lib || !stack || index < 0 || index >= lib->photo_count) return -1;
+
+    char path[4096];
+    if (ap_library_photo_absolute_path(lib, index, path, sizeof(path)) != 0) {
+        return -1;
+    }
+
+    ap_edit_stack existing_stack;
+    ap_edit_stack_init(&existing_stack);
+    bool respect_orientation = true;
+    ap_photo_metadata user_meta;
+    ap_photo_metadata_clear(&user_meta);
+    bool user_set[AP_META_FIELD_COUNT] = {0};
+    ap_photo_groups groups;
+    groups.count = 0;
+    ap_sidecar_load(path, &existing_stack, &respect_orientation,
+                    &user_meta, user_set, &groups);
+
+    return ap_sidecar_save(path, stack, respect_orientation,
+                           &user_meta, user_set, &groups);
+}
+
 int ap_library_apply_metadata_patch(ap_library *lib, int index,
                                     const ap_photo_metadata *patch,
                                     const bool patch_set[AP_META_FIELD_COUNT])

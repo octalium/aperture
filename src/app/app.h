@@ -1,6 +1,7 @@
 #ifndef APERTURE_APP_H
 #define APERTURE_APP_H
 
+#include "edit/stack.h"
 #include "photo/metadata.h"
 
 #include <stdbool.h>
@@ -103,6 +104,24 @@ int ap_app_apply_pipeline_to_selection(ap_app *app, int64_t pipeline_id);
 void        ap_app_set_group_filter(ap_app *app, int kind, const char *name);
 int         ap_app_group_filter_kind(const ap_app *app);
 const char *ap_app_group_filter_name(const ap_app *app);
+
+// Edit clipboard: copy the open photo's stack into an in-memory
+// clipboard and paste it back onto the open photo, replacing its stack.
+// ap_app_copy_edits returns -1 when no photo is open. ap_app_paste_edits
+// returns -1 when the clipboard is empty or no photo is open; on success
+// the photo's pipeline graph is rebuilt immediately.
+int         ap_app_copy_edits(ap_app *app);
+int         ap_app_paste_edits(ap_app *app);
+
+// True when the edit clipboard holds a stack (i.e. copy has been called
+// at least once).
+bool        ap_app_has_edit_clipboard(const ap_app *app);
+
+// Apply the edit clipboard's stack to every selected library photo's
+// sidecar, skipping the currently-open photo. Mirrors the pipeline-to-
+// selection path. Returns the number of photos written, or -1 on error
+// (no library, no grid, or empty clipboard).
+int         ap_app_sync_edits_to_selection(ap_app *app);
 
 // Number of photos currently selected in the library grid.
 int         ap_app_grid_selection_count(const ap_app *app);

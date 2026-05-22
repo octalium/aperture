@@ -242,6 +242,12 @@ int  ap_library_store_thumbnail(ap_library *lib, int index,
 int  ap_library_apply_pipeline_to_photo(ap_library *lib, int index,
                                         int64_t pipeline_id);
 
+// Replace the n-th photo's edit stack with a caller-supplied stack.
+// Loads the existing sidecar to preserve orientation + metadata;
+// writes the sidecar atomically. Returns 0 on success.
+int  ap_library_apply_stack_to_photo(ap_library *lib, int index,
+                                     const ap_edit_stack *stack);
+
 // Apply a metadata-override patch to the n-th photo's sidecar.
 // Loads the existing sidecar (seeding the default edit pipeline if
 // none, so this write doesn't strip the photo's edits the next time
