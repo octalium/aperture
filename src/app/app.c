@@ -890,7 +890,8 @@ static void drive_canvas_input(ap_app *app)
     int win_h = (int)io->DisplaySize.y;
 
     if (io->MouseDown[0] && (io->MouseDelta.x != 0.0f || io->MouseDelta.y != 0.0f)) {
-        ap_canvas_pan(app->canvas, io->MouseDelta.x, io->MouseDelta.y);
+        ap_canvas_pan(app->canvas, io->MouseDelta.x, io->MouseDelta.y,
+                      win_w, win_h);
     }
     // Wheel semantics:
     //   plain wheel  → pan (vertical + horizontal). Trackpad
@@ -913,7 +914,8 @@ static void drive_canvas_input(ap_app *app)
             // if it ever feels inverted on a different input setup.
             ap_canvas_pan(app->canvas,
                           io->MouseWheelH * pan_step_px,
-                          -io->MouseWheel  * pan_step_px);
+                          -io->MouseWheel  * pan_step_px,
+                          win_w, win_h);
         }
     }
 
@@ -922,6 +924,21 @@ static void drive_canvas_input(ap_app *app)
         ap_canvas_reset_view(app->canvas);
     } else if (igIsKeyPressed_Bool(ImGuiKey_1, false)) {
         ap_canvas_set_zoom(app->canvas, 1.0f, win_w, win_h);
+    }
+
+    // Delete removes the focused edit entry (the one whose row was
+    // last clicked in the Edits panel). Gate on WantTextInput to avoid
+    // stealing Delete from text fields in the config windows.
+    if (!io->WantTextInput &&
+        igIsKeyPressed_Bool(ImGuiKey_Delete, false)) {
+        ap_edit_stack *stack = ap_photo_stack(app->photo);
+        if (stack) {
+            int focus = ap_edit_stack_focus(stack);
+            if (focus >= 0) {
+                ap_edit_stack_remove(stack, focus);
+                ap_app_rebuild_photo_graph(app);
+            }
+        }
     }
 }
 
@@ -1883,6 +1900,49 @@ static void drive_global_hotkeys(ap_app *app)
 
 // ----------------------------------------------------------------------
 
+// Zoom-level readout drawn over the canvas corner: "Fit" at the
+// default view, "100%" when the effective scale is 1:1, else "N%".
+// The label uses the foreground draw list so it paints over the canvas
+// but under any ImGui windows.
+static void draw_canvas_zoom_overlay(ap_app *app)
+{
+    if (!app->photo || !app->canvas) return;
+    ImGuiIO *io = igGetIO_Nil();
+    if (!io) return;
+
+    int win_w = (int)io->DisplaySize.x;
+    int win_h = (int)io->DisplaySize.y;
+    if (win_w <= 0 || win_h <= 0) return;
+
+    float scale = ap_canvas_effective_scale(app->canvas, win_w, win_h);
+    if (scale <= 0.0f) return;
+
+    char label[32];
+    float zoom = ap_canvas_zoom(app->canvas);
+    if (zoom >= AP_CANVAS_DEFAULT_ZOOM - 0.001f &&
+        zoom <= AP_CANVAS_DEFAULT_ZOOM + 0.001f) {
+        snprintf(label, sizeof(label), "Fit");
+    } else if (scale >= 0.995f && scale <= 1.005f) {
+        snprintf(label, sizeof(label), "100%%");
+    } else {
+        snprintf(label, sizeof(label), "%d%%", (int)(scale * 100.0f + 0.5f));
+    }
+
+    ImDrawList *dl = igGetForegroundDrawList_ViewportPtr(NULL);
+    if (!dl) return;
+
+    ImVec2_c text_sz = igCalcTextSize(label, NULL, false, -1.0f);
+    const float pad   = 8.0f;
+    // Bottom-right corner of the canvas, inset by pad.
+    float x = (float)win_w - text_sz.x - pad;
+    float y = (float)win_h - text_sz.y - pad;
+    ImVec2_c bg_tl = { x - pad * 0.5f, y - pad * 0.5f };
+    ImVec2_c bg_br = { x + text_sz.x + pad * 0.5f,
+                       y + text_sz.y + pad * 0.5f };
+    ImDrawList_AddRectFilled(dl, bg_tl, bg_br, 0xB8000000, 4.0f, 0);
+    ImDrawList_AddText_Vec2(dl, (ImVec2_c){ x, y }, 0xFFEEEEEE, label, NULL);
+}
+
 static void draw_loading_overlay(ap_app *app)
 {
     if (!app->photo_loading) return;
@@ -2059,6 +2119,7 @@ int ap_app_run_frame(ap_app *app)
 
     if (app->mode == AP_MODE_PHOTO && !app->photo_loading) {
         drive_canvas_input(app);
+        draw_canvas_zoom_overlay(app);
     } else if (app->mode == AP_MODE_LIBRARY && !app->photo_loading) {
         drive_grid_input(app);
         draw_grid_labels(app);
