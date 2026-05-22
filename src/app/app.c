@@ -1040,7 +1040,9 @@ static void draw_selection_overlay(ap_app *app)
                               &cx, &cy, &cw, &ch) != 0) continue;
         ImVec2_c tl = { cx,      cy      };
         ImVec2_c br = { cx + cw, cy + ch };
-        ImDrawList_AddRect(dl, tl, br, 0xFFB8C4D9, 0.0f, 0, 2.0f);
+        // cimgui's AddRect is (..., rounding, thickness, flags) — the
+        // last two are swapped vs upstream Dear ImGui's C++ signature.
+        ImDrawList_AddRect(dl, tl, br, 0xFFB8C4D9, 0.0f, 2.0f, 0);
     }
 }
 
