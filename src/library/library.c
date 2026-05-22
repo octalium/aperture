@@ -929,11 +929,32 @@ static int scan_dir(ap_library *lib, sqlite3_stmt *insert_stmt,
     return 0;
 }
 
-static int load_photo_cache(ap_library *lib)
+static int load_group_cache(ap_library *lib);
+
+static const char *sort_order_clause(ap_library_sort sort)
 {
+    switch (sort) {
+    case AP_SORT_CAPTURE_TIME:
+        return "ORDER BY COALESCE(capture_time, 0), path";
+    case AP_SORT_ADDED_AT:
+        return "ORDER BY added_at, path";
+    case AP_SORT_PATH:
+    default:
+        return "ORDER BY path";
+    }
+}
+
+// Read the photo paths from the db into the in-memory list, in the
+// order given by `sort`.  Does not touch thumbs or the group index;
+// callers are responsible for those.
+static int load_photo_cache_sorted(ap_library *lib, ap_library_sort sort)
+{
+    char sql[128];
+    snprintf(sql, sizeof(sql), "SELECT path FROM photos %s;",
+             sort_order_clause(sort));
+
     sqlite3_stmt *stmt = NULL;
-    int rc = sqlite3_prepare_v2(lib->db,
-        "SELECT path FROM photos ORDER BY path;", -1, &stmt, NULL);
+    int rc = sqlite3_prepare_v2(lib->db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         AP_ERROR("library: prepare photo list: %s", sqlite3_errmsg(lib->db));
         return -1;
@@ -952,6 +973,48 @@ static int load_photo_cache(ap_library *lib)
         AP_ERROR("library: photo list iteration: %s", sqlite3_errstr(rc));
         return -1;
     }
+    return 0;
+}
+
+static int load_photo_cache(ap_library *lib)
+{
+    return load_photo_cache_sorted(lib, AP_SORT_PATH);
+}
+
+int ap_library_reload_sorted(ap_library *lib, ap_library_sort sort)
+{
+    if (!lib || !lib->db) return -1;
+
+    if (lib->thumbs) {
+        for (int i = 0; i < lib->photo_count; i++) {
+            ap_thumbnail_destroy(lib->thumbs[i]);
+        }
+        free(lib->thumbs);
+        lib->thumbs = NULL;
+    }
+    lib->thumb_cursor = 0;
+
+    for (int i = 0; i < lib->photo_count; i++) {
+        free(lib->photo_paths[i]);
+        lib->photo_paths[i] = NULL;
+    }
+    lib->photo_count = 0;
+
+    free(lib->photo_groups);
+    lib->photo_groups = NULL;
+
+    if (load_photo_cache_sorted(lib, sort) < 0) return -1;
+
+    if (lib->photo_count > 0) {
+        lib->thumbs = calloc((size_t)lib->photo_count, sizeof(*lib->thumbs));
+        if (!lib->thumbs) {
+            AP_ERROR("library: thumbnail cache alloc failed");
+            return -1;
+        }
+    }
+
+    if (load_group_cache(lib) < 0) return -1;
+
     return 0;
 }
 
