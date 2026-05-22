@@ -32,6 +32,12 @@ ap_viewport ap_viewport_identity(void);
 // which owns the param slot layout. Pass NULL for the identity.
 ap_viewport ap_transform_viewport(const float *params);
 
+// Encode a viewport back into a Transform edit-entry's param array —
+// the inverse of ap_transform_viewport. Lets the interactive crop /
+// straighten canvas overlay drive the Transform module without
+// duplicating its slot layout. No-op when `params` is NULL.
+void ap_transform_set_viewport(float *params, const ap_viewport *vp);
+
 // Framed output dimensions for a given source size. out_w/out_h are
 // the crop's pixel size times the per-axis scale, clamped to >= 1.
 void ap_viewport_output_size(const ap_viewport *vp,

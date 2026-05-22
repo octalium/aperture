@@ -61,6 +61,36 @@ float ap_canvas_zoom(const ap_canvas *canvas);
 float ap_canvas_effective_scale(const ap_canvas *canvas,
                                 int win_width, int win_height);
 
+// Map a screen pixel to a coordinate in the framed-output image,
+// normalized to [0,1] over the post-viewport (cropped / rotated /
+// scaled) frame the canvas displays. Mirrors the canvas vertex +
+// fragment shaders' fit / pan / zoom math. Returns true when the
+// point lands inside the framed image; *u / *v are written in either
+// case (a false return means they fall outside [0,1]).
+bool ap_canvas_screen_to_framed_uv(const ap_canvas *canvas,
+                                   float screen_x, float screen_y,
+                                   int win_width, int win_height,
+                                   float *u, float *v);
+
+// Inverse of ap_canvas_screen_to_framed_uv: a framed-output [0,1]
+// coordinate to the screen pixel that displays it. Used to place
+// interactive overlay handles on top of the framed image.
+void ap_canvas_framed_uv_to_screen(const ap_canvas *canvas,
+                                   float u, float v,
+                                   int win_width, int win_height,
+                                   float *screen_x, float *screen_y);
+
+// Map a screen pixel all the way to a coordinate in the full rendered
+// source image, normalized to [0,1]. Composes the screen → framed
+// step with the viewport backward map (flip / scale / crop / rotate),
+// exactly as the canvas fragment shader does. Returns true when the
+// point lands inside the source image. Used by the white-balance
+// eyedropper to pick the source pixel under the cursor.
+bool ap_canvas_screen_to_source_uv(const ap_canvas *canvas,
+                                   float screen_x, float screen_y,
+                                   int win_width, int win_height,
+                                   float *u, float *v);
+
 // Records the canvas blit. Caller is responsible for being inside an
 // active vkCmdBeginRendering pass with a color attachment that matches
 // the canvas's color format. No-op if no input is bound.

@@ -621,6 +621,15 @@ static void config_window(ap_app *app, ap_photo *photo,
         bool want_rebuild     = false;
         bool snapshot_req     = false;
 
+        // Seed the canvas-tool request with the tool currently armed
+        // *for this entry* — a module that draws an arm/disarm toggle
+        // reads this back to show its pressed state. A tool armed on a
+        // different entry reads as NONE here so each entry's button
+        // reflects only its own state.
+        ap_canvas_tool tool_req =
+            (ap_app_canvas_tool_entry(app) == idx)
+                ? ap_app_canvas_tool(app) : AP_CANVAS_TOOL_NONE;
+
         // Capture pre-render state: if a slider drag activates inside
         // render_params, we snapshot from here (before the drag changed
         // any params) so the undo step restores the pre-drag stack.
@@ -628,17 +637,31 @@ static void config_window(ap_app *app, ap_photo *photo,
 
         if (m->render_params) {
             ap_module_render_ctx ctx = {
-                .image_width       = ap_photo_width(photo),
-                .image_height      = ap_photo_height(photo),
-                .str_params        = e->str_params,
-                .request_rebuild   = &want_rebuild,
+                .image_width        = ap_photo_width(photo),
+                .image_height       = ap_photo_height(photo),
+                .str_params         = e->str_params,
+                .request_rebuild    = &want_rebuild,
                 .snapshot_requested = &snapshot_req,
+                .request_canvas_tool = &tool_req,
             };
             ap_module_render_ctx_push(&ctx);
             m->render_params(m, e->params, &ctx);
             ap_module_render_ctx_pop();
         } else {
             igTextDisabled("(no parameters)");
+        }
+
+        // Forward a tool change to the app. set_canvas_tool toggles
+        // when the same (tool, entry) is re-armed, so a module that
+        // writes its own tool every time the button is pressed gets
+        // press-on / press-off behaviour for free.
+        {
+            ap_canvas_tool live =
+                (ap_app_canvas_tool_entry(app) == idx)
+                    ? ap_app_canvas_tool(app) : AP_CANVAS_TOOL_NONE;
+            if (tool_req != live) {
+                ap_app_set_canvas_tool(app, tool_req, idx);
+            }
         }
 
         if (snapshot_req && photo) {

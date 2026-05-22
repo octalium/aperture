@@ -1,9 +1,12 @@
 #include "module.h"
 
+#include "wb.h"
+
 #include "wb_comp_spv.h"
 
 #include "cimgui.h"
 
+#include <math.h>
 #include <string.h>
 
 // White Balance — variant 0 is "As Shot" (camera-baked multipliers from
@@ -95,8 +98,28 @@ static const ap_module_variant wb_variants[] = {
 static void wb_render(const ap_module *self, float *params,
                           const ap_module_render_ctx *ctx)
 {
-    (void)ctx;
     if (!params) return;
+
+    // Eyedropper: arm the canvas tool that samples a clicked pixel and
+    // solves the multipliers to neutralise it. The button reads as a
+    // toggle — pressing it again disarms (the config window treats a
+    // re-armed tool that way). The solve switches the entry to Manual,
+    // so the picker is offered from either variant.
+    bool armed = (*ctx->request_canvas_tool == AP_CANVAS_TOOL_WB_EYEDROPPER);
+    if (armed) {
+        ImVec4_c on = { 0.20f, 0.45f, 0.70f, 1.0f };
+        igPushStyleColor_Vec4(ImGuiCol_Button, on);
+    }
+    if (igButton(armed ? "Picking — click a neutral pixel"
+                       : "Pick neutral (eyedropper)",
+                 (ImVec2_c){ 0.0f, 0.0f })) {
+        *ctx->request_canvas_tool = armed ? AP_CANVAS_TOOL_NONE
+                                          : AP_CANVAS_TOOL_WB_EYEDROPPER;
+    }
+    if (armed) igPopStyleColor(1);
+    igTextDisabled("click a grey / white surface to neutralise it");
+    igSeparator();
+
     // The algorithm dropdown is drawn centrally by the config window.
     int variant = (int)params[SLOT_ALGO];
     if (variant == VARIANT_MANUAL) {
@@ -106,6 +129,58 @@ static void wb_render(const ap_module *self, float *params,
     } else {
         igTextDisabled("multipliers from the raw's metadata");
     }
+}
+
+// sRGB EOTF: 8-bit sRGB component -> linear [0,1].
+static float srgb_to_linear(float c)
+{
+    c /= 255.0f;
+    if (c <= 0.04045f) return c / 12.92f;
+    return powf((c + 0.055f) / 1.055f, 2.4f);
+}
+
+bool ap_wb_apply_neutral_pick(float *params,
+                              float sample_r, float sample_g, float sample_b)
+{
+    if (!params) return false;
+
+    float lr = srgb_to_linear(sample_r);
+    float lg = srgb_to_linear(sample_g);
+    float lb = srgb_to_linear(sample_b);
+
+    // A near-black pixel carries no usable chroma — refuse rather than
+    // amplifying sensor noise into wild multipliers.
+    if (lr + lg + lb < 0.003f) return false;
+
+    // Current multipliers. The As Shot variant has none of its own, so
+    // start the solve from the camera-neutral 1/1/1 the Manual sliders
+    // default to; a second pick then refines off the result.
+    int variant = (int)params[SLOT_ALGO];
+    float mr = (variant == VARIANT_MANUAL && params[SLOT_R] > 0.0f)
+                   ? params[SLOT_R] : 1.0f;
+    float mg = (variant == VARIANT_MANUAL && params[SLOT_G] > 0.0f)
+                   ? params[SLOT_G] : 1.0f;
+    float mb = (variant == VARIANT_MANUAL && params[SLOT_B] > 0.0f)
+                   ? params[SLOT_B] : 1.0f;
+
+    // Scale each channel by the correction that drives the sample to
+    // grey, anchored on green so overall exposure is unchanged.
+    const float eps = 1e-4f;
+    float ref = lg > eps ? lg : eps;
+    mr *= ref / (lr > eps ? lr : eps);
+    mb *= ref / (lb > eps ? lb : eps);
+
+    // The wb shader clamps nothing itself; keep the multipliers inside
+    // the Manual sliders' [0.1, 4.0] range so the result stays editable.
+    if (mr < 0.1f) mr = 0.1f; else if (mr > 4.0f) mr = 4.0f;
+    if (mg < 0.1f) mg = 0.1f; else if (mg > 4.0f) mg = 4.0f;
+    if (mb < 0.1f) mb = 0.1f; else if (mb > 4.0f) mb = 4.0f;
+
+    params[SLOT_ALGO] = (float)VARIANT_MANUAL;
+    params[SLOT_R]    = mr;
+    params[SLOT_G]    = mg;
+    params[SLOT_B]    = mb;
+    return true;
 }
 
 const ap_module module_wb = {
