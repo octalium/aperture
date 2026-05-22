@@ -100,20 +100,6 @@ struct ap_pipeline_graph {
     graph_stage  stages[MAX_STAGES];
 };
 
-static int find_memory_type(VkPhysicalDevice phys, uint32_t type_bits,
-                            VkMemoryPropertyFlags props)
-{
-    VkPhysicalDeviceMemoryProperties mp;
-    vkGetPhysicalDeviceMemoryProperties(phys, &mp);
-    for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
-        if ((type_bits & (1u << i)) &&
-            (mp.memoryTypes[i].propertyFlags & props) == props) {
-            return (int)i;
-        }
-    }
-    return -1;
-}
-
 static int create_image(VkDevice device, VkPhysicalDevice physical,
                         int width, int height, VkFormat format,
                         VkImageUsageFlags usage,
@@ -149,7 +135,7 @@ static int create_image(VkDevice device, VkPhysicalDevice physical,
 
     VkMemoryRequirements mreq;
     vkGetImageMemoryRequirements(device, *out_image, &mreq);
-    int mt = find_memory_type(physical, mreq.memoryTypeBits,
+    int mt = gpu_find_memory_type(physical, mreq.memoryTypeBits,
                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (mt < 0) {
         AP_ERROR("graph: no device-local memory type");
@@ -497,7 +483,7 @@ static int create_lut_image(ap_pipeline_graph *graph, graph_stage *st,
     }
     VkMemoryRequirements mreq;
     vkGetBufferMemoryRequirements(dev, staging, &mreq);
-    int mt = find_memory_type(graph->gpu->physical, mreq.memoryTypeBits,
+    int mt = gpu_find_memory_type(graph->gpu->physical, mreq.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (mt < 0) {
         AP_ERROR("graph: no host-visible memory for LUT staging");
@@ -1162,7 +1148,7 @@ int ap_pipeline_graph_readback(ap_pipeline_graph *graph,
 
     VkMemoryRequirements mreq;
     vkGetBufferMemoryRequirements(graph->gpu->device, staging, &mreq);
-    int mt = find_memory_type(graph->gpu->physical, mreq.memoryTypeBits,
+    int mt = gpu_find_memory_type(graph->gpu->physical, mreq.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (mt < 0) {
         AP_ERROR("readback: no host-visible memory type");
@@ -1315,7 +1301,7 @@ int ap_pipeline_graph_readback_thumb(ap_pipeline_graph *graph,
 
     VkMemoryRequirements mreq;
     vkGetBufferMemoryRequirements(graph->gpu->device, staging, &mreq);
-    int mt = find_memory_type(graph->gpu->physical, mreq.memoryTypeBits,
+    int mt = gpu_find_memory_type(graph->gpu->physical, mreq.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (mt < 0) {
         AP_ERROR("readback_thumb: no host-visible memory type");

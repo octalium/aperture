@@ -91,4 +91,19 @@ int  gpu_frame_render(struct ap_gpu *g, const ap_edit_stack *stack);
         }                                                               \
     } while (0)
 
+static inline int gpu_find_memory_type(VkPhysicalDevice phys,
+                                       uint32_t type_bits,
+                                       VkMemoryPropertyFlags props)
+{
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(phys, &mp);
+    for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
+        if ((type_bits & (1u << i)) &&
+            (mp.memoryTypes[i].propertyFlags & props) == props) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
 #endif

@@ -152,20 +152,6 @@ static float max_scroll_for(const ap_grid *g, int win_w, int win_h)
     return (float)(content_h - win_h);
 }
 
-static int find_memory_type(VkPhysicalDevice phys, uint32_t type_bits,
-                            VkMemoryPropertyFlags props)
-{
-    VkPhysicalDeviceMemoryProperties mp;
-    vkGetPhysicalDeviceMemoryProperties(phys, &mp);
-    for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
-        if ((type_bits & (1u << i)) &&
-            (mp.memoryTypes[i].propertyFlags & props) == props) {
-            return (int)i;
-        }
-    }
-    return -1;
-}
-
 static int create_placeholder(ap_grid *grid)
 {
     VkDevice dev = grid->gpu->device;
@@ -191,7 +177,7 @@ static int create_placeholder(ap_grid *grid)
 
     VkMemoryRequirements mreq;
     vkGetImageMemoryRequirements(dev, grid->placeholder_image, &mreq);
-    int mt = find_memory_type(grid->gpu->physical, mreq.memoryTypeBits,
+    int mt = gpu_find_memory_type(grid->gpu->physical, mreq.memoryTypeBits,
                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (mt < 0) {
         AP_ERROR("grid: no device-local memory for placeholder");
