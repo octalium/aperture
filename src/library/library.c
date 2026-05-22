@@ -886,7 +886,9 @@ static int scan_dir(ap_library *lib, sqlite3_stmt *insert_stmt,
 
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
-        if (ent->d_name[0] == '.') continue;
+        if (ent->d_name[0] == '.' &&
+            (ent->d_name[1] == '\0' ||
+             (ent->d_name[1] == '.' && ent->d_name[2] == '\0'))) continue;
 
         char abs_child[4096];
         if (snprintf(abs_child, sizeof(abs_child), "%s/%s",
