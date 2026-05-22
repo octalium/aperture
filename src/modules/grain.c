@@ -4,6 +4,8 @@
 
 #include "cimgui.h"
 
+#include <stdlib.h>
+
 typedef struct {
     float amount;
     float size;
@@ -38,14 +40,12 @@ static int grain_pack_push(const ap_module *self,
     return 0;
 }
 
-static void slider_with_reset(const ap_module *self, float *params,
-                              const char *label, int slot,
-                              float lo, float hi, const char *fmt)
+static void grain_init_instance(float *params)
 {
-    igSliderFloat(label, &params[slot], lo, hi, fmt, 0);
-    if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
-        params[slot] = self->params_default[slot];
-    }
+    // Randomise the seed so two Grain edits on the same or different
+    // photos don't produce identical patterns. rand() seeded by the C
+    // runtime is sufficient — grain seed is not a security value.
+    params[SLOT_SEED] = (float)(rand() % 100000) / 10000.0f;
 }
 
 static void grain_render(const ap_module *self, float *params,
@@ -53,10 +53,10 @@ static void grain_render(const ap_module *self, float *params,
 {
     (void)ctx;
     if (!params) return;
-    slider_with_reset(self, params, "Amount",   SLOT_AMOUNT, 0.0f,  0.5f,  "%.3f");
-    slider_with_reset(self, params, "Size",     SLOT_SIZE,   1.0f,  8.0f,  "%.1f");
-    slider_with_reset(self, params, "Midtones", SLOT_BIAS,   0.0f,  1.0f,  "%.2f");
-    slider_with_reset(self, params, "Seed",     SLOT_SEED,   0.0f, 10.0f,  "%.3f");
+    ap_module_slider_reset(self, params, "Amount",   SLOT_AMOUNT, 0.0f,  0.5f,  "%.3f");
+    ap_module_slider_reset(self, params, "Size",     SLOT_SIZE,   1.0f,  8.0f,  "%.1f");
+    ap_module_slider_reset(self, params, "Midtones", SLOT_BIAS,   0.0f,  1.0f,  "%.2f");
+    ap_module_slider_reset(self, params, "Seed",     SLOT_SEED,   0.0f, 10.0f,  "%.3f");
     igTextDisabled("noise is hash-based; sampled blue-noise lands in a follow-up");
 }
 
@@ -73,4 +73,5 @@ const ap_module module_grain = {
     .params_default = grain_defaults,
     .params_names   = grain_names,
     .render_params  = grain_render,
+    .init_instance  = grain_init_instance,
 };
