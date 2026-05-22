@@ -40,6 +40,11 @@ struct ap_photo {
     ap_photo_metadata user_meta;
     bool              user_set[AP_META_FIELD_COUNT];
 
+    // Culling state — rating / flag / colour — persisted in the
+    // sidecar's [metadata] table. Carried through so a sidecar save
+    // on close preserves it.
+    ap_photo_culling  culling;
+
     // Group membership, persisted in the sidecar. Carried through so a
     // sidecar save on close preserves it.
     ap_photo_groups   groups;
@@ -130,10 +135,11 @@ ap_photo *ap_photo_open_with_raw(ap_gpu *g, const char *path,
     ap_edit_stack_init(&photo->stack);
     ap_photo_metadata_clear(&photo->user_meta);
     for (int i = 0; i < AP_META_FIELD_COUNT; i++) photo->user_set[i] = false;
+    ap_photo_culling_clear(&photo->culling);
 
     if (ap_sidecar_load(path, &photo->stack, &photo->respect_orientation,
                         &photo->user_meta, photo->user_set,
-                        &photo->groups) == 0) {
+                        &photo->culling, &photo->groups) == 0) {
         AP_INFO("photo: loaded sidecar for %s", path);
     } else {
         // First open of this photo (or schema mismatch). Seed the
@@ -214,7 +220,7 @@ void ap_photo_close(ap_photo *photo)
         if (ap_sidecar_save(photo->path, &photo->stack,
                             photo->respect_orientation,
                             &photo->user_meta, photo->user_set,
-                            &photo->groups) != 0) {
+                            &photo->culling, &photo->groups) != 0) {
             AP_WARN("photo: failed to save sidecar for %s", photo->path);
         }
     }
@@ -302,6 +308,34 @@ void ap_photo_metadata_reset(ap_photo *photo, ap_meta_field f)
     if (!photo || f < 0 || f >= AP_META_FIELD_COUNT) return;
     ap_photo_metadata_set(&photo->user_meta, f, "");
     photo->user_set[f] = false;
+}
+
+ap_photo_culling ap_photo_get_culling(const ap_photo *photo)
+{
+    if (!photo) {
+        ap_photo_culling empty;
+        ap_photo_culling_clear(&empty);
+        return empty;
+    }
+    return photo->culling;
+}
+
+void ap_photo_set_rating(ap_photo *photo, int rating)
+{
+    if (!photo) return;
+    photo->culling.rating = ap_rating_clamp(rating);
+}
+
+void ap_photo_set_flag(ap_photo *photo, ap_flag flag)
+{
+    if (!photo) return;
+    photo->culling.flag = flag;
+}
+
+void ap_photo_set_color_label(ap_photo *photo, ap_color_label color)
+{
+    if (!photo) return;
+    photo->culling.color = color;
 }
 
 bool ap_photo_view_raw(const ap_photo *photo)
