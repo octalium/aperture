@@ -31,6 +31,7 @@ int ap_edit_stack_add(ap_edit_stack *s, const char *module_name)
     memset(e, 0, sizeof(*e));
     snprintf(e->module_name, sizeof(e->module_name), "%s", module_name);
     e->enabled = true;
+    e->id = ++s->next_id;
 
     int n = m->params_count;
     if (n > AP_EDIT_PARAMS_SLOTS) n = AP_EDIT_PARAMS_SLOTS;

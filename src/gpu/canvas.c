@@ -16,10 +16,6 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-// Default user-zoom when a photo binds (1.0 = fit-to-window). Slightly
-// under 1.0 leaves a margin around the image instead of butting it
-// against the viewport edges.
-#define AP_CANVAS_DEFAULT_ZOOM 0.9f
 
 typedef struct {
     float image_size_px[2];   // framed output size (after the viewport)
@@ -340,11 +336,40 @@ void ap_canvas_reset_view(ap_canvas *canvas)
     canvas->pan_y = 0.0f;
 }
 
-void ap_canvas_pan(ap_canvas *canvas, float dx, float dy)
+void ap_canvas_pan(ap_canvas *canvas, float dx, float dy,
+                  int win_width, int win_height)
 {
     if (!canvas || !canvas->has_input) return;
+
     canvas->pan_x += dx;
     canvas->pan_y += dy;
+
+    if (win_width <= 0 || win_height <= 0) return;
+
+    int eff_w, eff_h;
+    canvas_effective_size(canvas, &eff_w, &eff_h);
+    float fs = fit_scale_for(eff_w, eff_h, win_width, win_height);
+    if (fs <= 0.0f) return;
+
+    // Displayed half-extents in screen pixels. At least a quarter of
+    // the scaled image must remain on-screen: limit the pan magnitude
+    // to (displayed_half - window_quarter). When the image is smaller
+    // than the window in that axis the limit is zero, preventing any
+    // pan at all (the image is already fully visible).
+    float displayed_half_x = (float)eff_w * fs * canvas->zoom * 0.5f;
+    float displayed_half_y = (float)eff_h * fs * canvas->zoom * 0.5f;
+    float win_quarter_x    = (float)win_width  * 0.25f;
+    float win_quarter_y    = (float)win_height * 0.25f;
+
+    float limit_x = displayed_half_x - win_quarter_x;
+    float limit_y = displayed_half_y - win_quarter_y;
+    if (limit_x < 0.0f) limit_x = 0.0f;
+    if (limit_y < 0.0f) limit_y = 0.0f;
+
+    if (canvas->pan_x >  limit_x) canvas->pan_x =  limit_x;
+    if (canvas->pan_x < -limit_x) canvas->pan_x = -limit_x;
+    if (canvas->pan_y >  limit_y) canvas->pan_y =  limit_y;
+    if (canvas->pan_y < -limit_y) canvas->pan_y = -limit_y;
 }
 
 void ap_canvas_zoom_at(ap_canvas *canvas, float factor,
@@ -386,6 +411,16 @@ void ap_canvas_set_zoom(ap_canvas *canvas, float zoom,
 float ap_canvas_zoom(const ap_canvas *canvas)
 {
     return canvas ? canvas->zoom : 1.0f;
+}
+
+float ap_canvas_effective_scale(const ap_canvas *canvas,
+                                int win_width, int win_height)
+{
+    if (!canvas || !canvas->has_input) return 0.0f;
+    int eff_w, eff_h;
+    canvas_effective_size(canvas, &eff_w, &eff_h);
+    float fs = fit_scale_for(eff_w, eff_h, win_width, win_height);
+    return fs * canvas->zoom;
 }
 
 void ap_canvas_record(ap_canvas *canvas, VkCommandBuffer cmd,
