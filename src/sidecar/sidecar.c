@@ -46,6 +46,27 @@ static const char *read_string(toml_table_t *t, const char *key)
     return v.ok ? v.u.s : NULL;
 }
 
+// Fill `out` from the [metadata] table's rating / flag / color keys.
+// Each is optional: a missing key leaves that field at its default.
+static void read_culling(toml_table_t *metadata, ap_photo_culling *out)
+{
+    ap_photo_culling_clear(out);
+    int64_t rating = 0;
+    if (read_int(metadata, "rating", &rating) == 0) {
+        out->rating = ap_rating_clamp((int)rating);
+    }
+    toml_datum_t flag = toml_string_in(metadata, "flag");
+    if (flag.ok) {
+        out->flag = ap_flag_from_key(flag.u.s);
+        free(flag.u.s);
+    }
+    toml_datum_t color = toml_string_in(metadata, "color");
+    if (color.ok) {
+        out->color = ap_color_label_from_key(color.u.s);
+        free(color.u.s);
+    }
+}
+
 // Fill `out` from the [aperture] table's `groups` array of strings.
 static void read_groups(toml_table_t *aperture, ap_photo_groups *out)
 {
@@ -67,6 +88,7 @@ int ap_sidecar_load(const char *source_path, ap_edit_stack *stack,
                     bool *respect_orientation,
                     ap_photo_metadata *user_meta,
                     bool user_set[AP_META_FIELD_COUNT],
+                    ap_photo_culling *culling,
                     ap_photo_groups *groups)
 {
     if (!source_path || !stack) return -1;
@@ -107,10 +129,12 @@ int ap_sidecar_load(const char *source_path, ap_edit_stack *stack,
     if (user_set) {
         for (int i = 0; i < AP_META_FIELD_COUNT; i++) user_set[i] = false;
     }
+    if (culling) ap_photo_culling_clear(culling);
 
     // [metadata] is sparse: only fields the user has overridden are
     // written. A present key with an empty string is a deliberate
-    // override (the user blanked the field).
+    // override (the user blanked the field). The same table also
+    // carries the typed culling fields (rating / flag / color).
     toml_table_t *metadata = toml_table_in(root, "metadata");
     if (metadata && user_meta && user_set) {
         for (int i = 0; i < AP_META_FIELD_COUNT; i++) {
@@ -121,6 +145,9 @@ int ap_sidecar_load(const char *source_path, ap_edit_stack *stack,
                 user_set[i] = true;
             }
         }
+    }
+    if (metadata && culling) {
+        read_culling(metadata, culling);
     }
 
     toml_free(root);
@@ -158,6 +185,7 @@ int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
                     bool respect_orientation,
                     const ap_photo_metadata *user_meta,
                     const bool user_set[AP_META_FIELD_COUNT],
+                    const ap_photo_culling *culling,
                     const ap_photo_groups *groups)
 {
     if (!source_path || !stack) return -1;
@@ -197,14 +225,22 @@ int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
 
     if (ap_edit_stack_write_toml(stack, f) != 0) goto io_fail;
 
-    // Sparse [metadata] table: only fields the user has overridden.
-    if (user_meta && user_set) {
-        bool any = false;
-        for (int i = 0; i < AP_META_FIELD_COUNT; i++) {
-            if (user_set[i]) { any = true; break; }
+    // Sparse [metadata] table: the string overrides the user has set,
+    // plus the typed culling fields (rating / flag / color) whenever
+    // they are off their defaults. The table header is emitted once,
+    // only when at least one of the two has content.
+    {
+        bool any_meta = false;
+        if (user_meta && user_set) {
+            for (int i = 0; i < AP_META_FIELD_COUNT; i++) {
+                if (user_set[i]) { any_meta = true; break; }
+            }
         }
-        if (any) {
+        bool any_culling = culling && !ap_photo_culling_is_empty(culling);
+        if (any_meta || any_culling) {
             if (fprintf(f, "\n[metadata]\n") < 0) goto io_fail;
+        }
+        if (any_meta) {
             for (int i = 0; i < AP_META_FIELD_COUNT; i++) {
                 if (!user_set[i]) continue;
                 const char *key = ap_meta_field_key((ap_meta_field)i);
@@ -212,6 +248,28 @@ int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
                                                         (ap_meta_field)i);
                 if (fprintf(f, "%s = ", key) < 0) goto io_fail;
                 if (write_escaped_string(f, val ? val : "") != 0) goto io_fail;
+                if (fputc('\n', f) == EOF) goto io_fail;
+            }
+        }
+        if (any_culling) {
+            if (culling->rating != 0) {
+                if (fprintf(f, "rating = %d\n", culling->rating) < 0) {
+                    goto io_fail;
+                }
+            }
+            if (culling->flag != AP_FLAG_NONE) {
+                if (fputs("flag = ", f) == EOF) goto io_fail;
+                if (write_escaped_string(f, ap_flag_key(culling->flag)) != 0) {
+                    goto io_fail;
+                }
+                if (fputc('\n', f) == EOF) goto io_fail;
+            }
+            if (culling->color != AP_COLOR_NONE) {
+                if (fputs("color = ", f) == EOF) goto io_fail;
+                if (write_escaped_string(f,
+                        ap_color_label_key(culling->color)) != 0) {
+                    goto io_fail;
+                }
                 if (fputc('\n', f) == EOF) goto io_fail;
             }
         }
@@ -257,6 +315,28 @@ int ap_sidecar_load_groups(const char *source_path, ap_photo_groups *out)
 
     toml_table_t *aperture = toml_table_in(root, "aperture");
     if (aperture) read_groups(aperture, out);
+    toml_free(root);
+    return 0;
+}
+
+int ap_sidecar_load_culling(const char *source_path, ap_photo_culling *out)
+{
+    if (!source_path || !out) return -1;
+    ap_photo_culling_clear(out);
+
+    char path[4096];
+    if (sidecar_path(source_path, path, sizeof(path)) < 0) return -1;
+
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+
+    char errbuf[256];
+    toml_table_t *root = toml_parse_file(f, errbuf, sizeof(errbuf));
+    fclose(f);
+    if (!root) return -1;
+
+    toml_table_t *metadata = toml_table_in(root, "metadata");
+    if (metadata) read_culling(metadata, out);
     toml_free(root);
     return 0;
 }
