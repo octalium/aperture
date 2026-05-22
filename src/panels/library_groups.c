@@ -113,6 +113,16 @@ static void library_groups_draw(ap_app *app)
         if (igSelectable_Bool(label, active, 0, zero)) {
             ap_app_set_group_filter(app, AP_GROUP_FILTER_GROUP, names[i]);
         }
+        if (igBeginDragDropTarget()) {
+            const ImGuiPayload *payload =
+                igAcceptDragDropPayload("AP_THUMB_DRAG", 0);
+            if (payload) {
+                int w = ap_app_assign_selection_to_group(app, names[i], true);
+                snprintf(g_status, sizeof(g_status),
+                         "Added %d to %s", w, names[i]);
+            }
+            igEndDragDropTarget();
+        }
         if (igBeginPopupContextItem("##ctx",
                                     ImGuiPopupFlags_MouseButtonRight)) {
             if (sel_count > 0) {
@@ -168,8 +178,8 @@ static void library_groups_draw(ap_app *app)
         g_new_group[0] = '\0';
     }
 
-    igTextDisabled("right-click a group to assign the selection,");
-    igTextDisabled("rename, or delete it");
+    igTextDisabled("drag selected thumbnails onto a group to assign,");
+    igTextDisabled("or right-click a group to assign, rename, or delete");
     if (g_status[0]) {
         igSeparator();
         igTextDisabled("%s", g_status);
