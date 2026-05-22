@@ -2,6 +2,7 @@
 #define APERTURE_LIBRARY_H
 
 #include "edit/stack.h"
+#include "photo/culling.h"
 #include "photo/groups.h"
 #include "photo/metadata.h"
 
@@ -171,6 +172,24 @@ int ap_library_rename_group(ap_library *lib, const char *old_name,
 
 // Remove `group` from every photo carrying it.
 int ap_library_delete_group(ap_library *lib, const char *group);
+
+// ----- culling state (rating / pick-reject flag / colour label) -----
+//
+// Each photo's culling state lives in its sidecar (the source of
+// truth) and is cached in the photos table for fast filtering. The
+// library builds an in-memory cache on open; the calls below read and
+// mutate that cache and keep the sidecar + db column in sync.
+
+// The n-th photo's cached culling state. Returns a cleared (untouched)
+// struct when the index is out of range.
+ap_photo_culling ap_library_photo_culling(const ap_library *lib, int index);
+
+// Overwrite the n-th photo's culling state: updates the in-memory
+// cache, the cached db columns, and the photo's `.aperture` sidecar
+// (seeding the default edit pipeline when the photo has no sidecar
+// yet, so the write doesn't strip its edits). Returns 0 on success.
+int ap_library_set_photo_culling(ap_library *lib, int index,
+                                 ap_photo_culling culling);
 
 // Relative path of the n-th photo (n in [0, count)). Owned by the
 // library; valid until close.

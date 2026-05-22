@@ -6,6 +6,7 @@
 #include "gpu/gpu.h"
 #include "gpu/pipeline_graph.h"
 #include "io/raw.h"
+#include "photo/culling.h"
 #include "photo/metadata.h"
 
 #include <stdbool.h>
@@ -94,6 +95,16 @@ bool        ap_photo_metadata_is_user(const ap_photo *photo, ap_meta_field f);
 void        ap_photo_metadata_set_user(ap_photo *photo, ap_meta_field f,
                                        const char *value);
 void        ap_photo_metadata_reset(ap_photo *photo, ap_meta_field f);
+
+// Culling state — rating / pick-reject flag / colour label. Persisted
+// in the sidecar's [metadata] table. The setters mutate the in-memory
+// state only; the change reaches disk on the next sidecar save (photo
+// close).
+ap_photo_culling ap_photo_get_culling(const ap_photo *photo);
+void             ap_photo_set_rating(ap_photo *photo, int rating);
+void             ap_photo_set_flag(ap_photo *photo, ap_flag flag);
+void             ap_photo_set_color_label(ap_photo *photo,
+                                          ap_color_label color);
 
 #ifdef __cplusplus
 }

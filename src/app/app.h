@@ -101,6 +101,15 @@ int ap_app_apply_metadata_to_selection(ap_app *app,
 // or -1 on error.
 int ap_app_apply_pipeline_to_selection(ap_app *app, int64_t pipeline_id);
 
+// Culling: set the rating / pick-reject flag / colour label on every
+// photo currently in the library grid's selection. Each call touches
+// one culling field and leaves the other two unchanged. The grid
+// keyboard shortcuts route through here. Returns the number of photos
+// written, or -1 when there is no library / grid.
+int ap_app_set_selection_rating(ap_app *app, int rating);
+int ap_app_set_selection_flag(ap_app *app, ap_flag flag);
+int ap_app_set_selection_color(ap_app *app, ap_color_label color);
+
 // Library-grid group filter. Setting it rebuilds the visible grid;
 // the Groups panel reads the active filter back to highlight it.
 // `kind` is an ap_group_filter; `name` is used only for
