@@ -1099,10 +1099,30 @@ static void drive_grid_input(ap_app *app)
 
     // A popup (confirm modal, context menu) owns input while open —
     // don't also drive the grid behind it.
-    if (igIsPopupOpen_Str(NULL, ImGuiPopupFlags_AnyPopup)) return;
+    if (igIsPopupOpen_Str(NULL, ImGuiPopupFlags_AnyPopup)) {
+        ap_grid_set_hover(app->grid, -1);
+        return;
+    }
 
     int win_w = (int)io->DisplaySize.x;
     int win_h = (int)io->DisplaySize.y;
+
+    // Update the hover index every frame so the shader highlight and
+    // filename tooltip stay current. Clear to -1 when ImGui owns the
+    // mouse (a panel is active) so panels don't leave a stale highlight.
+    {
+        int hover = io->WantCaptureMouse ? -1
+                  : ap_grid_hit_test(app->grid,
+                                     io->MousePos.x, io->MousePos.y,
+                                     win_w, win_h);
+        ap_grid_set_hover(app->grid, hover);
+        if (hover >= 0 && hover < app->grid_map_count) {
+            int i = app->grid_map[hover];
+            const char *rel = ap_library_photo_relative_path(app->library, i);
+            if (rel) igSetTooltip("%s", rel);
+            igSetMouseCursor(ImGuiMouseCursor_Hand);
+        }
+    }
 
     if (!io->WantCaptureMouse) {
         if (io->MouseWheel != 0.0f) {
@@ -1110,7 +1130,9 @@ static void drive_grid_input(ap_app *app)
                 int cur  = ap_grid_cell_size(app->grid);
                 int step = 16;
                 int next = cur + (int)(io->MouseWheel) * step;
-                ap_grid_set_cell_size(app->grid, next);
+                ap_grid_zoom_at(app->grid, next,
+                                io->MousePos.x, io->MousePos.y,
+                                win_w, win_h);
             } else {
                 const float wheel_step_px = 60.0f;
                 ap_grid_scroll(app->grid, -io->MouseWheel * wheel_step_px,
@@ -1146,10 +1168,19 @@ static void drive_grid_input(ap_app *app)
     int sel = ap_grid_selected(app->grid);
     int new_sel = sel;
     int cpr = ap_grid_cells_per_row(app->grid, win_w, win_h);
+
+    // Rows-per-page: how many full rows fit in the render rect height.
+    // Used by PageUp / PageDown to advance exactly one viewport of rows.
+    int rows_per_page = ap_grid_rows_per_page(app->grid, win_w, win_h);
+
     if      (igIsKeyPressed_Bool(ImGuiKey_RightArrow, true)) new_sel = sel + 1;
     else if (igIsKeyPressed_Bool(ImGuiKey_LeftArrow,  true)) new_sel = sel - 1;
-    else if (igIsKeyPressed_Bool(ImGuiKey_DownArrow, true))  new_sel = sel + cpr;
-    else if (igIsKeyPressed_Bool(ImGuiKey_UpArrow,   true))  new_sel = sel - cpr;
+    else if (igIsKeyPressed_Bool(ImGuiKey_DownArrow,  true)) new_sel = sel + cpr;
+    else if (igIsKeyPressed_Bool(ImGuiKey_UpArrow,    true)) new_sel = sel - cpr;
+    else if (igIsKeyPressed_Bool(ImGuiKey_Home,  false))     new_sel = 0;
+    else if (igIsKeyPressed_Bool(ImGuiKey_End,   false))     new_sel = n - 1;
+    else if (igIsKeyPressed_Bool(ImGuiKey_PageDown, true))   new_sel = sel + rows_per_page * cpr;
+    else if (igIsKeyPressed_Bool(ImGuiKey_PageUp,   true))   new_sel = sel - rows_per_page * cpr;
     if (new_sel != sel) {
         if (io->KeyShift) {
             ap_grid_select_range(app->grid, sel, new_sel);
@@ -1957,8 +1988,11 @@ static void drive_global_hotkeys(ap_app *app)
             ap_canvas_zoom_at(app->canvas, 1.15f,
                               win_w * 0.5f, win_h * 0.5f, win_w, win_h);
         } else {
-            ap_grid_set_cell_size(app->grid,
-                                  ap_grid_cell_size(app->grid) + 16);
+            int win_w = (int)io->DisplaySize.x;
+            int win_h = (int)io->DisplaySize.y;
+            ap_grid_zoom_at(app->grid,
+                            ap_grid_cell_size(app->grid) + 16,
+                            win_w * 0.5f, win_h * 0.5f, win_w, win_h);
         }
     }
     if (io->KeyCtrl && (igIsKeyPressed_Bool(ImGuiKey_Minus, true) ||
@@ -1969,8 +2003,11 @@ static void drive_global_hotkeys(ap_app *app)
             ap_canvas_zoom_at(app->canvas, 1.0f / 1.15f,
                               win_w * 0.5f, win_h * 0.5f, win_w, win_h);
         } else {
-            ap_grid_set_cell_size(app->grid,
-                                  ap_grid_cell_size(app->grid) - 16);
+            int win_w = (int)io->DisplaySize.x;
+            int win_h = (int)io->DisplaySize.y;
+            ap_grid_zoom_at(app->grid,
+                            ap_grid_cell_size(app->grid) - 16,
+                            win_w * 0.5f, win_h * 0.5f, win_w, win_h);
         }
     }
 }
@@ -2150,6 +2187,11 @@ int ap_app_run_frame(ap_app *app)
                 panel->draw(app);
             }
         }
+    }
+
+    if (app->grid) {
+        ImGuiIO *io = igGetIO_Nil();
+        ap_grid_update(app->grid, io ? io->DeltaTime : 0.0f);
     }
 
     if (app->mode == AP_MODE_PHOTO && !app->photo_loading) {

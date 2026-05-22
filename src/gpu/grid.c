@@ -7,6 +7,7 @@
 #include "grid_vert_spv.h"
 #include "grid_frag_spv.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -17,7 +18,8 @@
 #define GRID_MARGIN             16
 #define GRID_MIN_CELL_SIZE      64
 #define GRID_MAX_CELL_SIZE      512
-#define GRID_MAX_THUMBS         4096   // matches MAX_THUMBS in grid.frag
+#define GRID_THUMB_CAP_INIT     4096   // starting descriptor array size
+#define GRID_THUMB_CAP_MAX      65536  // hard cap; matches MAX_THUMBS in grid.frag
 
 typedef struct {
     float window_size_px[2];
@@ -31,7 +33,7 @@ typedef struct {
     int   cell_gap_x_px;
     int   cell_gap_y_px;
     int   border_px;
-    int   _pad0;
+    int   hover_idx;
 } grid_push;
 
 struct ap_grid {
@@ -51,17 +53,21 @@ struct ap_grid {
     VkSampler      placeholder_sampler;
 
     int photo_count;
+    int thumb_capacity;           // current descriptor array size (>= photo_count)
     int selected_idx;
+    int hover_idx;                // -1 when no cell is hovered
 
     uint8_t *selected_bitmap;     // photo_count bits, allocated in
                                   // set_photo_count; NULL when empty
 
-    int cell_size;
-    int cell_gap_x;
-    int cell_gap_y;
-    int border_px;
+    int   cell_size;        // integer target (clamped, canonical)
+    float cell_size_f;      // fractional working value, lerped toward cell_size
+    int   cell_gap_x;
+    int   cell_gap_y;
+    int   border_px;
 
-    float scroll_y;
+    float scroll_y;         // current rendered scroll position
+    float scroll_y_target;  // target the easing is converging to
 
     // Sub-rect of the framebuffer to render + lay out within. Zero
     // size means "fall back to the swapchain extent passed to
@@ -108,6 +114,17 @@ static void effective_rect(const ap_grid *g, int win_w, int win_h,
     }
 }
 
+int ap_grid_rows_per_page(const ap_grid *grid, int win_width, int win_height)
+{
+    if (!grid) return 1;
+    int rx, ry, rw, rh;
+    effective_rect(grid, win_width, win_height, &rx, &ry, &rw, &rh);
+    (void)rx; (void)ry; (void)rw;
+    int pitch_y = grid->cell_size + grid->cell_gap_y;
+    int rows    = (pitch_y > 0) ? (rh / pitch_y) : 1;
+    return (rows > 0) ? rows : 1;
+}
+
 void ap_grid_set_render_rect(ap_grid *grid, int x, int y, int w, int h)
 {
     if (!grid) return;
@@ -129,7 +146,7 @@ static grid_layout layout_for(const ap_grid *g, int win_w, int win_h)
     grid_layout L = {
         .origin_x   = GRID_MARGIN,
         .origin_y   = GRID_MARGIN - (int)g->scroll_y,
-        .cell_size  = g->cell_size,
+        .cell_size  = (int)g->cell_size_f,
         .cell_gap_x = g->cell_gap_x,
         .cell_gap_y = g->cell_gap_y,
     };
@@ -156,6 +173,8 @@ static float max_scroll_for(const ap_grid *g, int win_w, int win_h)
     if (content_h <= win_h) return 0.0f;
     return (float)(content_h - win_h);
 }
+
+static int create_pipeline(ap_grid *grid);
 
 static int create_placeholder(ap_grid *grid)
 {
@@ -295,12 +314,12 @@ static int create_placeholder(ap_grid *grid)
     return 0;
 }
 
-static int create_descriptors(ap_grid *grid)
+static int create_descriptors(ap_grid *grid, int capacity)
 {
     VkDescriptorSetLayoutBinding binding = {
         .binding         = 0,
         .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        .descriptorCount = GRID_MAX_THUMBS,
+        .descriptorCount = (uint32_t)capacity,
         .stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT,
     };
     VkDescriptorBindingFlags binding_flag = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
@@ -324,7 +343,7 @@ static int create_descriptors(ap_grid *grid)
 
     VkDescriptorPoolSize pool_size = {
         .type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        .descriptorCount = GRID_MAX_THUMBS,
+        .descriptorCount = (uint32_t)capacity,
     };
     VkDescriptorPoolCreateInfo pci = {
         .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -352,12 +371,12 @@ static int create_descriptors(ap_grid *grid)
 
     // Bind the placeholder into every slot up-front so unloaded cells
     // sample a defined texel.
-    VkDescriptorImageInfo *infos = calloc(GRID_MAX_THUMBS, sizeof(*infos));
+    VkDescriptorImageInfo *infos = calloc((size_t)capacity, sizeof(*infos));
     if (!infos) {
         AP_ERROR("grid: placeholder bind alloc failed");
         return -1;
     }
-    for (int i = 0; i < GRID_MAX_THUMBS; i++) {
+    for (int i = 0; i < capacity; i++) {
         infos[i].sampler     = grid->placeholder_sampler;
         infos[i].imageView   = grid->placeholder_view;
         infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -367,12 +386,43 @@ static int create_descriptors(ap_grid *grid)
         .dstSet          = grid->ds,
         .dstBinding      = 0,
         .dstArrayElement = 0,
-        .descriptorCount = GRID_MAX_THUMBS,
+        .descriptorCount = (uint32_t)capacity,
         .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         .pImageInfo      = infos,
     };
     vkUpdateDescriptorSets(grid->gpu->device, 1, &write, 0, NULL);
     free(infos);
+    grid->thumb_capacity = capacity;
+    return 0;
+}
+
+// Tear down descriptors + pipeline layout + pipeline (but not the
+// placeholder or GPU) and rebuild with a larger capacity. Called when
+// set_photo_count receives a count exceeding the current capacity.
+// The caller must have the GPU idle before invoking this.
+static int regrow_descriptors(ap_grid *grid, int new_capacity)
+{
+    VkDevice dev = grid->gpu->device;
+    if (grid->pipeline) {
+        vkDestroyPipeline(dev, grid->pipeline, NULL);
+        grid->pipeline = VK_NULL_HANDLE;
+    }
+    if (grid->pl) {
+        vkDestroyPipelineLayout(dev, grid->pl, NULL);
+        grid->pl = VK_NULL_HANDLE;
+    }
+    if (grid->pool) {
+        vkDestroyDescriptorPool(dev, grid->pool, NULL);
+        grid->pool = VK_NULL_HANDLE;
+    }
+    if (grid->dsl) {
+        vkDestroyDescriptorSetLayout(dev, grid->dsl, NULL);
+        grid->dsl = VK_NULL_HANDLE;
+    }
+    grid->ds = VK_NULL_HANDLE;
+
+    if (create_descriptors(grid, new_capacity) < 0) return -1;
+    if (create_pipeline(grid)                  < 0) return -1;
     return 0;
 }
 
@@ -514,14 +564,16 @@ ap_grid *ap_grid_create(ap_gpu *g)
     }
     grid->gpu          = g;
     grid->cell_size    = GRID_DEFAULT_CELL_SIZE;
+    grid->cell_size_f  = (float)GRID_DEFAULT_CELL_SIZE;
     grid->cell_gap_x   = GRID_DEFAULT_CELL_GAP_X;
     grid->cell_gap_y   = GRID_DEFAULT_CELL_GAP_Y;
     grid->border_px    = GRID_DEFAULT_BORDER;
     grid->selected_idx = 0;
+    grid->hover_idx    = -1;
 
-    if (create_placeholder(grid)  < 0) goto fail;
-    if (create_descriptors(grid)  < 0) goto fail;
-    if (create_pipeline(grid)     < 0) goto fail;
+    if (create_placeholder(grid)                    < 0) goto fail;
+    if (create_descriptors(grid, GRID_THUMB_CAP_INIT) < 0) goto fail;
+    if (create_pipeline(grid)                       < 0) goto fail;
     return grid;
 
 fail:
@@ -548,7 +600,7 @@ void ap_grid_destroy(ap_grid *grid)
 void ap_grid_set_thumbnail(ap_grid *grid, int idx,
                            VkImageView view, VkSampler sampler)
 {
-    if (!grid || idx < 0 || idx >= GRID_MAX_THUMBS) return;
+    if (!grid || idx < 0 || idx >= grid->thumb_capacity) return;
 
     VkDescriptorImageInfo info = {
         .sampler     = (view && sampler) ? sampler : grid->placeholder_sampler,
@@ -571,11 +623,34 @@ void ap_grid_set_photo_count(ap_grid *grid, int count)
 {
     if (!grid) return;
     if (count < 0) count = 0;
+
+    // Grow the descriptor capacity when the new photo count exceeds it.
+    // Cap at GRID_THUMB_CAP_MAX (matches MAX_THUMBS in grid.frag).
+    if (count > grid->thumb_capacity) {
+        if (count > GRID_THUMB_CAP_MAX) {
+            AP_WARN("grid: library has %d photos; only %d will be shown "
+                    "(GRID_THUMB_CAP_MAX)", count, GRID_THUMB_CAP_MAX);
+            count = GRID_THUMB_CAP_MAX;
+        }
+        // Double the capacity (clamped to GRID_THUMB_CAP_MAX) so repeated
+        // small grows don't each trigger a full rebuild.
+        int new_cap = grid->thumb_capacity * 2;
+        if (new_cap < count)         new_cap = count;
+        if (new_cap > GRID_THUMB_CAP_MAX) new_cap = GRID_THUMB_CAP_MAX;
+        AP_INFO("grid: growing descriptor capacity %d -> %d",
+                grid->thumb_capacity, new_cap);
+        if (regrow_descriptors(grid, new_cap) != 0) {
+            AP_ERROR("grid: descriptor regrow failed; keeping old capacity");
+            if (count > grid->thumb_capacity) count = grid->thumb_capacity;
+        }
+    }
+
     grid->photo_count = count;
     if (grid->selected_idx >= count) {
         grid->selected_idx = count > 0 ? count - 1 : 0;
     }
-    grid->scroll_y = 0.0f;
+    grid->scroll_y        = 0.0f;
+    grid->scroll_y_target = 0.0f;
 
     // Reallocate the selection bitmap to match the new photo count.
     free(grid->selected_bitmap);
@@ -591,9 +666,10 @@ void ap_grid_set_photo_count(ap_grid *grid, int count)
     // Reset the entire descriptor array back to the placeholder. The
     // previous library's ap_thumbnail textures are about to be (or
     // have just been) destroyed; their views can't stay bound.
-    VkDescriptorImageInfo *infos = calloc(GRID_MAX_THUMBS, sizeof(*infos));
+    VkDescriptorImageInfo *infos = calloc((size_t)grid->thumb_capacity,
+                                          sizeof(*infos));
     if (!infos) return;
-    for (int i = 0; i < GRID_MAX_THUMBS; i++) {
+    for (int i = 0; i < grid->thumb_capacity; i++) {
         infos[i].sampler     = grid->placeholder_sampler;
         infos[i].imageView   = grid->placeholder_view;
         infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -603,12 +679,18 @@ void ap_grid_set_photo_count(ap_grid *grid, int count)
         .dstSet          = grid->ds,
         .dstBinding      = 0,
         .dstArrayElement = 0,
-        .descriptorCount = GRID_MAX_THUMBS,
+        .descriptorCount = (uint32_t)grid->thumb_capacity,
         .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         .pImageInfo      = infos,
     };
     vkUpdateDescriptorSets(grid->gpu->device, 1, &write, 0, NULL);
     free(infos);
+}
+
+void ap_grid_set_hover(ap_grid *grid, int idx)
+{
+    if (!grid) return;
+    grid->hover_idx = idx;
 }
 
 void ap_grid_set_selected(ap_grid *grid, int idx)
@@ -710,18 +792,90 @@ int ap_grid_cell_size(const ap_grid *grid)
     return grid ? grid->cell_size : 0;
 }
 
+void ap_grid_zoom_at(ap_grid *grid, int new_cell_px,
+                     float screen_x, float screen_y,
+                     int win_width, int win_height)
+{
+    if (!grid || grid->photo_count <= 0) return;
+    (void)screen_x;
+
+    if (new_cell_px < GRID_MIN_CELL_SIZE) new_cell_px = GRID_MIN_CELL_SIZE;
+    if (new_cell_px > GRID_MAX_CELL_SIZE) new_cell_px = GRID_MAX_CELL_SIZE;
+
+    int rx, ry, rw, rh;
+    effective_rect(grid, win_width, win_height, &rx, &ry, &rw, &rh);
+    (void)rw; (void)rh;
+
+    // old pitch uses the fractional cell size (what's currently rendered)
+    float old_pitch = grid->cell_size_f + (float)grid->cell_gap_y;
+    float new_pitch = (float)new_cell_px  + (float)grid->cell_gap_y;
+    if (old_pitch <= 0.0f || new_pitch <= 0.0f) {
+        grid->cell_size = new_cell_px;
+        return;
+    }
+
+    // Y distance from the render-rect top to the cursor, adjusted for
+    // the current scroll target. This is the position in the unscrolled
+    // content space (relative to GRID_MARGIN origin) that the cursor
+    // currently points at.
+    float viewport_y      = screen_y - (float)ry - (float)GRID_MARGIN;
+    float content_y       = viewport_y + grid->scroll_y_target;
+
+    // After rescaling, the same content fraction maps to a new content_y.
+    float new_content_y   = content_y * (new_pitch / old_pitch);
+
+    // Adjust scroll so the cursor stays over the same content point.
+    float new_scroll      = new_content_y - viewport_y;
+
+    grid->cell_size   = new_cell_px;
+
+    // Clamp the new scroll to the max for the new layout.
+    // Temporarily set cell_size_f to compute max_scroll correctly.
+    float saved_f = grid->cell_size_f;
+    grid->cell_size_f = (float)new_cell_px;
+    float ms = max_scroll_for(grid, rw, rh);
+    grid->cell_size_f = saved_f;
+
+    if (new_scroll < 0.0f) new_scroll = 0.0f;
+    if (new_scroll > ms)   new_scroll = ms;
+    grid->scroll_y_target = new_scroll;
+}
+
 void ap_grid_set_cell_size(ap_grid *grid, int px)
 {
     if (!grid) return;
     if (px < GRID_MIN_CELL_SIZE) px = GRID_MIN_CELL_SIZE;
     if (px > GRID_MAX_CELL_SIZE) px = GRID_MAX_CELL_SIZE;
     grid->cell_size = px;
+    // cell_size_f lerps toward cell_size each frame via ap_grid_update.
 }
 
 void ap_grid_reset_cell_size(ap_grid *grid)
 {
     if (!grid) return;
     grid->cell_size = GRID_DEFAULT_CELL_SIZE;
+    // Let the lerp animate the reset rather than snapping.
+}
+
+void ap_grid_update(ap_grid *grid, float dt)
+{
+    if (!grid || dt <= 0.0f) return;
+
+    // Exponential smoothing: value reaches ~63% of target per half-life.
+    // factor = 1 - e^(-dt / half_life)
+    const float scroll_half_life  = 0.10f;   // seconds
+    const float zoom_half_life    = 0.08f;   // seconds
+    float sf = 1.0f - expf(-dt / scroll_half_life);
+    float zf = 1.0f - expf(-dt / zoom_half_life);
+
+    grid->scroll_y    += (grid->scroll_y_target - grid->scroll_y)    * sf;
+    grid->cell_size_f += ((float)grid->cell_size - grid->cell_size_f) * zf;
+
+    // Snap to target when close enough to avoid permanent micro-drift.
+    if (fabsf(grid->scroll_y    - grid->scroll_y_target) < 0.5f)
+        grid->scroll_y    = grid->scroll_y_target;
+    if (fabsf(grid->cell_size_f - (float)grid->cell_size) < 0.5f)
+        grid->cell_size_f = (float)grid->cell_size;
 }
 
 void ap_grid_scroll(ap_grid *grid, float dy, int win_width, int win_height)
@@ -731,9 +885,9 @@ void ap_grid_scroll(ap_grid *grid, float dy, int win_width, int win_height)
     effective_rect(grid, win_width, win_height, &rx, &ry, &rw, &rh);
     (void)rx; (void)ry;
     float ms = max_scroll_for(grid, rw, rh);
-    grid->scroll_y += dy;
-    if (grid->scroll_y < 0.0f) grid->scroll_y = 0.0f;
-    if (grid->scroll_y > ms)   grid->scroll_y = ms;
+    grid->scroll_y_target += dy;
+    if (grid->scroll_y_target < 0.0f) grid->scroll_y_target = 0.0f;
+    if (grid->scroll_y_target > ms)   grid->scroll_y_target = ms;
 }
 
 void ap_grid_ensure_visible(ap_grid *grid, int idx,
@@ -749,18 +903,21 @@ void ap_grid_ensure_visible(ap_grid *grid, int idx,
     int pitch_y = L.cell_size + L.cell_gap_y;
     int row     = idx / L.cells_per_row;
 
-    // Where the cell *would* sit within the render rect at current scroll.
-    float cell_top    = (float)GRID_MARGIN + (float)(row * pitch_y) - grid->scroll_y;
+    // Where the cell *would* sit within the render rect at the current
+    // scroll target. Adjust the target (not scroll_y) so the easing
+    // carries it smoothly into view.
+    float cell_top    = (float)GRID_MARGIN + (float)(row * pitch_y)
+                      - grid->scroll_y_target;
     float cell_bottom = cell_top + (float)L.cell_size;
 
     if (cell_top < (float)GRID_MARGIN) {
-        grid->scroll_y -= (float)GRID_MARGIN - cell_top;
+        grid->scroll_y_target -= (float)GRID_MARGIN - cell_top;
     } else if (cell_bottom > (float)(rh - GRID_MARGIN)) {
-        grid->scroll_y += cell_bottom - (float)(rh - GRID_MARGIN);
+        grid->scroll_y_target += cell_bottom - (float)(rh - GRID_MARGIN);
     }
     float ms = max_scroll_for(grid, rw, rh);
-    if (grid->scroll_y < 0.0f) grid->scroll_y = 0.0f;
-    if (grid->scroll_y > ms)   grid->scroll_y = ms;
+    if (grid->scroll_y_target < 0.0f) grid->scroll_y_target = 0.0f;
+    if (grid->scroll_y_target > ms)   grid->scroll_y_target = ms;
 }
 
 int ap_grid_hit_test(const ap_grid *grid,
@@ -858,6 +1015,7 @@ void ap_grid_record(ap_grid *grid, VkCommandBuffer cmd,
         .cell_gap_x_px   = L.cell_gap_x,
         .cell_gap_y_px   = L.cell_gap_y,
         .border_px       = grid->border_px,
+        .hover_idx       = grid->hover_idx,
     };
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, grid->pipeline);

@@ -49,6 +49,13 @@ int  ap_grid_cell_size(const ap_grid *grid);
 void ap_grid_set_cell_size(ap_grid *grid, int px);
 void ap_grid_reset_cell_size(ap_grid *grid);
 
+// Change cell size and adjust scroll_y_target so the content point
+// currently under (screen_x, screen_y) stays stationary after the
+// resize. Clamps cell size to the valid range. No-op on empty grids.
+void ap_grid_zoom_at(ap_grid *grid, int new_cell_px,
+                     float screen_x, float screen_y,
+                     int win_width, int win_height);
+
 // Vertical scroll. `dy` is in window pixels - positive scrolls
 // content up (reveals content below). Clamps to [0, max_scroll]
 // based on the supplied window dims and current photo count.
@@ -65,6 +72,21 @@ void ap_grid_ensure_visible(ap_grid *grid, int idx,
 // UPDATE_AFTER_BIND.
 void ap_grid_set_thumbnail(ap_grid *grid, int idx,
                            VkImageView view, VkSampler sampler);
+
+// How many full rows fit vertically in the active render rect. Used
+// by PageUp / PageDown to advance exactly one viewport of rows.
+int ap_grid_rows_per_page(const ap_grid *grid, int win_width, int win_height);
+
+// Advance the eased scroll position and cell size toward their targets.
+// Call once per frame before ap_grid_record, passing the frame delta
+// time in seconds (from ImGuiIO::DeltaTime).
+void ap_grid_update(ap_grid *grid, float dt);
+
+// Set the hovered cell index (or -1 when no cell is under the cursor).
+// Called every frame before ap_grid_record so the push constant is
+// current when the draw call goes out. The grid uses this to tint the
+// hovered cell with a subtle highlight in the fragment shader.
+void ap_grid_set_hover(ap_grid *grid, int idx);
 
 // Restrict the grid render + layout to a sub-rect of the framebuffer.
 // Used by app.c to fit the grid to the ImGui dockspace's central node,
