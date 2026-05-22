@@ -53,6 +53,11 @@ struct ap_library {
     // sidecars when the library is opened.
     ap_photo_groups *photo_groups;
 
+    // In-memory culling cache: photo_count entries, mirroring the
+    // rating / flag / color columns on the photos table. Built from
+    // the db on open; kept in sync as the user changes culling state.
+    ap_photo_culling *photo_culling;
+
     // Group registry — the names of groups that exist, independent of
     // membership. Loaded from the `groups` table on open.
     char group_names[AP_LIBRARY_GROUPS_MAX][AP_GROUP_NAME_LEN];
@@ -767,14 +772,24 @@ static const char *LIBRARY_SCHEMA_SQL =
     "    key   TEXT PRIMARY KEY,"
     "    value TEXT NOT NULL"
     ");"
+    // The rating / flag / color columns cache each photo's culling
+    // state (the sidecar is the source of truth) so grid filtering and
+    // sorting stay a single indexed query. rating is 0-5; flag is an
+    // ap_flag ordinal; color is an ap_color_label ordinal.
     "CREATE TABLE IF NOT EXISTS photos ("
     "    id           INTEGER PRIMARY KEY,"
     "    path         TEXT NOT NULL UNIQUE,"
     "    hash         BLOB,"
     "    capture_time INTEGER,"
-    "    added_at     INTEGER NOT NULL"
+    "    added_at     INTEGER NOT NULL,"
+    "    rating       INTEGER NOT NULL DEFAULT 0,"
+    "    flag         INTEGER NOT NULL DEFAULT 0,"
+    "    color        INTEGER NOT NULL DEFAULT 0"
     ");"
     "CREATE INDEX IF NOT EXISTS idx_photos_capture_time ON photos(capture_time);"
+    "CREATE INDEX IF NOT EXISTS idx_photos_rating ON photos(rating);"
+    "CREATE INDEX IF NOT EXISTS idx_photos_flag   ON photos(flag);"
+    "CREATE INDEX IF NOT EXISTS idx_photos_color  ON photos(color);"
     // Edit-render thumbnail cache. Keyed by the photo's relative path
     // (same key the in-memory photo list uses). `jpeg` is a small
     // JPEG of the photo rendered through its edit stack; `updated_at`
@@ -799,6 +814,26 @@ static const char *LIBRARY_SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS groups ("
     "    name TEXT PRIMARY KEY"
     ");";
+
+// Backfill the culling columns on a photos table created before they
+// were added. Each ALTER returns SQLITE_ERROR with "duplicate column
+// name" when the column already exists — that case is success.
+static void backfill_culling_columns(sqlite3 *db)
+{
+    static const char *ALTERS[] = {
+        "ALTER TABLE photos ADD COLUMN rating INTEGER NOT NULL DEFAULT 0;",
+        "ALTER TABLE photos ADD COLUMN flag   INTEGER NOT NULL DEFAULT 0;",
+        "ALTER TABLE photos ADD COLUMN color  INTEGER NOT NULL DEFAULT 0;",
+    };
+    for (size_t i = 0; i < sizeof(ALTERS) / sizeof(ALTERS[0]); i++) {
+        char *err = NULL;
+        int rc = sqlite3_exec(db, ALTERS[i], NULL, NULL, &err);
+        if (rc != SQLITE_OK && err && !strstr(err, "duplicate column")) {
+            AP_WARN("library: backfill culling column: %s", err);
+        }
+        sqlite3_free(err);
+    }
+}
 
 static int exec_simple(sqlite3 *db, const char *sql)
 {
@@ -930,6 +965,7 @@ static int scan_dir(ap_library *lib, sqlite3_stmt *insert_stmt,
 }
 
 static int load_group_cache(ap_library *lib);
+static int load_culling_cache(ap_library *lib);
 
 static const char *sort_order_clause(ap_library_sort sort)
 {
@@ -1002,6 +1038,8 @@ int ap_library_reload_sorted(ap_library *lib, ap_library_sort sort)
 
     free(lib->photo_groups);
     lib->photo_groups = NULL;
+    free(lib->photo_culling);
+    lib->photo_culling = NULL;
 
     if (load_photo_cache_sorted(lib, sort) < 0) return -1;
 
@@ -1013,7 +1051,8 @@ int ap_library_reload_sorted(ap_library *lib, ap_library_sort sort)
         }
     }
 
-    if (load_group_cache(lib) < 0) return -1;
+    if (load_group_cache(lib)   < 0) return -1;
+    if (load_culling_cache(lib) < 0) return -1;
 
     return 0;
 }
@@ -1121,6 +1160,86 @@ static int load_group_cache(ap_library *lib)
             registry_add(lib, lib->photo_groups[i].names[g]);
         }
     }
+    return 0;
+}
+
+// Write a photo's cached culling columns from its rel path.
+static void store_culling_row(sqlite3 *db, const char *rel,
+                              const ap_photo_culling *c)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "UPDATE photos SET rating = ?, flag = ?, color = ? "
+            "WHERE path = ?;",
+            -1, &st, NULL) != SQLITE_OK) {
+        AP_WARN("library: prepare culling update: %s", sqlite3_errmsg(db));
+        return;
+    }
+    sqlite3_bind_int(st, 1, c->rating);
+    sqlite3_bind_int(st, 2, (int)c->flag);
+    sqlite3_bind_int(st, 3, (int)c->color);
+    sqlite3_bind_text(st, 4, rel, -1, SQLITE_STATIC);
+    if (sqlite3_step(st) != SQLITE_DONE) {
+        AP_WARN("library: culling update step: %s", sqlite3_errmsg(db));
+    }
+    sqlite3_finalize(st);
+}
+
+// Build the in-memory culling cache. The sidecar is the source of
+// truth: each photo's sidecar is parsed and, where it disagrees with
+// the cached db columns, the db is reconciled (so culling set outside
+// aperture is picked up). Mirrors load_group_cache.
+static int load_culling_cache(ap_library *lib)
+{
+    if (lib->photo_count <= 0) {
+        return 0;
+    }
+    lib->photo_culling = calloc((size_t)lib->photo_count,
+                                sizeof(*lib->photo_culling));
+    if (!lib->photo_culling) {
+        AP_ERROR("library: culling cache alloc failed");
+        return -1;
+    }
+
+    // Seed from the db columns first — the fast path when sidecars and
+    // cache already agree.
+    sqlite3_stmt *sel = NULL;
+    if (sqlite3_prepare_v2(lib->db,
+            "SELECT rating, flag, color FROM photos WHERE path = ?;",
+            -1, &sel, NULL) != SQLITE_OK) {
+        AP_ERROR("library: prepare culling select: %s", sqlite3_errmsg(lib->db));
+        return -1;
+    }
+
+    for (int i = 0; i < lib->photo_count; i++) {
+        ap_photo_culling *cached = &lib->photo_culling[i];
+        ap_photo_culling_clear(cached);
+
+        sqlite3_reset(sel);
+        sqlite3_bind_text(sel, 1, lib->photo_paths[i], -1, SQLITE_STATIC);
+        if (sqlite3_step(sel) == SQLITE_ROW) {
+            cached->rating = ap_rating_clamp(sqlite3_column_int(sel, 0));
+            cached->flag   = (ap_flag)sqlite3_column_int(sel, 1);
+            cached->color  = (ap_color_label)sqlite3_column_int(sel, 2);
+        }
+
+        // Reconcile against the sidecar (source of truth). When no
+        // sidecar exists the cached db value stands.
+        char path[4096];
+        if (ap_library_photo_absolute_path(lib, i, path, sizeof(path)) != 0) {
+            continue;
+        }
+        ap_photo_culling side;
+        if (ap_sidecar_load_culling(path, &side) == 0) {
+            if (side.rating != cached->rating ||
+                side.flag   != cached->flag   ||
+                side.color  != cached->color) {
+                *cached = side;
+                store_culling_row(lib->db, lib->photo_paths[i], cached);
+            }
+        }
+    }
+    sqlite3_finalize(sel);
     return 0;
 }
 
@@ -1256,6 +1375,7 @@ ap_library *ap_library_open(const char *path)
     sqlite3_exec(lib->db, "PRAGMA foreign_keys=ON;",  NULL, NULL, NULL);
 
     if (exec_simple(lib->db, LIBRARY_SCHEMA_SQL)                       < 0) goto fail;
+    backfill_culling_columns(lib->db);
     if (set_schema_kv(lib->db, "version",          APERTURE_DB_VERSION) < 0) goto fail;
     if (set_schema_kv(lib->db, "aperture_version", APERTURE_VERSION)    < 0) goto fail;
     if (set_schema_kv(lib->db, "library_id",       lib->id)             < 0) goto fail;
@@ -1296,7 +1416,8 @@ ap_library *ap_library_open(const char *path)
         }
     }
 
-    if (load_group_cache(lib) < 0) goto fail;
+    if (load_group_cache(lib)   < 0) goto fail;
+    if (load_culling_cache(lib) < 0) goto fail;
 
     AP_INFO("library: %s [%s] (%d photos)",
             lib->root, lib->id, lib->photo_count);
@@ -1322,6 +1443,7 @@ void ap_library_close(ap_library *lib)
     }
     free(lib->photo_paths);
     free(lib->photo_groups);
+    free(lib->photo_culling);
     if (lib->db) {
         sqlite3_close(lib->db);
     }
@@ -1577,6 +1699,10 @@ int ap_library_photo_remove(ap_library *lib, int index)
             memmove(&lib->photo_groups[index], &lib->photo_groups[index + 1],
                     (size_t)tail * sizeof(*lib->photo_groups));
         }
+        if (lib->photo_culling) {
+            memmove(&lib->photo_culling[index], &lib->photo_culling[index + 1],
+                    (size_t)tail * sizeof(*lib->photo_culling));
+        }
     }
     lib->photo_count--;
     lib->photo_paths[lib->photo_count] = NULL;
@@ -1753,13 +1879,15 @@ int ap_library_apply_pipeline_to_photo(ap_library *lib, int index,
     ap_photo_metadata user_meta;
     ap_photo_metadata_clear(&user_meta);
     bool user_set[AP_META_FIELD_COUNT] = {0};
+    ap_photo_culling culling;
+    ap_photo_culling_clear(&culling);
     ap_photo_groups groups;
     groups.count = 0;
     ap_sidecar_load(path, &existing_stack, &respect_orientation,
-                    &user_meta, user_set, &groups);
+                    &user_meta, user_set, &culling, &groups);
 
     return ap_sidecar_save(path, &new_stack, respect_orientation,
-                           &user_meta, user_set, &groups);
+                           &user_meta, user_set, &culling, &groups);
 }
 
 int ap_library_apply_stack_to_photo(ap_library *lib, int index,
@@ -1778,13 +1906,15 @@ int ap_library_apply_stack_to_photo(ap_library *lib, int index,
     ap_photo_metadata user_meta;
     ap_photo_metadata_clear(&user_meta);
     bool user_set[AP_META_FIELD_COUNT] = {0};
+    ap_photo_culling culling;
+    ap_photo_culling_clear(&culling);
     ap_photo_groups groups;
     groups.count = 0;
     ap_sidecar_load(path, &existing_stack, &respect_orientation,
-                    &user_meta, user_set, &groups);
+                    &user_meta, user_set, &culling, &groups);
 
     return ap_sidecar_save(path, stack, respect_orientation,
-                           &user_meta, user_set, &groups);
+                           &user_meta, user_set, &culling, &groups);
 }
 
 int ap_library_apply_metadata_patch(ap_library *lib, int index,
@@ -1806,10 +1936,13 @@ int ap_library_apply_metadata_patch(ap_library *lib, int index,
     ap_photo_metadata_clear(&user_meta);
     bool user_set[AP_META_FIELD_COUNT] = {0};
 
+    ap_photo_culling culling;
+    ap_photo_culling_clear(&culling);
     ap_photo_groups groups;
     groups.count = 0;
     bool had_sidecar = (ap_sidecar_load(path, &stack, &respect_orientation,
-                                        &user_meta, user_set, &groups) == 0);
+                                        &user_meta, user_set, &culling,
+                                        &groups) == 0);
     if (!had_sidecar) seed_default_stack(&stack);
 
     for (int i = 0; i < AP_META_FIELD_COUNT; i++) {
@@ -1820,7 +1953,7 @@ int ap_library_apply_metadata_patch(ap_library *lib, int index,
     }
 
     return ap_sidecar_save(path, &stack, respect_orientation,
-                           &user_meta, user_set, &groups);
+                           &user_meta, user_set, &culling, &groups);
 }
 
 // Load-modify-save the n-th photo's sidecar so its on-disk `groups`
@@ -1839,15 +1972,77 @@ static int write_photo_sidecar_groups(ap_library *lib, int index)
     ap_photo_metadata user_meta;
     ap_photo_metadata_clear(&user_meta);
     bool user_set[AP_META_FIELD_COUNT] = {0};
+    ap_photo_culling culling;
+    ap_photo_culling_clear(&culling);
     ap_photo_groups discard;
     discard.count = 0;
 
     bool had = (ap_sidecar_load(path, &stack, &respect_orientation,
-                                &user_meta, user_set, &discard) == 0);
+                                &user_meta, user_set, &culling,
+                                &discard) == 0);
     if (!had) seed_default_stack(&stack);
 
     return ap_sidecar_save(path, &stack, respect_orientation,
-                           &user_meta, user_set, &lib->photo_groups[index]);
+                           &user_meta, user_set, &culling,
+                           &lib->photo_groups[index]);
+}
+
+// Load-modify-save the n-th photo's sidecar so its on-disk culling
+// fields match `culling`. Mirrors write_photo_sidecar_groups: preserves
+// the edit stack, orientation, metadata and groups, seeding the default
+// pipeline when the photo has no sidecar yet.
+static int write_photo_sidecar_culling(ap_library *lib, int index,
+                                       const ap_photo_culling *culling)
+{
+    char path[4096];
+    if (ap_library_photo_absolute_path(lib, index, path, sizeof(path)) != 0) {
+        return -1;
+    }
+    ap_edit_stack stack;
+    ap_edit_stack_init(&stack);
+    bool respect_orientation = true;
+    ap_photo_metadata user_meta;
+    ap_photo_metadata_clear(&user_meta);
+    bool user_set[AP_META_FIELD_COUNT] = {0};
+    ap_photo_culling discard;
+    ap_photo_culling_clear(&discard);
+    ap_photo_groups groups;
+    groups.count = 0;
+
+    bool had = (ap_sidecar_load(path, &stack, &respect_orientation,
+                                &user_meta, user_set, &discard,
+                                &groups) == 0);
+    if (!had) seed_default_stack(&stack);
+
+    return ap_sidecar_save(path, &stack, respect_orientation,
+                           &user_meta, user_set, culling, &groups);
+}
+
+ap_photo_culling ap_library_photo_culling(const ap_library *lib, int index)
+{
+    if (!lib || !lib->photo_culling ||
+        index < 0 || index >= lib->photo_count) {
+        ap_photo_culling empty;
+        ap_photo_culling_clear(&empty);
+        return empty;
+    }
+    return lib->photo_culling[index];
+}
+
+int ap_library_set_photo_culling(ap_library *lib, int index,
+                                 ap_photo_culling culling)
+{
+    if (!lib || !lib->photo_culling) return -1;
+    if (index < 0 || index >= lib->photo_count) return -1;
+
+    culling.rating = ap_rating_clamp(culling.rating);
+
+    if (write_photo_sidecar_culling(lib, index, &culling) != 0) {
+        return -1;
+    }
+    lib->photo_culling[index] = culling;
+    store_culling_row(lib->db, lib->photo_paths[index], &culling);
+    return 0;
 }
 
 const ap_photo_groups *ap_library_photo_groups(const ap_library *lib,
