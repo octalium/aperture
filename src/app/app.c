@@ -905,6 +905,56 @@ int ap_app_apply_metadata_to_selection(ap_app *app,
     return wrote;
 }
 
+// Culling field to mutate across the selection. Each enumerator
+// targets exactly one ap_photo_culling member.
+typedef enum {
+    AP_CULL_RATING = 0,
+    AP_CULL_FLAG   = 1,
+    AP_CULL_COLOR  = 2,
+} ap_cull_field;
+
+// Apply a single culling-field change to every selected grid photo.
+// `value` is interpreted per `field`: a rating int, an ap_flag, or an
+// ap_color_label. Returns the number of photos written, or -1 on a
+// missing library / grid.
+static int apply_culling_to_selection(ap_app *app, ap_cull_field field,
+                                      int value)
+{
+    if (!app || !app->library || !app->grid) return -1;
+
+    int wrote = 0;
+    for (int c = 0; c < app->grid_map_count; c++) {
+        if (!ap_grid_is_selected(app->grid, c)) continue;
+        int i = app->grid_map[c];
+        ap_photo_culling cull = ap_library_photo_culling(app->library, i);
+        switch (field) {
+        case AP_CULL_RATING: cull.rating = value;                  break;
+        case AP_CULL_FLAG:   cull.flag   = (ap_flag)value;         break;
+        case AP_CULL_COLOR:  cull.color  = (ap_color_label)value;  break;
+        }
+        if (ap_library_set_photo_culling(app->library, i, cull) == 0) {
+            wrote++;
+        }
+    }
+    return wrote;
+}
+
+int ap_app_set_selection_rating(ap_app *app, int rating)
+{
+    return apply_culling_to_selection(app, AP_CULL_RATING,
+                                      ap_rating_clamp(rating));
+}
+
+int ap_app_set_selection_flag(ap_app *app, ap_flag flag)
+{
+    return apply_culling_to_selection(app, AP_CULL_FLAG, (int)flag);
+}
+
+int ap_app_set_selection_color(ap_app *app, ap_color_label color)
+{
+    return apply_culling_to_selection(app, AP_CULL_COLOR, (int)color);
+}
+
 void ap_app_set_group_filter(ap_app *app, int kind, const char *name)
 {
     if (!app) return;
@@ -1155,6 +1205,48 @@ static void delete_grid_selection(ap_app *app)
     AP_INFO("library: deleted %d photo(s)", removed);
 }
 
+// Culling keyboard shortcuts, applied to the whole grid selection:
+//
+//   0 - 5            set the star rating (0 clears it)
+//   P                pick flag
+//   X                reject flag
+//   U                clear the flag
+//   Shift + 1 - 5    colour label: red / yellow / green / blue / purple
+//   Shift + 0        clear the colour label
+//
+// All are gated on !WantTextInput so they don't fire while a panel
+// text field is focused, and on !KeyCtrl so they don't collide with
+// any chorded shortcut. Shift selects the colour-label variant, so a
+// plain digit is unambiguously a rating change.
+static void drive_grid_culling_input(ap_app *app, ImGuiIO *io)
+{
+    if (!app->library || !app->grid) return;
+    if (io->WantTextInput || io->KeyCtrl) return;
+    if (ap_grid_selection_count(app->grid) <= 0) return;
+
+    for (int d = 0; d <= 5; d++) {
+        if (!igIsKeyPressed_Bool((ImGuiKey)(ImGuiKey_0 + d), false)) continue;
+        if (io->KeyShift) {
+            // Shift + digit -> colour label (digit maps onto the enum
+            // value; 0 is AP_COLOR_NONE).
+            ap_app_set_selection_color(app, (ap_color_label)d);
+        } else {
+            ap_app_set_selection_rating(app, d);
+        }
+        return;
+    }
+
+    if (io->KeyShift) return;   // remaining keys are unshifted
+
+    if (igIsKeyPressed_Bool(ImGuiKey_P, false)) {
+        ap_app_set_selection_flag(app, AP_FLAG_PICK);
+    } else if (igIsKeyPressed_Bool(ImGuiKey_X, false)) {
+        ap_app_set_selection_flag(app, AP_FLAG_REJECT);
+    } else if (igIsKeyPressed_Bool(ImGuiKey_U, false)) {
+        ap_app_set_selection_flag(app, AP_FLAG_NONE);
+    }
+}
+
 static void drive_grid_input(ap_app *app)
 {
     if (!app->library || !app->grid) return;
@@ -1335,6 +1427,8 @@ static void drive_grid_input(ap_app *app)
             app->delete_modal = true;
         }
     }
+
+    drive_grid_culling_input(app, io);
 }
 
 static void draw_selection_overlay(ap_app *app)
@@ -1388,6 +1482,53 @@ static void draw_marquee_overlay(ap_app *app)
 
     ImDrawList_AddRectFilled(dl, tl, br, 0x26B8C4D9, 0.0f, 0);
     ImDrawList_AddRect(dl, tl, br, 0xCCB8C4D9, 0.0f, 1.0f, 0);
+}
+
+// Paint the culling overlay for one grid cell: a colour-label strip
+// across the top of the fitted image, a pick / reject flag badge in
+// the top-left corner, and the star rating as filled dots right-
+// aligned inside the filename band. `fit_*` is the letterboxed image
+// rect; `band_top` / `band_h` describe the filename band beneath it.
+static void draw_cell_culling(ImDrawList *dl, const ap_photo_culling *cull,
+                              float fit_x, float fit_y, float fit_w,
+                              float band_top, float band_h)
+{
+    if (ap_photo_culling_is_empty(cull)) return;
+
+    // Colour-label strip along the top edge of the image.
+    if (cull->color != AP_COLOR_NONE) {
+        const float strip_h = 4.0f;
+        ImVec2_c s_tl = { fit_x,          fit_y           };
+        ImVec2_c s_br = { fit_x + fit_w,  fit_y + strip_h };
+        ImDrawList_AddRectFilled(dl, s_tl, s_br,
+                                 ap_color_label_rgba(cull->color), 0.0f, 0);
+    }
+
+    // Pick / reject badge: a filled circle in the top-left corner.
+    if (cull->flag != AP_FLAG_NONE) {
+        const float r = 5.0f;
+        ImVec2_c centre = { fit_x + r + 3.0f, fit_y + r + 3.0f };
+        // Green pick, red reject — packed 0xAABBGGRR.
+        unsigned fill = (cull->flag == AP_FLAG_PICK)
+                            ? 0xFF4CB752u : 0xFF4242E5u;
+        ImDrawList_AddCircleFilled(dl, centre, r, fill, 0);
+        ImDrawList_AddCircle(dl, centre, r, 0xFF101010u, 0, 1.5f);
+    }
+
+    // Rating dots, right-aligned inside the filename band.
+    if (cull->rating > 0) {
+        const float dot_r  = 2.5f;
+        const float dot_gap = 3.0f;
+        const float pitch  = dot_r * 2.0f + dot_gap;
+        float total = pitch * (float)cull->rating - dot_gap;
+        float cy_dot = band_top + band_h * 0.5f;
+        float x = fit_x + fit_w - 4.0f - total + dot_r;
+        for (int s = 0; s < cull->rating; s++) {
+            ImVec2_c centre = { x, cy_dot };
+            ImDrawList_AddCircleFilled(dl, centre, dot_r, 0xFF55D6F2u, 0);
+            x += pitch;
+        }
+    }
 }
 
 static void draw_grid_labels(ap_app *app)
@@ -1452,8 +1593,25 @@ static void draw_grid_labels(ap_app *app)
         ImVec2_c band_tl = { fit_x,         band_top          };
         ImVec2_c band_br = { fit_x + fit_w, band_top + band_h };
         ImDrawList_AddRectFilled(dl, band_tl, band_br, 0xB8000000, 0.0f, 0);
+
+        ap_photo_culling cull = ap_library_photo_culling(app->library, i);
+
+        // Reserve room on the band's right edge for the rating dots so
+        // a long filename never paints over them.
+        float text_right = fit_x + fit_w - 4.0f;
+        if (cull.rating > 0) {
+            const float pitch = 2.5f * 2.0f + 3.0f;
+            text_right -= pitch * (float)cull.rating - 3.0f + 4.0f;
+        }
         ImVec2_c text_pos = { fit_x + 4.0f, band_top + 2.0f };
+        ImVec2_c clip_tl  = { fit_x,      band_top          };
+        ImVec2_c clip_br  = { text_right, band_top + band_h };
+        ImDrawList_PushClipRect(dl, clip_tl, clip_br, true);
         ImDrawList_AddText_Vec2(dl, text_pos, 0xFFEEEEEE, rel, NULL);
+        ImDrawList_PopClipRect(dl);
+
+        draw_cell_culling(dl, &cull, fit_x, fit_y, fit_w,
+                          band_top, band_h);
     }
 }
 
