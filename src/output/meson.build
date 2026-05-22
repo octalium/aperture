@@ -1,4 +1,5 @@
 aperture_sources += files(
   'jpeg.c',
   'tiff.c',
+  'png.c',
 )
