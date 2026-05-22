@@ -45,6 +45,11 @@ int ap_sidecar_save(const char *source_path,
 // when the sidecar is missing or unparseable (`*out` left empty).
 int ap_sidecar_load_groups(const char *source_path, ap_photo_groups *out);
 
+// Delete the photo's sidecar file (`<source_path>.aperture`) from
+// disk. Returns 0 on success or when the sidecar is already absent,
+// nonzero on a real removal error.
+int ap_sidecar_remove(const char *source_path);
+
 #ifdef __cplusplus
 }
 #endif

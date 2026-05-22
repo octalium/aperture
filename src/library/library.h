@@ -182,6 +182,14 @@ const char *ap_library_photo_relative_path(const ap_library *lib, int index);
 int ap_library_photo_absolute_path(const ap_library *lib, int index,
                                    char *buf, size_t buflen);
 
+// Delete the n-th photo: remove its raw file and `.aperture` sidecar
+// from disk, delete its photos-table row and cached edit-render
+// thumbnail, and drop it from the library's in-memory caches. The
+// library holds an imported copy of each photo; the originals live
+// outside it. Photos after `index` shift down by one. Returns 0 on
+// success, -1 on a bad index.
+int ap_library_photo_remove(ap_library *lib, int index);
+
 // ----- thumbnail cache (lifetime-bound to the library) -----
 
 typedef struct ap_thumbnail ap_thumbnail;
