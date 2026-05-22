@@ -93,6 +93,22 @@ VkImageLayout ap_pipeline_graph_output_layout(const ap_pipeline_graph *graph);
 int           ap_pipeline_graph_output_width(const ap_pipeline_graph *graph);
 int           ap_pipeline_graph_output_height(const ap_pipeline_graph *graph);
 
+// Read the GPU histogram accumulated by the most recent dispatch.
+//
+// `out_bins` must point to a caller-allocated array of 1024 uint32_t
+// values in four contiguous runs of 256:
+//   [0..255]   R channel
+//   [256..511] G channel
+//   [512..767] B channel
+//   [768..1023] Luma (Rec.709)
+//
+// Returns true if histogram data is available (at least one dispatch has
+// completed), false if the graph has never been dispatched or has no
+// histogram pass. Does NOT synchronise with the GPU — the caller must
+// ensure the previous frame's fence has been waited on before calling.
+bool ap_pipeline_graph_histogram_read(const ap_pipeline_graph *graph,
+                                      uint32_t out_bins[1024]);
+
 #ifdef __cplusplus
 }
 #endif

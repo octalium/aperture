@@ -77,12 +77,25 @@ struct ap_pipeline_graph {
     VkDeviceMemory display_memory;
     VkImageView    display_view_unorm;
     VkImageView    display_view_srgb;
+    VkImageView    display_view_uint;  // R8G8B8A8_UINT reinterpret for histogram
     VkSampler      display_sampler;
 
     VkImage        thumb_image;
     VkDeviceMemory thumb_memory;
     int            thumb_width;
     int            thumb_height;
+
+    // GPU histogram pass: 4 × 256 uint bins (R, G, B, Luma).
+    // The buffer is host-visible + host-coherent so the panel can read
+    // it directly after vkWaitForFences without a staging copy.
+    VkBuffer             hist_buffer;
+    VkDeviceMemory       hist_memory;
+    void                *hist_map;         // persistent map; NULL until mapped
+    VkDescriptorPool     hist_pool;
+    VkDescriptorSetLayout hist_dsl;
+    VkPipelineLayout     hist_pl;
+    VkPipeline           hist_pipeline;
+    VkDescriptorSet      hist_ds;
 
     int          stage_count;
     graph_stage  stages[MAX_STAGES];

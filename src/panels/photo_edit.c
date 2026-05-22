@@ -364,58 +364,48 @@ static void image_window(ap_app *app, ap_photo *photo)
 
 // ---- Histogram window -----------------------------------------------
 
-// CPU-sampled 256-bin RGB histogram of the rendered display image. The
-// readback path is the same one the photo-close thumbnail uses
-// (ap_photo_readback_rgba → thumb image), so this is cheap: a few
-// hundred KB and ~75 K bin increments per recompute.
+// GPU-computed 256-bin RGBL histogram of the rendered display image.
 //
-// Recomputes when the photo pointer or its pipeline graph pointer
-// changes — i.e. photo open / close / swap and structural pipeline
-// rebuilds. The change is detected this frame and the actual readback
-// is deferred to the next frame so the GPU has finished recording +
-// running the new graph at least once; otherwise the readback would
-// pull whatever stale pixels happen to sit in the new display image.
+// The histogram shader runs at the tail of every pipeline graph dispatch,
+// so it updates every frame the edit stack changes — including slider
+// edits that only push push-constants. The host reads from a host-visible
+// storage buffer that was made host-coherent by a memory barrier before
+// the frame's fence signals.
 //
-// Slider-only edits (push-constant updates with no graph rebuild) do
-// not move the histogram in v1 — the issue's stated trade-off. A
-// follow-up can promote this to a GPU compute pass that writes to a
-// persistent storage buffer for true per-frame updates.
+// Channel layout in the GPU buffer (matching histogram.comp):
+//   [0..255]   R
+//   [256..511] G
+//   [512..767] B
+//   [768..1023] Luma (Rec.709)
+//
+// Clipping indicators: shadow clipping is shown when the sum of the
+// lowest two bins for any channel is > 0.5% of total pixels; highlight
+// clipping analogously for the highest two bins.
 
 #define HIST_BINS 256
 
 static struct {
-    const ap_photo          *photo;
-    const ap_pipeline_graph *graph;
-    uint32_t                 bins[3][HIST_BINS];
-    uint32_t                 max_bin;
-    bool                     valid;
-    bool                     pending;
+    uint32_t bins[4][HIST_BINS]; // R, G, B, Luma
+    uint32_t max_bin;
+    bool     valid;
 } g_hist;
 
 static bool g_hist_log_scale = false;
 
-static void histogram_recompute(ap_photo *photo)
+static void histogram_refresh(ap_pipeline_graph *graph)
 {
-    g_hist.valid = false;
-
-    uint8_t *rgba = NULL;
-    int      w    = 0;
-    int      h    = 0;
-    if (ap_photo_readback_rgba(photo, &rgba, &w, &h) != 0) {
+    uint32_t raw[1024];
+    if (!ap_pipeline_graph_histogram_read(graph, raw)) {
+        g_hist.valid = false;
         return;
     }
-
-    memset(g_hist.bins, 0, sizeof(g_hist.bins));
-    int n = w * h;
-    for (int i = 0; i < n; i++) {
-        g_hist.bins[0][rgba[i * 4 + 0]]++;
-        g_hist.bins[1][rgba[i * 4 + 1]]++;
-        g_hist.bins[2][rgba[i * 4 + 2]]++;
+    for (int c = 0; c < 4; c++) {
+        for (int b = 0; b < HIST_BINS; b++) {
+            g_hist.bins[c][b] = raw[c * HIST_BINS + b];
+        }
     }
-    free(rgba);
-
     uint32_t mx = 0;
-    for (int c = 0; c < 3; c++) {
+    for (int c = 0; c < 4; c++) {
         for (int b = 0; b < HIST_BINS; b++) {
             if (g_hist.bins[c][b] > mx) mx = g_hist.bins[c][b];
         }
@@ -428,12 +418,25 @@ static float bin_height(uint32_t count, uint32_t max_bin)
 {
     if (max_bin == 0) return 0.0f;
     if (g_hist_log_scale) {
-        // log1p so empty bins still map to 0. Normalise by log1p(max).
         float denom = log1pf((float)max_bin);
         if (denom <= 0.0f) return 0.0f;
         return log1pf((float)count) / denom;
     }
     return (float)count / (float)max_bin;
+}
+
+// Fraction of total pixels in the first/last `n_bins` bins for channel c.
+static float clipping_fraction(int c, int n_bins, bool high)
+{
+    uint64_t clipped = 0;
+    uint64_t total   = 0;
+    for (int b = 0; b < HIST_BINS; b++) {
+        total += g_hist.bins[c][b];
+        if (!high && b < n_bins)             clipped += g_hist.bins[c][b];
+        if (high  && b >= HIST_BINS - n_bins) clipped += g_hist.bins[c][b];
+    }
+    if (total == 0) return 0.0f;
+    return (float)clipped / (float)total;
 }
 
 static void histogram_window(ap_photo *photo)
@@ -444,17 +447,24 @@ static void histogram_window(ap_photo *photo)
     }
 
     ap_pipeline_graph *graph = ap_photo_graph(photo);
-    if (photo != g_hist.photo || graph != g_hist.graph) {
-        g_hist.photo   = photo;
-        g_hist.graph   = graph;
-        g_hist.valid   = false;
-        g_hist.pending = true;
-    } else if (g_hist.pending) {
-        // The graph pointer was new last frame; by now the renderer
-        // has recorded + submitted at least one frame against it, so
-        // the display image holds the pixels we want to sample.
-        histogram_recompute(photo);
-        g_hist.pending = false;
+    if (graph) {
+        histogram_refresh(graph);
+    } else {
+        g_hist.valid = false;
+    }
+
+    // Shadow / highlight clipping indicators. A channel is "clipped"
+    // when more than 0.5% of its pixels land in the outermost 2 bins.
+    // Draw a coloured strip at the left (shadow) or right (highlight)
+    // edge of the plot area. R, G, B each get their own thin column;
+    // the indicator is only drawn when that channel clips.
+    bool shadow_clip[3]    = { false, false, false };
+    bool highlight_clip[3] = { false, false, false };
+    if (g_hist.valid) {
+        for (int c = 0; c < 3; c++) {
+            shadow_clip[c]    = clipping_fraction(c, 2, false) > 0.005f;
+            highlight_clip[c] = clipping_fraction(c, 2, true)  > 0.005f;
+        }
     }
 
     igCheckbox("log scale", &g_hist_log_scale);
@@ -472,23 +482,22 @@ static void histogram_window(ap_photo *photo)
     ImDrawList_AddRectFilled(dl, tl, br, 0xFF101418, 0.0f, 0);
 
     if (g_hist.valid) {
-        // Channel colors are ABGR-packed; alpha 0x80 lets overlapping
-        // channels mix visually.
-        const uint32_t colors[3] = {
+        // Channel colors — ABGR-packed; alpha 0x80 lets overlapping
+        // channels mix visually. Channel 3 = Luma, drawn last so it sits
+        // on top as a reference curve.
+        const uint32_t colors[4] = {
             0x800000FF, // R
             0x8000FF00, // G
             0x80FF0000, // B
+            0xA0FFFFFF, // Luma (white, slightly more opaque)
         };
 
-        // One vertical line per bin per channel. The line covers the
-        // full bin width so adjacent bins read as a continuous curve
-        // even when the plot is narrower than 256 px.
         float x_step = plot_w / (float)HIST_BINS;
         for (int b = 0; b < HIST_BINS; b++) {
             float x0 = origin.x + (float)b * x_step;
             float x1 = origin.x + (float)(b + 1) * x_step;
             float cx = 0.5f * (x0 + x1);
-            for (int c = 0; c < 3; c++) {
+            for (int c = 0; c < 4; c++) {
                 float t = bin_height(g_hist.bins[c][b], g_hist.max_bin);
                 if (t <= 0.0f) continue;
                 float y = origin.y + plot_h - t * plot_h;
@@ -498,14 +507,36 @@ static void histogram_window(ap_photo *photo)
                                    colors[c], 1.0f);
             }
         }
+
+        // Clipping indicators: 4-px-wide coloured strips at the left
+        // (shadow) and right (highlight) edges of the plot.
+        const uint32_t clip_colors[3] = {
+            0xFF2222FF, // R shadow/highlight
+            0xFF22FF22, // G
+            0xFFFF2222, // B
+        };
+        float strip_w = 4.0f;
+        for (int c = 0; c < 3; c++) {
+            float x_shadow = origin.x + (float)c * strip_w;
+            if (shadow_clip[c]) {
+                ImDrawList_AddRectFilled(dl,
+                    (ImVec2_c){ x_shadow, origin.y },
+                    (ImVec2_c){ x_shadow + strip_w, origin.y + plot_h },
+                    clip_colors[c] & 0x60FFFFFF, 0.0f, 0);
+            }
+            float x_high = origin.x + plot_w - (float)(3 - c) * strip_w;
+            if (highlight_clip[c]) {
+                ImDrawList_AddRectFilled(dl,
+                    (ImVec2_c){ x_high, origin.y },
+                    (ImVec2_c){ x_high + strip_w, origin.y + plot_h },
+                    clip_colors[c] & 0x60FFFFFF, 0.0f, 0);
+            }
+        }
     } else {
-        const char *msg = g_hist.pending ? "rendering..." : "(no data)";
         ImVec2_c text_pos = { origin.x + 8.0f, origin.y + 8.0f };
-        ImDrawList_AddText_Vec2(dl, text_pos, 0xFF888888, msg, NULL);
+        ImDrawList_AddText_Vec2(dl, text_pos, 0xFF888888, "(no data)", NULL);
     }
 
-    // Reserve layout space so igEnd / surrounding widgets see the
-    // plot's footprint.
     igDummy((ImVec2_c){ plot_w, plot_h });
 
     igEnd();
