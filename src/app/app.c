@@ -954,14 +954,16 @@ static void delete_grid_selection(ap_app *app)
     drain_all_workers(app);
     ap_app_wait_idle(app);
 
-    int focus_cell = ap_grid_selected(app->grid);
-    int removed    = 0;
+    int anchor_cell = -1;   // smallest selected cell — the new focus
+    int removed     = 0;
 
     // grid_map is ascending in library index, so walking cells
     // high-to-low removes photos from the back — the indices of the
-    // photos still pending stay valid as we go.
+    // photos still pending stay valid as we go. The descending walk
+    // also leaves anchor_cell holding the smallest selected cell.
     for (int c = app->grid_map_count - 1; c >= 0; c--) {
         if (!ap_grid_is_selected(app->grid, c)) continue;
+        anchor_cell = c;
         int i = app->grid_map[c];
         // Leave the open photo — deleting its file out from under the
         // edit view would strand it. It can be deleted after closing.
@@ -976,12 +978,22 @@ static void delete_grid_selection(ap_app *app)
 
     rebuild_grid_map(app);
     if (app->grid_map_count > 0) {
-        int target = focus_cell;
+        // Land on the photo that slid into the lowest deleted cell —
+        // the nearest remaining neighbour — and scroll to it, since
+        // rebuild_grid_map reset the grid's scroll to the top.
+        int target = anchor_cell;
         if (target >= app->grid_map_count) {
             target = app->grid_map_count - 1;
         }
         if (target < 0) target = 0;
         ap_grid_select_only(app->grid, target);
+
+        ImGuiIO *io = igGetIO_Nil();
+        if (io) {
+            ap_grid_ensure_visible(app->grid, target,
+                                   (int)io->DisplaySize.x,
+                                   (int)io->DisplaySize.y);
+        }
     }
     AP_INFO("library: deleted %d photo(s)", removed);
 }
