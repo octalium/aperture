@@ -242,6 +242,25 @@ void           ap_app_set_canvas_tool(ap_app *app, ap_canvas_tool tool,
 ap_canvas_tool ap_app_canvas_tool(const ap_app *app);
 int            ap_app_canvas_tool_entry(const ap_app *app);
 
+// Batch export: export every photo in the library grid's selection
+// through the given export settings. Each photo is opened, rendered
+// through its edit stack, and the output file is placed according to
+// the collision / destination policy in `s`. Photos that are already
+// open in the viewer are skipped (they continue editing uninterrupted);
+// the caller should save + close the open photo first if it must be
+// included.
+//
+// `out_queued`  -- filled with the number of encode jobs queued (may be
+//                  NULL when the caller does not need it).
+// `out_skipped` -- filled with the number of photos skipped due to the
+//                  SKIP collision policy (may be NULL).
+//
+// Returns 0 when at least one photo was processed without a fatal
+// error, or -1 when there is no library / grid or the settings are
+// invalid.
+int ap_app_batch_export_selection(ap_app *app, const ap_export_settings *s,
+                                  int *out_queued, int *out_skipped);
+
 #ifdef __cplusplus
 }
 #endif

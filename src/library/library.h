@@ -4,6 +4,7 @@
 #include "edit/stack.h"
 #include "photo/culling.h"
 #include "photo/groups.h"
+#include "output/export.h"
 #include "photo/metadata.h"
 
 #include <stdbool.h>
@@ -301,6 +302,39 @@ int  ap_library_apply_stack_to_photo(ap_library *lib, int index,
 int  ap_library_apply_metadata_patch(ap_library *lib, int index,
                                      const ap_photo_metadata *patch,
                                      const bool patch_set[AP_META_FIELD_COUNT]);
+
+// ----- export presets (per-library db) -----
+//
+// A preset is a named bundle of ap_export_settings. The library db
+// stores them in the `export_presets` table so they survive across
+// sessions. The settings are serialised as a flat key=value blob
+// (not exposed outside library.c).
+
+#define AP_EXPORT_PRESET_NAME_LEN 128
+#define AP_EXPORT_PRESETS_MAX     64
+
+typedef struct {
+    int64_t            id;
+    char               name[AP_EXPORT_PRESET_NAME_LEN];
+    ap_export_settings settings;
+} ap_export_preset;
+
+// Save the current settings as a named preset. On a name collision the
+// existing row is replaced. Returns 0 on success, -1 on error.
+int ap_export_preset_save(ap_library *lib, const char *name,
+                          const ap_export_settings *s);
+
+// List up to `max` presets, ordered by name. Returns the count written,
+// or -1 on error.
+int ap_export_preset_list(const ap_library *lib,
+                          ap_export_preset *out, int max);
+
+// Load a preset by id into `out`. Returns 0 on success, -1 when not found.
+int ap_export_preset_load(const ap_library *lib, int64_t id,
+                          ap_export_preset *out);
+
+// Delete a preset by id. Returns 0 on success, -1 on error.
+int ap_export_preset_delete(ap_library *lib, int64_t id);
 
 #ifdef __cplusplus
 }

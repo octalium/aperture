@@ -8,6 +8,7 @@
 #include "edit/stack_toml.h"
 #include "io/raw.h"
 #include "modules/module.h"
+#include "output/export.h"
 #include "photo/thumbnail.h"
 #include "sidecar/sidecar.h"
 
@@ -813,7 +814,15 @@ static const char *LIBRARY_SCHEMA_SQL =
     // with no photos) still persists.
     "CREATE TABLE IF NOT EXISTS groups ("
     "    name TEXT PRIMARY KEY"
-    ");";
+    ");"
+    // Named export-setting bundles (web JPEG, print TIFF, etc.).
+    // `settings_blob` is a NUL-terminated key=value text block with
+    // one assignment per line, as written by preset_to_blob().
+    "CREATE TABLE IF NOT EXISTS export_presets ("
+    "    id            INTEGER PRIMARY KEY,"
+    "    name          TEXT NOT NULL UNIQUE,"
+    "    settings_blob TEXT NOT NULL"
+    ")";
 
 // Backfill the culling columns on a photos table created before they
 // were added. Each ALTER returns SQLITE_ERROR with "duplicate column
@@ -2156,4 +2165,154 @@ int ap_library_delete_group(ap_library *lib, const char *group)
     }
     registry_remove(lib, group);
     return 0;
+}
+
+// Serialise `s` into a NUL-terminated key=value text block. Each line
+// is "key=value\n". Caller owns the returned buffer (free it).
+static char *preset_to_blob(const ap_export_settings *s)
+{
+    char *buf = NULL;
+    size_t len = 0;
+    FILE *mf = open_memstream(&buf, &len);
+    if (!mf) return NULL;
+    fprintf(mf, "format=%d\n",       s->format);
+    fprintf(mf, "jpeg_quality=%d\n", s->jpeg_quality);
+    fprintf(mf, "png_depth=%d\n",    s->png_depth);
+    fprintf(mf, "tiff_depth=%d\n",   s->tiff_depth);
+    fprintf(mf, "tiff_compress=%d\n",s->tiff_compress);
+    fprintf(mf, "naming=%d\n",       s->naming);
+    fprintf(mf, "pattern=%s\n",      s->pattern);
+    fprintf(mf, "destination=%d\n",  s->destination);
+    fprintf(mf, "dest_subdir=%s\n",  s->dest_subdir);
+    fprintf(mf, "dest_dir=%s\n",     s->dest_dir);
+    fprintf(mf, "collision=%d\n",    s->collision);
+    fclose(mf);
+    return buf;
+}
+
+// Parse a preset blob (as written by preset_to_blob) into `out`.
+static void preset_from_blob(const char *blob, ap_export_settings *out)
+{
+    if (!blob || !out) return;
+    const char *p = blob;
+    while (*p) {
+        const char *eq  = strchr(p, '=');
+        const char *nl  = strchr(p, '\n');
+        if (!eq) break;
+        const char *end = nl ? nl : p + strlen(p);
+        size_t klen = (size_t)(eq - p);
+        size_t vlen = (size_t)(end - eq - 1);
+        char key[64];
+        char val[AP_EXPORT_DEST_LEN];
+        if (klen < sizeof(key) && vlen < sizeof(val)) {
+            memcpy(key, p, klen); key[klen] = '\0';
+            memcpy(val, eq + 1, vlen); val[vlen] = '\0';
+            if      (strcmp(key, "format")       == 0) out->format        = atoi(val);
+            else if (strcmp(key, "jpeg_quality") == 0) out->jpeg_quality  = atoi(val);
+            else if (strcmp(key, "png_depth")    == 0) out->png_depth     = atoi(val);
+            else if (strcmp(key, "tiff_depth")   == 0) out->tiff_depth    = atoi(val);
+            else if (strcmp(key, "tiff_compress")== 0) out->tiff_compress = atoi(val);
+            else if (strcmp(key, "naming")       == 0) out->naming        = atoi(val);
+            else if (strcmp(key, "pattern")      == 0) snprintf(out->pattern,     sizeof(out->pattern),     "%.*s", (int)(sizeof(out->pattern) - 1), val);
+            else if (strcmp(key, "destination")  == 0) out->destination   = atoi(val);
+            else if (strcmp(key, "dest_subdir")  == 0) snprintf(out->dest_subdir, sizeof(out->dest_subdir), "%s", val);
+            else if (strcmp(key, "dest_dir")     == 0) snprintf(out->dest_dir,    sizeof(out->dest_dir),    "%s", val);
+            else if (strcmp(key, "collision")    == 0) out->collision     = atoi(val);
+        }
+        p = nl ? nl + 1 : end;
+    }
+}
+
+int ap_export_preset_save(ap_library *lib, const char *name,
+                          const ap_export_settings *s)
+{
+    if (!lib || !lib->db || !name || !*name || !s) return -1;
+    char *blob = preset_to_blob(s);
+    if (!blob) return -1;
+
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(lib->db,
+        "INSERT INTO export_presets(name, settings_blob) VALUES (?, ?) "
+        "ON CONFLICT(name) DO UPDATE SET settings_blob = excluded.settings_blob;",
+        -1, &st, NULL);
+    if (rc != SQLITE_OK) {
+        AP_ERROR("export_preset_save: prepare: %s", sqlite3_errmsg(lib->db));
+        free(blob);
+        return -1;
+    }
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    sqlite3_bind_text(st, 2, blob, -1, SQLITE_TRANSIENT);
+    rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    free(blob);
+    if (rc != SQLITE_DONE) {
+        AP_ERROR("export_preset_save: step: %s", sqlite3_errstr(rc));
+        return -1;
+    }
+    return 0;
+}
+
+int ap_export_preset_list(const ap_library *lib,
+                          ap_export_preset *out, int max)
+{
+    if (!lib || !lib->db || !out || max <= 0) return -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(lib->db,
+            "SELECT id, name, settings_blob FROM export_presets ORDER BY name LIMIT ?;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return -1;
+    }
+    sqlite3_bind_int(st, 1, max);
+    int n = 0;
+    while (sqlite3_step(st) == SQLITE_ROW && n < max) {
+        out[n].id = sqlite3_column_int64(st, 0);
+        const char *nm = (const char *)sqlite3_column_text(st, 1);
+        snprintf(out[n].name, sizeof(out[n].name), "%s", nm ? nm : "");
+        ap_export_settings_load(NULL, &out[n].settings);
+        const char *bl = (const char *)sqlite3_column_text(st, 2);
+        if (bl) preset_from_blob(bl, &out[n].settings);
+        n++;
+    }
+    sqlite3_finalize(st);
+    return n;
+}
+
+int ap_export_preset_load(const ap_library *lib, int64_t id,
+                          ap_export_preset *out)
+{
+    if (!lib || !lib->db || !out) return -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(lib->db,
+            "SELECT id, name, settings_blob FROM export_presets WHERE id = ?;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return -1;
+    }
+    sqlite3_bind_int64(st, 1, id);
+    int rc = -1;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        out->id = sqlite3_column_int64(st, 0);
+        const char *nm = (const char *)sqlite3_column_text(st, 1);
+        snprintf(out->name, sizeof(out->name), "%s", nm ? nm : "");
+        ap_export_settings_load(NULL, &out->settings);
+        const char *bl = (const char *)sqlite3_column_text(st, 2);
+        if (bl) preset_from_blob(bl, &out->settings);
+        rc = 0;
+    }
+    sqlite3_finalize(st);
+    return rc;
+}
+
+int ap_export_preset_delete(ap_library *lib, int64_t id)
+{
+    if (!lib || !lib->db) return -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(lib->db,
+            "DELETE FROM export_presets WHERE id = ?;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return -1;
+    }
+    sqlite3_bind_int64(st, 1, id);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return (rc == SQLITE_DONE) ? 0 : -1;
 }

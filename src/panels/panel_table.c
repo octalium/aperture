@@ -24,6 +24,8 @@ extern const ap_panel panel_export_format;
 extern const ap_panel panel_export_quality;
 extern const ap_panel panel_export_naming;
 extern const ap_panel panel_export_destination;
+extern const ap_panel panel_export_presets;
+extern const ap_panel panel_export_batch;
 
 const ap_panel *const ap_panel_registry[] = {
     &panel_photo_edit,
@@ -39,5 +41,7 @@ const ap_panel *const ap_panel_registry[] = {
     &panel_export_quality,
     &panel_export_naming,
     &panel_export_destination,
+    &panel_export_presets,
+    &panel_export_batch,
     NULL,
 };
