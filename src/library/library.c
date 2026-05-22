@@ -974,6 +974,8 @@ static const char *sort_order_clause(ap_library_sort sort)
         return "ORDER BY COALESCE(capture_time, 0), path";
     case AP_SORT_ADDED_AT:
         return "ORDER BY added_at, path";
+    case AP_SORT_RATING:
+        return "ORDER BY rating DESC, path";
     case AP_SORT_PATH:
     default:
         return "ORDER BY path";

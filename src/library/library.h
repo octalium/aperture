@@ -215,6 +215,7 @@ typedef enum {
     AP_SORT_PATH         = 0,  // relative filename path (default)
     AP_SORT_CAPTURE_TIME = 1,  // EXIF capture_time (oldest first)
     AP_SORT_ADDED_AT     = 2,  // library import time (oldest first)
+    AP_SORT_RATING       = 3,  // star rating (highest first)
 } ap_library_sort;
 
 // Re-order the in-memory photo list by re-reading the photos table
