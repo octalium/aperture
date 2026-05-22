@@ -55,7 +55,7 @@ static void open_rename_popup(int idx, const char *current)
     snprintf(g_rename_buf, sizeof(g_rename_buf), "%s", current ? current : "");
 }
 
-static bool draw_rename_modal(ap_edit_stack *stack)
+static bool draw_rename_modal(ap_app *app, ap_edit_stack *stack)
 {
     if (g_rename_idx < 0) return false;
     if (!igIsPopupOpen_Str("Rename Edit", 0)) {
@@ -71,6 +71,7 @@ static bool draw_rename_modal(ap_edit_stack *stack)
         if (igButton("Save", (ImVec2_c){ 120.0f, 0.0f })) {
             ap_edit_entry *e = ap_edit_stack_at(stack, g_rename_idx);
             if (e) {
+                ap_app_edit_snapshot(app);
                 snprintf(e->display_name, sizeof(e->display_name),
                          "%s", g_rename_buf);
                 changed = true;
@@ -82,6 +83,7 @@ static bool draw_rename_modal(ap_edit_stack *stack)
         if (igButton("Clear", (ImVec2_c){ 120.0f, 0.0f })) {
             ap_edit_entry *e = ap_edit_stack_at(stack, g_rename_idx);
             if (e) {
+                ap_app_edit_snapshot(app);
                 e->display_name[0] = '\0';
                 changed = true;
             }
@@ -196,6 +198,7 @@ static void edits_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
 
         bool enabled = e->enabled;
         if (igCheckbox("##en", &enabled)) {
+            ap_app_edit_snapshot(app);
             e->enabled   = enabled;
             toggled_idx  = i;
             toggled_val  = enabled;
@@ -259,14 +262,17 @@ static void edits_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
     }
 
     if (drag_src >= 0 && drag_dst >= 0) {
+        ap_app_edit_snapshot(app);
         ap_edit_stack_reorder(stack, drag_src, drag_dst);
         changed = true;
     }
     if (do_reset >= 0) {
+        ap_app_edit_snapshot(app);
         ap_edit_stack_reset(stack, do_reset);
         changed = true;
     }
     if (do_remove >= 0) {
+        ap_app_edit_snapshot(app);
         ap_edit_stack_remove(stack, do_remove);
         changed = true;
     }
@@ -279,7 +285,7 @@ static void edits_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
         open_rename_popup(do_rename, current);
     }
 
-    if (draw_rename_modal(stack)) changed = true;
+    if (draw_rename_modal(app, stack)) changed = true;
 
     igEnd();
 
@@ -324,6 +330,7 @@ static void tools_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
         if (igSelectable_Bool(m->display_name, false,
                               ImGuiSelectableFlags_AllowDoubleClick,
                               (ImVec2_c){ 0.0f, 0.0f })) {
+            ap_app_edit_snapshot(app);
             if (ap_edit_stack_add(stack, m->name) >= 0) {
                 added = true;
             }
@@ -575,8 +582,7 @@ static void config_window(ap_app *app, ap_photo *photo,
     igPushID_Int(idx);
     if (igBegin(title, &open, ImGuiWindowFlags_AlwaysAutoResize)) {
         if (igSmallButton("Reset")) {
-            // Param change only - flows to the GPU via push
-            // constants on the next record. No graph rebuild needed.
+            ap_app_edit_snapshot(app);
             ap_edit_stack_reset(stack, idx);
         }
         igSameLine(0.0f, -1.0f);
@@ -598,21 +604,45 @@ static void config_window(ap_app *app, ap_photo *photo,
             ? e->params[m->variant_param_slot] : 0.0f;
 
         if (has_variants) {
+            float pre_variant = e->params[m->variant_param_slot];
             ap_module_render_variant_combo(m, e->params);
+            if ((int)e->params[m->variant_param_slot] != (int)pre_variant) {
+                // Variant changed: snapshot with the pre-change state.
+                // Temporarily restore the old variant, snapshot, then put
+                // the new value back.
+                float post_variant                = e->params[m->variant_param_slot];
+                e->params[m->variant_param_slot]  = pre_variant;
+                ap_app_edit_snapshot(app);
+                e->params[m->variant_param_slot]  = post_variant;
+            }
             igSeparator();
         }
 
-        bool want_rebuild = false;
+        bool want_rebuild     = false;
+        bool snapshot_req     = false;
+
+        // Capture pre-render state: if a slider drag activates inside
+        // render_params, we snapshot from here (before the drag changed
+        // any params) so the undo step restores the pre-drag stack.
+        ap_edit_stack pre_render = *stack;
+
         if (m->render_params) {
             ap_module_render_ctx ctx = {
-                .image_width     = ap_photo_width(photo),
-                .image_height    = ap_photo_height(photo),
-                .str_params      = e->str_params,
-                .request_rebuild = &want_rebuild,
+                .image_width       = ap_photo_width(photo),
+                .image_height      = ap_photo_height(photo),
+                .str_params        = e->str_params,
+                .request_rebuild   = &want_rebuild,
+                .snapshot_requested = &snapshot_req,
             };
+            ap_module_render_ctx_push(&ctx);
             m->render_params(m, e->params, &ctx);
+            ap_module_render_ctx_pop();
         } else {
             igTextDisabled("(no parameters)");
+        }
+
+        if (snapshot_req && photo) {
+            ap_edit_history_snapshot(ap_photo_history(photo), &pre_render);
         }
 
         if (want_rebuild ||
@@ -773,6 +803,7 @@ static void draw_apply_pipeline_modal(ap_app *app, ap_photo *photo,
         igSeparator();
 
         if (igButton("Apply", (ImVec2_c){ 120.0f, 0.0f })) {
+            ap_app_edit_snapshot(app);
             if (ap_pipeline_apply_to_stack(g_apply_pending_id, stack) == 0) {
                 ap_app_rebuild_photo_graph(app);
                 snprintf(g_apply_status, sizeof(g_apply_status),

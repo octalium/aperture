@@ -77,24 +77,37 @@ static void transform_render(const ap_module *self, float *params,
 
         bool changed = false;
         changed |= igInputInt("X (px)",      &x, 1, 16, 0);
+        if (igIsItemDeactivatedAfterEdit() && ctx->snapshot_requested)
+            *ctx->snapshot_requested = true;
         if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
             x = 0; changed = true;
+            if (ctx->snapshot_requested) *ctx->snapshot_requested = true;
         }
         changed |= igInputInt("Y (px)",      &y, 1, 16, 0);
+        if (igIsItemDeactivatedAfterEdit() && ctx->snapshot_requested)
+            *ctx->snapshot_requested = true;
         if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
             y = 0; changed = true;
+            if (ctx->snapshot_requested) *ctx->snapshot_requested = true;
         }
         changed |= igInputInt("Width (px)",  &w, 1, 16, 0);
+        if (igIsItemDeactivatedAfterEdit() && ctx->snapshot_requested)
+            *ctx->snapshot_requested = true;
         if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
             w = iw; changed = true;
+            if (ctx->snapshot_requested) *ctx->snapshot_requested = true;
         }
         changed |= igInputInt("Height (px)", &h, 1, 16, 0);
+        if (igIsItemDeactivatedAfterEdit() && ctx->snapshot_requested)
+            *ctx->snapshot_requested = true;
         if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
             h = ih; changed = true;
+            if (ctx->snapshot_requested) *ctx->snapshot_requested = true;
         }
         if (igButton("Reset crop", (ImVec2_c){ 0.0f, 0.0f })) {
             x = 0; y = 0; w = iw; h = ih;
             changed = true;
+            if (ctx->snapshot_requested) *ctx->snapshot_requested = true;
         }
         if (changed) {
             x = clampi(x, 0, iw - 1);
@@ -120,9 +133,15 @@ static void transform_render(const ap_module *self, float *params,
     igSeparatorText("Flip");
     bool fx = params[SLOT_FLIP_X] != 0.0f;
     bool fy = params[SLOT_FLIP_Y] != 0.0f;
-    if (igCheckbox("Flip X", &fx)) params[SLOT_FLIP_X] = fx ? 1.0f : 0.0f;
+    if (igCheckbox("Flip X", &fx)) {
+        if (ctx->snapshot_requested) *ctx->snapshot_requested = true;
+        params[SLOT_FLIP_X] = fx ? 1.0f : 0.0f;
+    }
     igSameLine(0.0f, -1.0f);
-    if (igCheckbox("Flip Y", &fy)) params[SLOT_FLIP_Y] = fy ? 1.0f : 0.0f;
+    if (igCheckbox("Flip Y", &fy)) {
+        if (ctx->snapshot_requested) *ctx->snapshot_requested = true;
+        params[SLOT_FLIP_Y] = fy ? 1.0f : 0.0f;
+    }
 
     // ---- Scale ----------------------------------------------------
     igSeparatorText("Scale");

@@ -63,6 +63,12 @@ typedef struct {
     // rather than just a push constant (e.g. committing a profile path
     // so a LUT-bearing variant re-bakes). Never NULL.
     bool *request_rebuild;
+
+    // render_params sets *snapshot_requested when a slider drag begins
+    // (igIsItemActivated for any slider). The config window takes an
+    // undo snapshot once per drag-start so continuous slider motion is a
+    // single undo step. Never NULL.
+    bool *snapshot_requested;
 } ap_module_render_ctx;
 
 // Render an ImGui config widget for the module's per-instance
@@ -208,9 +214,21 @@ bool ap_module_render_variant_combo(const ap_module *self, float *params);
 // clamped on input) and with ImGui's default speed-tweak support active
 // (Ctrl-drag = fine control, Shift-drag = coarse). Double-click resets
 // the slot to its default value.
+//
+// When a render context is active (ap_module_render_ctx_push was
+// called) and a drag begins (igIsItemActivated), the slider sets
+// ctx->snapshot_requested so the config window can snapshot the
+// pre-drag stack state for undo coalescing.
 void ap_module_slider_reset(const ap_module *self, float *params,
                             const char *label, int slot,
                             float lo, float hi, const char *fmt);
+
+// Set / clear the render context that ap_module_slider_reset reads to
+// signal drag activation. Called by the config window around
+// render_params so the snapshot path has access without changing the
+// slider helper's call signature.
+void ap_module_render_ctx_push(const ap_module_render_ctx *ctx);
+void ap_module_render_ctx_pop(void);
 
 // Resolved per-stage view of which shader + push layout + pack_push to
 // use. For modules with no variants, mirrors the legacy single-shader

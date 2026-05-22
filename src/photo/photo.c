@@ -1,6 +1,7 @@
 #include "photo.h"
 
 #include "core/log.h"
+#include "edit/history.h"
 #include "gpu/texture.h"
 #include "io/raw.h"
 #include "library/library.h"
@@ -28,9 +29,10 @@ struct ap_photo {
     ap_texture        *texture;
     ap_pipeline_graph *graph;
 
-    ap_edit_stack stack;
-    bool          respect_orientation;
-    bool          view_raw;        // bypass user stack at graph build
+    ap_edit_stack   stack;
+    ap_edit_history history;
+    bool            respect_orientation;
+    bool            view_raw;      // bypass user stack at graph build
 
     // Metadata: file_meta is what the loader extracted from the raw
     // file; user_meta is the per-field overlay persisted in the
@@ -133,6 +135,7 @@ ap_photo *ap_photo_open_with_raw(ap_gpu *g, const char *path,
     }
     photo->respect_orientation = true;
     ap_edit_stack_init(&photo->stack);
+    ap_edit_history_init(&photo->history);
     ap_photo_metadata_clear(&photo->user_meta);
     for (int i = 0; i < AP_META_FIELD_COUNT; i++) photo->user_set[i] = false;
     ap_photo_culling_clear(&photo->culling);
@@ -347,4 +350,27 @@ void ap_photo_set_view_raw(ap_photo *photo, bool yes)
 {
     if (!photo) return;
     photo->view_raw = yes;
+}
+
+void ap_photo_edit_snapshot(ap_photo *photo)
+{
+    if (!photo) return;
+    ap_edit_history_snapshot(&photo->history, &photo->stack);
+}
+
+bool ap_photo_undo(ap_photo *photo)
+{
+    if (!photo) return false;
+    return ap_edit_history_undo(&photo->history, &photo->stack);
+}
+
+bool ap_photo_redo(ap_photo *photo)
+{
+    if (!photo) return false;
+    return ap_edit_history_redo(&photo->history, &photo->stack);
+}
+
+ap_edit_history *ap_photo_history(ap_photo *photo)
+{
+    return photo ? &photo->history : NULL;
 }
