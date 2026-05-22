@@ -1057,6 +1057,71 @@ static int load_group_cache(ap_library *lib)
     return 0;
 }
 
+// Reconcile the photos table with the filesystem: drop rows (and their
+// cached thumbnails) for files no longer on disk. The scan only ever
+// adds — without this, files moved or deleted outside aperture leave
+// phantom entries behind.
+static void prune_missing_photos(ap_library *lib)
+{
+    sqlite3_stmt *sel = NULL;
+    if (sqlite3_prepare_v2(lib->db, "SELECT path FROM photos;",
+                           -1, &sel, NULL) != SQLITE_OK) {
+        return;
+    }
+    char **gone = NULL;
+    int    n = 0, cap = 0;
+    while (sqlite3_step(sel) == SQLITE_ROW) {
+        const char *rel = (const char *)sqlite3_column_text(sel, 0);
+        if (!rel) continue;
+        char abs[4096];
+        if (snprintf(abs, sizeof(abs), "%s/%s",
+                     lib->root, rel) >= (int)sizeof(abs)) {
+            continue;
+        }
+        struct stat st;
+        if (stat(abs, &st) == 0) continue;       // still on disk
+        if (n == cap) {
+            int nc = cap ? cap * 2 : 32;
+            char **np = realloc(gone, (size_t)nc * sizeof(*np));
+            if (!np) break;
+            gone = np;
+            cap  = nc;
+        }
+        gone[n] = strdup(rel);
+        if (gone[n]) n++;
+    }
+    sqlite3_finalize(sel);
+
+    if (n > 0) {
+        sqlite3_stmt *del_p = NULL, *del_t = NULL;
+        sqlite3_prepare_v2(lib->db, "DELETE FROM photos WHERE path = ?;",
+                           -1, &del_p, NULL);
+        sqlite3_prepare_v2(lib->db, "DELETE FROM thumbnails WHERE path = ?;",
+                           -1, &del_t, NULL);
+        sqlite3_exec(lib->db, "BEGIN;", NULL, NULL, NULL);
+        for (int i = 0; i < n; i++) {
+            if (del_p) {
+                sqlite3_reset(del_p);
+                sqlite3_bind_text(del_p, 1, gone[i], -1, SQLITE_STATIC);
+                sqlite3_step(del_p);
+            }
+            if (del_t) {
+                sqlite3_reset(del_t);
+                sqlite3_bind_text(del_t, 1, gone[i], -1, SQLITE_STATIC);
+                sqlite3_step(del_t);
+            }
+        }
+        sqlite3_exec(lib->db, "COMMIT;", NULL, NULL, NULL);
+        sqlite3_finalize(del_p);
+        sqlite3_finalize(del_t);
+        AP_INFO("library: pruned %d photo(s) no longer on disk", n);
+    }
+    for (int i = 0; i < n; i++) {
+        free(gone[i]);
+    }
+    free(gone);
+}
+
 ap_library *ap_library_open(const char *path)
 {
     if (!path) {
@@ -1144,6 +1209,9 @@ ap_library *ap_library_open(const char *path)
     scan_dir(lib, insert_stmt, lib->root, "", now);
     sqlite3_exec(lib->db, "COMMIT;", NULL, NULL, NULL);
     sqlite3_finalize(insert_stmt);
+
+    // Scan only adds; reconcile the other direction too.
+    prune_missing_photos(lib);
 
     if (load_photo_cache(lib) < 0) goto fail;
 
