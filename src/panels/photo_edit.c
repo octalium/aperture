@@ -107,6 +107,8 @@ static char    g_save_as_name[AP_PIPELINE_NAME_LEN] = {0};
 static char    g_save_status[256]   = {0};
 static char    g_apply_status[256]  = {0};
 static bool    g_save_as_pending_overwrite = false;
+static int64_t g_apply_pending_id   = -1;   // id of pipeline awaiting confirm
+static char    g_apply_pending_name[AP_PIPELINE_NAME_LEN] = {0};
 
 static void open_save_as_popup(void)
 {
@@ -118,8 +120,10 @@ static void open_save_as_popup(void)
 
 static void open_apply_popup(void)
 {
-    g_apply_open      = true;
-    g_apply_status[0] = '\0';
+    g_apply_open          = true;
+    g_apply_status[0]     = '\0';
+    g_apply_pending_id    = -1;
+    g_apply_pending_name[0] = '\0';
 }
 
 static void edits_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
@@ -183,6 +187,7 @@ static void edits_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
         if (igSelectable_Bool(label, active,
                               ImGuiSelectableFlags_AllowOverlap, row_size)) {
             e->show_config = !e->show_config;
+            ap_edit_stack_set_focus(stack, i);
         }
 
         // Drag-and-drop reorder.
@@ -477,10 +482,11 @@ static void config_window(ap_app *app, ap_photo *photo,
     char label_buf[AP_EDIT_DISPLAY_LEN];
     const char *display = ap_edit_stack_label_at(stack, idx,
                                                  label_buf, sizeof(label_buf));
-    // ###entry_<i> = stable hidden ID so each entry gets its own
-    // window state even when names collide.
+    // ###entry_<id> = stable hidden ID derived from the entry's
+    // per-session stable id, not its array index. Window state
+    // (position, size) follows the entry on drag-reorder.
     char title[128];
-    snprintf(title, sizeof(title), "%s###entry_%d", display, idx);
+    snprintf(title, sizeof(title), "%s###entry_%u", display, e->id);
 
     ImGuiIO *io = igGetIO_Nil();
     ImVec2_c center = { 0.0f, 0.0f };
@@ -658,44 +664,61 @@ static void draw_apply_pipeline_modal(ap_app *app, ap_photo *photo,
     }
     if (!igBeginPopupModal("Apply Pipeline", NULL, 0)) return;
 
-    igText("Replace the current edit stack with:");
-    igSeparator();
+    (void)photo;
 
-    ap_pipeline_def list[APPLY_LIST_MAX];
-    int n = ap_pipeline_list(list, APPLY_LIST_MAX);
-    if (n <= 0) {
-        igTextDisabled("(no pipelines available)");
-    } else {
-        for (int i = 0; i < n; i++) {
-            char label[AP_PIPELINE_NAME_LEN + 32];
-            int entries = ap_edit_stack_count(&list[i].stack);
-            snprintf(label, sizeof(label), "%s  (%d edit%s)",
-                     list[i].name, entries, entries == 1 ? "" : "s");
-            if (igSelectable_Bool(label, false, 0, (ImVec2_c){ 0, 0 })) {
-                // Apply onto the photo's stack: replace in-place,
-                // then rebuild the pipeline graph so the canvas reflects
-                // the new edits immediately. Sidecar gets written on
-                // the next close (the standard photo-close path).
-                if (ap_pipeline_apply_to_stack(list[i].id, stack) == 0) {
-                    ap_app_rebuild_photo_graph(app);
-                    snprintf(g_apply_status, sizeof(g_apply_status),
-                             "Applied \"%s\".", list[i].name);
-                    igCloseCurrentPopup();
-                } else {
-                    snprintf(g_apply_status, sizeof(g_apply_status),
-                             "Apply failed.");
+    if (g_apply_pending_id < 0) {
+        igText("Replace the current edit stack with:");
+        igSeparator();
+
+        ap_pipeline_def list[APPLY_LIST_MAX];
+        int n = ap_pipeline_list(list, APPLY_LIST_MAX);
+        if (n <= 0) {
+            igTextDisabled("(no pipelines available)");
+        } else {
+            for (int i = 0; i < n; i++) {
+                char label[AP_PIPELINE_NAME_LEN + 32];
+                int entries = ap_edit_stack_count(&list[i].stack);
+                snprintf(label, sizeof(label), "%s  (%d edit%s)",
+                         list[i].name, entries, entries == 1 ? "" : "s");
+                if (igSelectable_Bool(label, false, 0, (ImVec2_c){ 0, 0 })) {
+                    // Stage the selection — a confirmation click applies it.
+                    g_apply_pending_id = list[i].id;
+                    snprintf(g_apply_pending_name, sizeof(g_apply_pending_name),
+                             "%s", list[i].name);
                 }
             }
         }
-    }
-    (void)photo;
 
-    igSeparator();
-    if (igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f })) {
-        igCloseCurrentPopup();
-    }
-    if (g_apply_status[0]) {
+        igSeparator();
+        if (igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f })) {
+            igCloseCurrentPopup();
+        }
+    } else {
+        igText("Replace the entire edit stack with \"%s\"?",
+               g_apply_pending_name);
+        igTextDisabled("This overwrites the current edits and cannot be undone.");
+        igSeparator();
+
+        if (igButton("Apply", (ImVec2_c){ 120.0f, 0.0f })) {
+            if (ap_pipeline_apply_to_stack(g_apply_pending_id, stack) == 0) {
+                ap_app_rebuild_photo_graph(app);
+                snprintf(g_apply_status, sizeof(g_apply_status),
+                         "Applied \"%s\".", g_apply_pending_name);
+            } else {
+                snprintf(g_apply_status, sizeof(g_apply_status),
+                         "Apply failed.");
+            }
+            g_apply_pending_id = -1;
+            igCloseCurrentPopup();
+        }
         igSameLine(0.0f, -1.0f);
+        if (igButton("Back", (ImVec2_c){ 120.0f, 0.0f })) {
+            g_apply_pending_id = -1;
+        }
+    }
+
+    if (g_apply_status[0]) {
+        igSeparator();
         igTextDisabled("%s", g_apply_status);
     }
 
