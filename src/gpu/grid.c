@@ -600,12 +600,18 @@ void ap_grid_set_photo_count(ap_grid *grid, int count)
         count = GRID_THUMB_CAP_MAX;
     }
 
+    int prev_count    = grid->photo_count;
     grid->photo_count = count;
     if (grid->selected_idx >= count) {
         grid->selected_idx = count > 0 ? count - 1 : 0;
     }
-    grid->scroll_y        = 0.0f;
-    grid->scroll_y_target = 0.0f;
+    // Preserve the scroll position when the photo count is unchanged
+    // (re-tagging photos doesn't change the visible set); reset to the
+    // top only when the set actually grew or shrank.
+    if (count != prev_count) {
+        grid->scroll_y        = 0.0f;
+        grid->scroll_y_target = 0.0f;
+    }
 
     // Reallocate the selection bitmap to match the new photo count.
     free(grid->selected_bitmap);
@@ -761,8 +767,11 @@ void ap_grid_zoom_at(ap_grid *grid, int new_cell_px,
     effective_rect(grid, win_width, win_height, &rx, &ry, &rw, &rh);
     (void)rw; (void)rh;
 
-    // old pitch uses the fractional cell size (what's currently rendered)
-    float old_pitch = grid->cell_size_f + (float)grid->cell_gap_y;
+    // old_pitch must match the layout that scroll_y_target is expressed
+    // in — the integer cell_size target, not the mid-ease fractional
+    // cell_size_f. Mixing them drifts the anchor when zoom steps arrive
+    // faster than the ease settles.
+    float old_pitch = (float)grid->cell_size + (float)grid->cell_gap_y;
     float new_pitch = (float)new_cell_px  + (float)grid->cell_gap_y;
     if (old_pitch <= 0.0f || new_pitch <= 0.0f) {
         grid->cell_size = new_cell_px;
