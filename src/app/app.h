@@ -1,6 +1,7 @@
 #ifndef APERTURE_APP_H
 #define APERTURE_APP_H
 
+#include "library/library.h"
 #include "photo/metadata.h"
 
 #include <stdbool.h>
@@ -112,6 +113,18 @@ int         ap_app_grid_selection_count(const ap_app *app);
 // error.
 int         ap_app_assign_selection_to_group(ap_app *app,
                                              const char *group, bool add);
+
+// Library-grid sort order. Setting a new sort reloads the photo list
+// from the db and rebuilds the grid map; all in-flight thumbnail jobs
+// are drained first. No-op when the sort key is already active.
+void            ap_app_set_sort(ap_app *app, ap_library_sort sort);
+ap_library_sort ap_app_sort(const ap_app *app);
+
+// Library-grid search filter. `query` is a case-insensitive substring
+// matched against each photo's relative path. An empty or NULL query
+// shows all photos. Rebuilds the grid map immediately.
+void        ap_app_set_search(ap_app *app, const char *query);
+const char *ap_app_search(const ap_app *app);
 
 #ifdef __cplusplus
 }

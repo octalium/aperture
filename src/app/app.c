@@ -137,6 +137,9 @@ struct ap_app {
     int              grid_map_count;
     int              grid_map_cap;
 
+    ap_library_sort  sort;                     // current photo list order
+    char             search_buf[256];          // substring filter; empty = show all
+
     bool               import_modal;        // File -> Import
     char               import_source[4096];
     ap_import_settings import_settings;
@@ -672,6 +675,12 @@ static void rebuild_grid_map(ap_app *app)
                 }
             }
         }
+        if (show && app->search_buf[0]) {
+            const char *rel = ap_library_photo_relative_path(app->library, i);
+            if (!rel || !strcasestr(rel, app->search_buf)) {
+                show = false;
+            }
+        }
         if (show) {
             app->grid_map[app->grid_map_count++] = i;
         }
@@ -716,6 +725,8 @@ int ap_app_open_library(ap_app *app, const char *path)
     }
     app->group_filter_kind    = AP_GROUP_FILTER_ALL;
     app->group_filter_name[0] = '\0';
+    app->sort                 = AP_SORT_PATH;
+    app->search_buf[0]        = '\0';
     rebuild_grid_map(app);
     app->mode = AP_MODE_LIBRARY;
     bind_mode_view(app);
@@ -810,6 +821,44 @@ int ap_app_group_filter_kind(const ap_app *app)
 const char *ap_app_group_filter_name(const ap_app *app)
 {
     return app ? app->group_filter_name : "";
+}
+
+void ap_app_set_sort(ap_app *app, ap_library_sort sort)
+{
+    if (!app || !app->library) return;
+    if (app->sort == sort) return;
+    app->sort = sort;
+    // Drain in-flight thumbnail jobs before reordering: jobs carry a
+    // library index and the reload shifts every index.
+    drain_all_workers(app);
+    ap_app_wait_idle(app);
+    ap_library_reload_sorted(app->library, sort);
+    // Clear grid thumbnails: the thumbnail cache (thumbs[]) was reset
+    // by the reload, and grid cells still hold stale VkImageViews.
+    if (app->grid) {
+        int c;
+        for (c = 0; c < app->grid_map_count; c++) {
+            ap_grid_set_thumbnail(app->grid, c, VK_NULL_HANDLE, VK_NULL_HANDLE);
+        }
+    }
+    rebuild_grid_map(app);
+}
+
+ap_library_sort ap_app_sort(const ap_app *app)
+{
+    return app ? app->sort : AP_SORT_PATH;
+}
+
+void ap_app_set_search(ap_app *app, const char *query)
+{
+    if (!app) return;
+    snprintf(app->search_buf, sizeof(app->search_buf), "%s", query ? query : "");
+    rebuild_grid_map(app);
+}
+
+const char *ap_app_search(const ap_app *app)
+{
+    return app ? app->search_buf : "";
 }
 
 int ap_app_grid_selection_count(const ap_app *app)
@@ -2015,9 +2064,10 @@ int ap_app_run_frame(ap_app *app)
             // Library-mode bulk panels share the bottom-right slot
             // with Edits. They're mode-gated, so only one tab renders
             // at a time and the slot reads cleanly in either mode.
-            igDockBuilderDockWindow("Metadata##library",  right_bot);
-            igDockBuilderDockWindow("Pipelines##library", right_bot);
-            igDockBuilderDockWindow("Groups##library",    right_bot);
+            igDockBuilderDockWindow("Metadata##library",      right_bot);
+            igDockBuilderDockWindow("Pipelines##library",     right_bot);
+            igDockBuilderDockWindow("Groups##library",        right_bot);
+            igDockBuilderDockWindow("Sort & Search##library", right_bot);
             igDockBuilderFinish(dockspace_id);
         }
         igDockSpace(dockspace_id,

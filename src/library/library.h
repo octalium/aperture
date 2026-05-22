@@ -190,6 +190,21 @@ int ap_library_photo_absolute_path(const ap_library *lib, int index,
 // success, -1 on a bad index.
 int ap_library_photo_remove(ap_library *lib, int index);
 
+// Sort keys for the photo list order. The value is the SQLite ORDER BY
+// clause term; passing an invalid enum falls back to AP_SORT_PATH.
+typedef enum {
+    AP_SORT_PATH         = 0,  // relative filename path (default)
+    AP_SORT_CAPTURE_TIME = 1,  // EXIF capture_time (oldest first)
+    AP_SORT_ADDED_AT     = 2,  // library import time (oldest first)
+} ap_library_sort;
+
+// Re-order the in-memory photo list by re-reading the photos table
+// with the given sort key.  Drops all cached thumbnails, rebuilds
+// the group index, and resets the thumbnail decode cursor.  Callers
+// must follow this with ap_app_rebuild_grid_map (or equivalent) so
+// the grid reflects the new order.  Returns 0 on success.
+int ap_library_reload_sorted(ap_library *lib, ap_library_sort sort);
+
 // ----- thumbnail cache (lifetime-bound to the library) -----
 
 typedef struct ap_thumbnail ap_thumbnail;
