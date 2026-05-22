@@ -59,28 +59,24 @@ static int hsl_pack_push(const ap_module *self,
     return 0;
 }
 
+// Width of the band-name label column and each per-channel slider in the
+// HSL grid. Kept as named constants so the layout can be tuned in one place.
+#define HSL_LABEL_COL_W 80.0f
+#define HSL_SLIDER_W    110.0f
+
 static void band_row(const ap_module *self, float *params, int band)
 {
     igPushID_Int(band);
     igText("%-7s", BAND_NAMES[band]);
-    igSameLine(80.0f, 0.0f);
-    igSetNextItemWidth(110.0f);
-    igSliderFloat("H", &params[SLOT_H_BASE + band], -0.1f, 0.1f, "%.3f", 0);
-    if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
-        params[SLOT_H_BASE + band] = self->params_default[SLOT_H_BASE + band];
-    }
+    igSameLine(HSL_LABEL_COL_W, 0.0f);
+    igSetNextItemWidth(HSL_SLIDER_W);
+    ap_module_slider_reset(self, params, "H", SLOT_H_BASE + band, -0.1f, 0.1f, "%.3f");
     igSameLine(0.0f, -1.0f);
-    igSetNextItemWidth(110.0f);
-    igSliderFloat("S", &params[SLOT_S_BASE + band], -1.0f, 1.0f, "%.2f", 0);
-    if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
-        params[SLOT_S_BASE + band] = self->params_default[SLOT_S_BASE + band];
-    }
+    igSetNextItemWidth(HSL_SLIDER_W);
+    ap_module_slider_reset(self, params, "S", SLOT_S_BASE + band, -1.0f, 1.0f, "%.2f");
     igSameLine(0.0f, -1.0f);
-    igSetNextItemWidth(110.0f);
-    igSliderFloat("L", &params[SLOT_L_BASE + band], -0.5f, 0.5f, "%.2f", 0);
-    if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
-        params[SLOT_L_BASE + band] = self->params_default[SLOT_L_BASE + band];
-    }
+    igSetNextItemWidth(HSL_SLIDER_W);
+    ap_module_slider_reset(self, params, "L", SLOT_L_BASE + band, -0.5f, 0.5f, "%.2f");
     igPopID();
 }
 

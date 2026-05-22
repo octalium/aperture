@@ -49,29 +49,23 @@ static int color_grade_pack_push(const ap_module *self,
     return 0;
 }
 
+// Width of each per-channel (R/G/B) slider in the color-grade grid.
+#define COLOR_GRADE_CHANNEL_W 120.0f
+
 static void rgb_row(const ap_module *self, float *params,
                     const char *label, int slot_r,
                     float lo, float hi)
 {
     igText("%s", label);
     igPushID_Str(label);
-    igSetNextItemWidth(120.0f);
-    igSliderFloat("R", &params[slot_r],     lo, hi, "%.3f", 0);
-    if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
-        params[slot_r] = self->params_default[slot_r];
-    }
+    igSetNextItemWidth(COLOR_GRADE_CHANNEL_W);
+    ap_module_slider_reset(self, params, "R", slot_r,     lo, hi, "%.3f");
     igSameLine(0.0f, -1.0f);
-    igSetNextItemWidth(120.0f);
-    igSliderFloat("G", &params[slot_r + 1], lo, hi, "%.3f", 0);
-    if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
-        params[slot_r + 1] = self->params_default[slot_r + 1];
-    }
+    igSetNextItemWidth(COLOR_GRADE_CHANNEL_W);
+    ap_module_slider_reset(self, params, "G", slot_r + 1, lo, hi, "%.3f");
     igSameLine(0.0f, -1.0f);
-    igSetNextItemWidth(120.0f);
-    igSliderFloat("B", &params[slot_r + 2], lo, hi, "%.3f", 0);
-    if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
-        params[slot_r + 2] = self->params_default[slot_r + 2];
-    }
+    igSetNextItemWidth(COLOR_GRADE_CHANNEL_W);
+    ap_module_slider_reset(self, params, "B", slot_r + 2, lo, hi, "%.3f");
     igPopID();
 }
 

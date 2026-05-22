@@ -188,6 +188,11 @@ struct ap_module {
     int                      variant_count;
     const ap_module_variant *variants;
     int                      variant_param_slot;
+
+    // Optional post-init hook called by ap_edit_stack_add after copying
+    // params_default into the new entry. Modules that need per-instance
+    // randomisation (e.g. Grain seed) set slots here. NULL when unused.
+    void (*init_instance)(float *params);
 };
 
 // Convenience widget for module render_params: a Combo binding to
@@ -197,6 +202,15 @@ struct ap_module {
 // snapshots the slot around the render_params call so a manual
 // return is optional but tidy).
 bool ap_module_render_variant_combo(const ap_module *self, float *params);
+
+// Shared slider widget used by all module render_params implementations.
+// Draws igSliderFloat with AlwaysClamp (so out-of-range edits are
+// clamped on input) and with ImGui's default speed-tweak support active
+// (Ctrl-drag = fine control, Shift-drag = coarse). Double-click resets
+// the slot to its default value.
+void ap_module_slider_reset(const ap_module *self, float *params,
+                            const char *label, int slot,
+                            float lo, float hi, const char *fmt);
 
 // Resolved per-stage view of which shader + push layout + pack_push to
 // use. For modules with no variants, mirrors the legacy single-shader

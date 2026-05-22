@@ -34,14 +34,8 @@ static void saturation_render(const ap_module *self, float *params,
 {
     (void)ctx;
     if (!params) return;
-    igSliderFloat("Saturation", &params[SLOT_SAT], -1.0f, 1.0f, "%.2f", 0);
-    if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
-        params[SLOT_SAT] = self->params_default[SLOT_SAT];
-    }
-    igSliderFloat("Vibrance",   &params[SLOT_VIB], -1.0f, 1.0f, "%.2f", 0);
-    if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
-        params[SLOT_VIB] = self->params_default[SLOT_VIB];
-    }
+    ap_module_slider_reset(self, params, "Saturation", SLOT_SAT, -1.0f, 1.0f, "%.2f");
+    ap_module_slider_reset(self, params, "Vibrance",   SLOT_VIB, -1.0f, 1.0f, "%.2f");
 }
 
 const ap_module module_saturation = {
