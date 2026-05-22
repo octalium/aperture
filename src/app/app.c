@@ -170,6 +170,34 @@ static void install_signal_handlers(void)
     sigaction(SIGTERM, &sa, NULL);
 }
 
+// Optional panels remember their open / closed state across sessions
+// in the app-wide settings, keyed by panel name. Window positions are
+// handled separately by ImGui's own ini.
+static void load_panel_visibility(void)
+{
+    for (const ap_panel *const *p = ap_panel_registry; *p; p++) {
+        const ap_panel *panel = *p;
+        if (!panel->visible || !panel->name) continue;
+        char key[128];
+        char val[8];
+        snprintf(key, sizeof(key), "panel.%s.visible", panel->name);
+        if (ap_settings_get(key, val, sizeof(val)) == 0) {
+            *panel->visible = (atoi(val) != 0);
+        }
+    }
+}
+
+static void save_panel_visibility(void)
+{
+    for (const ap_panel *const *p = ap_panel_registry; *p; p++) {
+        const ap_panel *panel = *p;
+        if (!panel->visible || !panel->name) continue;
+        char key[128];
+        snprintf(key, sizeof(key), "panel.%s.visible", panel->name);
+        ap_settings_set(key, *panel->visible ? "1" : "0");
+    }
+}
+
 ap_app *ap_app_create(int width, int height, const char *title)
 {
     ap_app *app = calloc(1, sizeof(*app));
@@ -221,9 +249,11 @@ ap_app *ap_app_create(int width, int height, const char *title)
         }
     }
 
-    // Load the active layout profile, if any. ImGui's IniFilename
-    // is NULL (see imgui_bridge.cpp); this is the explicit load.
+    // Restore the last-active layout profile and which optional panels
+    // were open last session. ImGui auto-persists window positions
+    // itself via its ini (see imgui_bridge.cpp).
     ap_layout_init();
+    load_panel_visibility();
 
     install_signal_handlers();
     return app;
@@ -288,6 +318,7 @@ void ap_app_destroy(ap_app *app)
 {
     if (!app) return;
 
+    save_panel_visibility();
     drain_all_workers(app);
     ap_app_wait_idle(app);
     ap_app_close_photo(app);
@@ -1772,6 +1803,7 @@ int ap_app_run_frame(ap_app *app)
     // visible underneath. Default layout (Image left, Edits + Tools
     // right) is built once on first launch; ImGui's .ini handles
     // every subsequent run.
+    ImGuiDockNode *dock_central = NULL;
     if (app->show_panels) {
         ImGuiViewport *vp = igGetMainViewport();
         igSetNextWindowPos(vp->WorkPos, ImGuiCond_Always,
@@ -1871,33 +1903,30 @@ int ap_app_run_frame(ap_app *app)
             // at a time and the slot reads cleanly in either mode.
             igDockBuilderDockWindow("Metadata##library",  right_bot);
             igDockBuilderDockWindow("Pipelines##library", right_bot);
+            igDockBuilderDockWindow("Groups##library",    right_bot);
             igDockBuilderFinish(dockspace_id);
         }
         igDockSpace(dockspace_id,
                     (ImVec2_c){ 0.0f, 0.0f },
                     ImGuiDockNodeFlags_PassthruCentralNode, NULL);
+        // Capture the central node here, inside the dock-host window,
+        // where dockspace_id was hashed in the right ImGui ID scope.
+        dock_central = igDockBuilderGetCentralNode(dockspace_id);
         igEnd();
     }
 
-    // Track the dockspace central node so the grid renders + lays out
-    // within whatever the user's panel arrangement leaves behind. With
-    // no panels docked the central node fills the whole viewport;
-    // with the default left/right split it's the slot in between.
-    // Cleared to "full window" when show_panels is off so the grid
-    // reverts to full-bleed rendering.
+    // Confine the grid to the dockspace central node so docked panels
+    // don't paint over it. dock_central was captured inside the
+    // dock-host window (correct ID scope) and stays NULL when
+    // show_panels is off — both cases fall through to full-window.
     if (app->grid) {
-        if (app->show_panels) {
-            ImGuiID dockspace_id = igGetID_Str("aperture_dockspace");
-            ImGuiDockNode *central = igDockBuilderGetCentralNode(dockspace_id);
-            if (central && central->Size.x > 0.0f && central->Size.y > 0.0f) {
-                ap_grid_set_render_rect(app->grid,
-                                        (int)central->Pos.x,
-                                        (int)central->Pos.y,
-                                        (int)central->Size.x,
-                                        (int)central->Size.y);
-            } else {
-                ap_grid_set_render_rect(app->grid, 0, 0, 0, 0);
-            }
+        if (dock_central &&
+            dock_central->Size.x > 0.0f && dock_central->Size.y > 0.0f) {
+            ap_grid_set_render_rect(app->grid,
+                                    (int)dock_central->Pos.x,
+                                    (int)dock_central->Pos.y,
+                                    (int)dock_central->Size.x,
+                                    (int)dock_central->Size.y);
         } else {
             ap_grid_set_render_rect(app->grid, 0, 0, 0, 0);
         }
