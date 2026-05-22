@@ -746,6 +746,11 @@ ap_library *ap_app_library(ap_app *app)
     return app ? app->library : NULL;
 }
 
+void ap_app_request_import(ap_app *app)
+{
+    if (app && app->library) app->import_modal = true;
+}
+
 int ap_app_apply_pipeline_to_selection(ap_app *app, int64_t pipeline_id)
 {
     if (!app || !app->library || !app->grid) return -1;

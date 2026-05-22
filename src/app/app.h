@@ -80,6 +80,9 @@ int       ap_app_request_jpeg_export(ap_app *app, ap_photo *photo,
 int         ap_app_open_library(ap_app *app, const char *path);
 void        ap_app_close_library(ap_app *app);
 ap_library *ap_app_library(ap_app *app);
+// Open the Import Photos dialog on the next frame (sets the same flag
+// the File > Import menu item uses). No-op when no library is open.
+void        ap_app_request_import(ap_app *app);
 
 // Apply a metadata-override patch to every photo currently in the
 // library grid's selection set. The bulk-edit panel + the photo-mode
