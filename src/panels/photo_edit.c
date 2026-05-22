@@ -262,7 +262,7 @@ static void edits_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
                 do_reset = i;
             }
             igSeparator();
-            if (igMenuItem_Bool("Remove", "Del", false, true)) {
+            if (igMenuItem_Bool("Remove", NULL, false, true)) {
                 do_remove = i;
             }
             igEndPopup();
