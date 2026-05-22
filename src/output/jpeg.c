@@ -1,6 +1,7 @@
 #include "jpeg.h"
 
 #include "core/log.h"
+#include "output/jpeg_error.h"
 
 #include <stddef.h>
 #include <stdio.h>
@@ -8,20 +9,6 @@
 
 #include <jpeglib.h>
 #include <setjmp.h>
-
-struct jpeg_error_jmp {
-    struct jpeg_error_mgr base;
-    jmp_buf jump;
-};
-
-static void on_jpeg_error_exit(j_common_ptr cinfo)
-{
-    char msg[JMSG_LENGTH_MAX];
-    (*cinfo->err->format_message)(cinfo, msg);
-    AP_ERROR("jpeg: %s", msg);
-    struct jpeg_error_jmp *err = (struct jpeg_error_jmp *)cinfo->err;
-    longjmp(err->jump, 1);
-}
 
 // Drive compression for a cinfo whose destination has already been
 // wired up (stdio or memory). RGBA in, RGB JPEG out.
@@ -76,9 +63,8 @@ int ap_export_jpeg(const uint8_t *rgba, int width, int height,
     }
 
     struct jpeg_compress_struct cinfo = {0};
-    struct jpeg_error_jmp err;
-    cinfo.err = jpeg_std_error(&err.base);
-    err.base.error_exit = on_jpeg_error_exit;
+    ap_jpeg_error err;
+    cinfo.err = ap_jpeg_error_install(&err, "export");
 
     int rc = -1;
     if (setjmp(err.jump) != 0) {
@@ -108,9 +94,8 @@ int ap_export_jpeg_mem(const uint8_t *rgba, int width, int height,
     if (quality > 100) quality = 100;
 
     struct jpeg_compress_struct cinfo = {0};
-    struct jpeg_error_jmp err;
-    cinfo.err = jpeg_std_error(&err.base);
-    err.base.error_exit = on_jpeg_error_exit;
+    ap_jpeg_error err;
+    cinfo.err = ap_jpeg_error_install(&err, "export");
 
     // libjpeg-turbo malloc's this buffer and grows it as needed; the
     // caller owns it after a successful return.

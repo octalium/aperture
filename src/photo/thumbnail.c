@@ -3,6 +3,7 @@
 #include "core/log.h"
 #include "gpu/texture.h"
 #include "output/jpeg.h"
+#include "output/jpeg_error.h"
 
 #include <libraw/libraw.h>
 
@@ -16,20 +17,6 @@
 struct ap_thumbnail {
     ap_texture *tex;
 };
-
-struct jpeg_error_jmp {
-    struct jpeg_error_mgr base;
-    jmp_buf jump;
-};
-
-static void on_jpeg_error_exit(j_common_ptr cinfo)
-{
-    char msg[JMSG_LENGTH_MAX];
-    (*cinfo->err->format_message)(cinfo, msg);
-    AP_ERROR("thumb jpeg: %s", msg);
-    struct jpeg_error_jmp *err = (struct jpeg_error_jmp *)cinfo->err;
-    longjmp(err->jump, 1);
-}
 
 // Embedded NEF/CR2/ARW previews are commonly the full-size camera
 // JPEG (e.g. 7360×4912 for D800E). Decoding that wholesale and
@@ -168,9 +155,8 @@ static int decode_jpeg_to_rgba(const uint8_t *jpeg, size_t jpeg_size,
                                uint8_t **out_pixels, int *out_w, int *out_h)
 {
     struct jpeg_decompress_struct cinfo = {0};
-    struct jpeg_error_jmp err;
-    cinfo.err = jpeg_std_error(&err.base);
-    err.base.error_exit = on_jpeg_error_exit;
+    ap_jpeg_error err;
+    cinfo.err = ap_jpeg_error_install(&err, "thumb");
 
     uint8_t *rgba = NULL;
     uint8_t *row  = NULL;
