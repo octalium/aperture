@@ -1,5 +1,7 @@
 #include "metadata.h"
 
+#include "core/log.h"
+
 #include <stdio.h>
 #include <string.h>
 
@@ -42,25 +44,39 @@ void ap_photo_metadata_clear(ap_photo_metadata *m)
 void ap_photo_metadata_set(ap_photo_metadata *m, ap_meta_field f,
                            const char *value)
 {
-    if (!m || f < 0 || f >= AP_META_FIELD_COUNT) return;
+    if (!m) { AP_FATAL("ap_photo_metadata_set: NULL metadata struct"); return; }
+    if (f < 0 || f >= AP_META_FIELD_COUNT) {
+        AP_FATAL("ap_photo_metadata_set: field %d out of range", (int)f);
+        return;
+    }
     snprintf(m->value[f], AP_META_VALUE_LEN, "%s", value ? value : "");
 }
 
 const char *ap_photo_metadata_get(const ap_photo_metadata *m, ap_meta_field f)
 {
-    if (!m || f < 0 || f >= AP_META_FIELD_COUNT) return "";
+    if (!m) { AP_FATAL("ap_photo_metadata_get: NULL metadata struct"); return ""; }
+    if (f < 0 || f >= AP_META_FIELD_COUNT) {
+        AP_FATAL("ap_photo_metadata_get: field %d out of range", (int)f);
+        return "";
+    }
     return m->value[f];
 }
 
 const char *ap_meta_field_label(ap_meta_field f)
 {
-    if (f < 0 || f >= AP_META_FIELD_COUNT) return "";
+    if (f < 0 || f >= AP_META_FIELD_COUNT) {
+        AP_FATAL("ap_meta_field_label: field %d out of range", (int)f);
+        return "";
+    }
     return FIELDS[f].label;
 }
 
 const char *ap_meta_field_key(ap_meta_field f)
 {
-    if (f < 0 || f >= AP_META_FIELD_COUNT) return "";
+    if (f < 0 || f >= AP_META_FIELD_COUNT) {
+        AP_FATAL("ap_meta_field_key: field %d out of range", (int)f);
+        return "";
+    }
     return FIELDS[f].key;
 }
 
