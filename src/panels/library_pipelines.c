@@ -23,7 +23,6 @@
 
 #define PIPELINES_MAX 64
 
-static bool    g_visible = false;
 static int64_t g_selected_id    = 0;
 static int64_t g_rename_for_id  = 0;     // which id g_rename_buf reflects
 static char    g_rename_buf[AP_PIPELINE_NAME_LEN] = {0};
@@ -58,7 +57,7 @@ static void library_pipelines_draw(ap_app *app)
     ap_library *lib = ap_app_library(app);
     if (!lib) return;
 
-    if (!igBegin("Pipelines##library", &g_visible, 0)) {
+    if (!igBegin("Pipelines##library", &ap_panel_visible_library_pipelines, 0)) {
         igEnd();
         return;
     }
@@ -212,6 +211,6 @@ const ap_panel panel_library_pipelines = {
     .name       = "library_pipelines",
     .mode       = AP_MODE_LIBRARY,
     .draw       = library_pipelines_draw,
-    .visible    = &g_visible,
+    .visible    = &ap_panel_visible_library_pipelines,
     .menu_label = "Pipelines",
 };

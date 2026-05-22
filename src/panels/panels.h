@@ -33,6 +33,14 @@ struct ap_panel {
 // the registry array, add to src/panels/meson.build.
 extern const ap_panel *const ap_panel_registry[];
 
+// Centralised visibility state for optional library panels. Each
+// panel's .visible pointer is initialised to the corresponding bool
+// here so all show/hide state lives in one translation unit rather
+// than as per-file file-scope statics.
+extern bool ap_panel_visible_library_metadata;
+extern bool ap_panel_visible_library_pipelines;
+extern bool ap_panel_visible_library_groups;
+
 #ifdef __cplusplus
 }
 #endif

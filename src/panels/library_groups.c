@@ -15,7 +15,6 @@
 
 #define GROUPS_LIST_MAX 256
 
-static bool g_visible = false;
 static char g_new_group[AP_GROUP_NAME_LEN]   = {0};
 static char g_rename_from[AP_GROUP_NAME_LEN] = {0};  // "" = not renaming
 static char g_rename_buf[AP_GROUP_NAME_LEN]  = {0};
@@ -46,7 +45,7 @@ static void library_groups_draw(ap_app *app)
     ap_library *lib = ap_app_library(app);
     if (!lib) return;
 
-    if (!igBegin("Groups##library", &g_visible, 0)) {
+    if (!igBegin("Groups##library", &ap_panel_visible_library_groups, 0)) {
         igEnd();
         return;
     }
@@ -182,6 +181,6 @@ const ap_panel panel_library_groups = {
     .name       = "library_groups",
     .mode       = AP_MODE_LIBRARY,
     .draw       = library_groups_draw,
-    .visible    = &g_visible,
+    .visible    = &ap_panel_visible_library_groups,
     .menu_label = "Groups",
 };
