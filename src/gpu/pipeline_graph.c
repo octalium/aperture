@@ -343,16 +343,19 @@ static int assemble_stages(ap_pipeline_graph *graph,
                            const ap_module *const *chain_modules,
                            const int *chain_entry_idx,
                            const ap_module_active *chain_active,
+                           const bool *chain_skip,
                            int chain_len, VkImageView input_view,
                            const ap_edit_stack *stack)
 {
-    VkImageView cur_view = input_view;
+    VkImageView cur_view  = input_view;
+    VkImage     cur_image = VK_NULL_HANDLE; // unknown for the raw input
     int s = 0;
 
     for (int c = 0; c < chain_len; c++) {
         const ap_module        *m = chain_modules[c];
         const ap_module_active *a = &chain_active[c];
         bool last_module = (c == chain_len - 1);
+        bool stage_skip  = chain_skip[c];
 
         VkImageView out_view;
         VkImage     out_image;
@@ -377,6 +380,9 @@ static int assemble_stages(ap_pipeline_graph *graph,
             graph_stage *st = &graph->stages[s];
             st->module    = m;
             st->entry_idx = chain_entry_idx[c];
+            st->skip      = stage_skip;
+            st->is_last_pass   = (p == n_passes - 1);
+            st->module_in_image = cur_image;
 
             const uint32_t *spv;
             size_t spv_size;
@@ -416,7 +422,8 @@ static int assemble_stages(ap_pipeline_graph *graph,
             if (create_stage(graph, st, spv, spv_size) < 0) return -1;
             s++;
         }
-        cur_view = out_view;
+        cur_view  = out_view;
+        cur_image = out_image;
     }
     graph->stage_count = s;
     return 0;
@@ -522,10 +529,15 @@ ap_pipeline_graph *ap_pipeline_graph_create(ap_gpu *g, ap_texture *input,
 
     const ap_module *chain_modules[MAX_MODULES];
     int              chain_entry_idx[MAX_MODULES];
+    bool             chain_skip[MAX_MODULES];
     int              chain_len = 0;
 
     // Does the stack have any enabled Demosaic entry? If not, we'll
     // prepend the raw passthrough so format dimensions line up.
+    // Disabled demosaic entries also count as absent here: demosaic
+    // reads from the raw R16 input texture and its skip path would
+    // need a format-converting copy, so disabled demosaic falls back
+    // to raw_passthrough exactly as if it were removed.
     bool need_passthrough = true;
     int  n = stack ? ap_edit_stack_count(stack) : 0;
     for (int i = 0; i < n; i++) {
@@ -538,12 +550,13 @@ ap_pipeline_graph *ap_pipeline_graph_create(ap_gpu *g, ap_texture *input,
     if (need_passthrough) {
         chain_modules[chain_len]   = m_pass;
         chain_entry_idx[chain_len] = -1;
+        chain_skip[chain_len]      = false;
         chain_len++;
     }
 
     for (int i = 0; i < n; i++) {
         const ap_edit_entry *e = ap_edit_stack_at_const(stack, i);
-        if (!e || !e->enabled) continue;
+        if (!e) continue;
         const ap_module *m = ap_module_find(e->module_name);
         if (!m) {
             AP_ERROR("ap_pipeline_graph_create: unknown module '%s' at stack[%d]",
@@ -556,17 +569,25 @@ ap_pipeline_graph *ap_pipeline_graph_create(ap_gpu *g, ap_texture *input,
         if (!m->spv_data && (m->variant_count == 0 || !m->variants)) {
             continue;
         }
+        // Demosaic reads from the raw R16 input texture. Skipping it
+        // via a same-format copy is not possible; treat disabled demosaic
+        // entries as absent and rely on the raw_passthrough inserted above.
+        if (!e->enabled && strcmp(e->module_name, "demosaic") == 0) {
+            continue;
+        }
         if (chain_len >= MAX_MODULES - 1) {
             AP_ERROR("ap_pipeline_graph_create: stack exceeds MAX_MODULES");
             return NULL;
         }
         chain_modules[chain_len]   = m;
         chain_entry_idx[chain_len] = i;
+        chain_skip[chain_len]      = !e->enabled;
         chain_len++;
     }
 
     chain_modules[chain_len]   = m_out;
     chain_entry_idx[chain_len] = -1;
+    chain_skip[chain_len]      = false;
     chain_len++;
 
     // Resolve each chain module's active variant up front. Variant
@@ -615,7 +636,7 @@ ap_pipeline_graph *ap_pipeline_graph_create(ap_gpu *g, ap_texture *input,
     if (create_buffers(graph, graph->width, graph->height)   < 0) goto fail;
     if (create_descriptor_pool(graph, total_stages)          < 0) goto fail;
     if (assemble_stages(graph, chain_modules, chain_entry_idx,
-                        chain_active, chain_len,
+                        chain_active, chain_skip, chain_len,
                         ap_texture_view(input), stack)       < 0) goto fail;
     if (initial_layout_transitions(graph)                    < 0) goto fail;
 
@@ -724,10 +745,12 @@ static void compute_to_sample_barrier(VkCommandBuffer cmd, VkImage image)
 }
 
 // True when two edit stacks would produce the same pixel-pipeline
-// output: same modules in the same order, each enabled the same way
-// and carrying the same parameters. Focus, display name and
-// config-window visibility are UI-only and deliberately ignored, so
-// clicking around the panels doesn't force a re-dispatch.
+// output: same modules in the same order carrying the same parameters.
+// The enabled flag is deliberately excluded: enable/disable toggles
+// now update the stage skip flag via ap_pipeline_graph_set_stage_skip,
+// which resets has_recorded so the next record call re-dispatches.
+// Focus, display name and config-window visibility are UI-only and
+// ignored for the same reason.
 static bool stack_render_equal(const ap_edit_stack *a,
                                const ap_edit_stack *b)
 {
@@ -737,9 +760,6 @@ static bool stack_render_equal(const ap_edit_stack *a,
     for (int i = 0; i < a->count; i++) {
         const ap_edit_entry *ea = &a->entries[i];
         const ap_edit_entry *eb = &b->entries[i];
-        if (ea->enabled != eb->enabled) {
-            return false;
-        }
         if (strcmp(ea->module_name, eb->module_name) != 0) {
             return false;
         }
@@ -765,6 +785,8 @@ int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
     // display image from the last dispatch is still valid — the canvas
     // keeps sampling it — so an unchanged edit stack costs no GPU work.
     // Viewport / crop changes are display-side and never reach here.
+    // Enable/disable toggles are handled via ap_pipeline_graph_set_stage_skip
+    // which resets has_recorded, so they always force a re-record.
     if (graph->has_recorded && stack &&
         stack_render_equal(&graph->record_snapshot, stack)) {
         return 0;
@@ -784,6 +806,146 @@ int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
     for (int i = 0; i < graph->stage_count; i++) {
         graph_stage *st = &graph->stages[i];
         const ap_module *m = st->module;
+        bool is_last = (i == graph->stage_count - 1);
+
+        if (st->skip) {
+            // Skipped stage: the shader is not dispatched. For the last
+            // pass of a module, copy the module's input image straight
+            // through to the output image so the next stage's read sees
+            // valid data. Intermediate passes of a multi-pass module are
+            // silently dropped — they only write to module-private scratch
+            // buffers that nobody reads when the module is skipped.
+            if (st->is_last_pass && st->module_in_image != VK_NULL_HANDLE) {
+                VkImageMemoryBarrier2 pre = {
+                    .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                    .srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                    .dstStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT,
+                    .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+                    .oldLayout     = VK_IMAGE_LAYOUT_GENERAL,
+                    .newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = st->module_in_image,
+                    .subresourceRange = {
+                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                        .baseMipLevel = 0, .levelCount = 1,
+                        .baseArrayLayer = 0, .layerCount = 1,
+                    },
+                };
+                VkImageMemoryBarrier2 pre_dst = {
+                    .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                    .srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+                                   | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                    .dstStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT,
+                    .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                    .oldLayout     = VK_IMAGE_LAYOUT_GENERAL,
+                    .newLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = st->write_image,
+                    .subresourceRange = {
+                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                        .baseMipLevel = 0, .levelCount = 1,
+                        .baseArrayLayer = 0, .layerCount = 1,
+                    },
+                };
+                VkImageMemoryBarrier2 pre_barriers[2] = { pre, pre_dst };
+                VkDependencyInfo dep_pre = {
+                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                    .imageMemoryBarrierCount = 2,
+                    .pImageMemoryBarriers    = pre_barriers,
+                };
+                vkCmdPipelineBarrier2(cmd, &dep_pre);
+
+                VkImageCopy region = {
+                    .srcSubresource = {
+                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                        .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1,
+                    },
+                    .srcOffset = { 0, 0, 0 },
+                    .dstSubresource = {
+                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                        .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1,
+                    },
+                    .dstOffset = { 0, 0, 0 },
+                    .extent    = { (uint32_t)graph->width,
+                                   (uint32_t)graph->height, 1 },
+                };
+                vkCmdCopyImage(cmd,
+                               st->module_in_image,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               st->write_image,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               1, &region);
+
+                VkImageMemoryBarrier2 post_src = {
+                    .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                    .srcStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT,
+                    .srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+                    .dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                    .oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    .newLayout     = VK_IMAGE_LAYOUT_GENERAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = st->module_in_image,
+                    .subresourceRange = {
+                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                        .baseMipLevel = 0, .levelCount = 1,
+                        .baseArrayLayer = 0, .layerCount = 1,
+                    },
+                };
+                VkImageMemoryBarrier2 post_dst;
+                VkDependencyInfo dep_post;
+                if (is_last) {
+                    post_dst = (VkImageMemoryBarrier2){
+                        .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                        .srcStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT,
+                        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                        .dstStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                        .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                        .oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        .newLayout     = VK_IMAGE_LAYOUT_GENERAL,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .image = st->write_image,
+                        .subresourceRange = {
+                            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                            .baseMipLevel = 0, .levelCount = 1,
+                            .baseArrayLayer = 0, .layerCount = 1,
+                        },
+                    };
+                } else {
+                    post_dst = (VkImageMemoryBarrier2){
+                        .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                        .srcStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT,
+                        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                        .dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                        .oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        .newLayout     = VK_IMAGE_LAYOUT_GENERAL,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .image = st->write_image,
+                        .subresourceRange = {
+                            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                            .baseMipLevel = 0, .levelCount = 1,
+                            .baseArrayLayer = 0, .layerCount = 1,
+                        },
+                    };
+                }
+                VkImageMemoryBarrier2 post_barriers[2] = { post_src, post_dst };
+                dep_post = (VkDependencyInfo){
+                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                    .imageMemoryBarrierCount = 2,
+                    .pImageMemoryBarriers    = post_barriers,
+                };
+                vkCmdPipelineBarrier2(cmd, &dep_post);
+            }
+            continue;
+        }
 
         if (st->push_size > sizeof(push_buf)) {
             AP_ERROR("graph: %s push_size %zu exceeds scratch %zu",
@@ -814,7 +976,6 @@ int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
         }
         vkCmdDispatch(cmd, gx, gy, 1);
 
-        bool is_last = (i == graph->stage_count - 1);
         if (is_last) {
             compute_to_sample_barrier(cmd, st->write_image);
         } else {
@@ -822,6 +983,26 @@ int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
         }
     }
     return 0;
+}
+
+int ap_pipeline_graph_set_stage_skip(ap_pipeline_graph *graph,
+                                     int entry_idx, bool skip)
+{
+    if (!graph) return -1;
+    for (int i = 0; i < graph->stage_count; i++) {
+        if (graph->stages[i].entry_idx == entry_idx) {
+            // Update all stages that belong to this entry (multi-pass
+            // modules expand into multiple consecutive stages).
+            while (i < graph->stage_count &&
+                   graph->stages[i].entry_idx == entry_idx) {
+                graph->stages[i].skip = skip;
+                i++;
+            }
+            graph->has_recorded = false;
+            return 0;
+        }
+    }
+    return -1;
 }
 
 VkImageView   ap_pipeline_graph_output_view(const ap_pipeline_graph *g)    { return g->display_view_srgb; }

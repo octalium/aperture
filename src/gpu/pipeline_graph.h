@@ -1,6 +1,7 @@
 #ifndef APERTURE_GPU_PIPELINE_GRAPH_H
 #define APERTURE_GPU_PIPELINE_GRAPH_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include <vulkan/vulkan.h>
@@ -21,10 +22,13 @@ typedef struct ap_pipeline_graph ap_pipeline_graph;
 typedef struct ap_module ap_module;
 
 // Construct a graph from the photo's edit stack. The graph runs:
-//   [demosaic] + (enabled user-visible stack entries in order) + [encode]
-// where the transport modules (demosaic, encode) are inserted by the
-// graph itself, not the user. Disabled entries are skipped at build
-// time so they consume neither dispatch nor working memory.
+//   [demosaic-or-passthrough] + (user stack entries) + [encode]
+// where the transport modules are inserted by the graph, not the user.
+// Disabled user entries (except demosaic, see below) are included in
+// the graph with their skip flag set; ap_pipeline_graph_set_stage_skip
+// toggles them at runtime without a rebuild. Disabled demosaic entries
+// are replaced by raw_passthrough (format incompatibility prevents
+// copy-passthrough for that stage).
 //
 // Allocates the float16 ping-pong working buffers and the UNORM display
 // image at `output_width × output_height`, which may differ from the
@@ -48,6 +52,17 @@ void ap_pipeline_graph_destroy(ap_pipeline_graph *graph);
 // (NULL for transport modules), then a dispatch + a barrier.
 int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
                              const ap_edit_stack *stack);
+
+// Toggle the runtime skip flag for the stage whose edit-stack entry
+// index is `entry_idx`. A skipped stage copies its input through to
+// its output unchanged, preserving the ping-pong buffer invariant,
+// rather than dispatching its compute shader. Resets the frame
+// snapshot so the next ap_pipeline_graph_record re-records.
+// Returns 0 if the stage was found and updated, -1 if no stage with
+// that entry_idx exists in the graph (e.g. the module was disabled at
+// graph build time and not included — caller must rebuild instead).
+int ap_pipeline_graph_set_stage_skip(ap_pipeline_graph *graph,
+                                     int entry_idx, bool skip);
 
 // Copy the current display image (final stage's output) into a CPU
 // buffer. `out_pixels` must hold at least `output_width * output_height
