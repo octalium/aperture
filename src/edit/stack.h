@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,22 +38,27 @@ extern "C" {
 #define AP_EDIT_STR_LEN   512
 
 typedef struct {
-    char  module_name[AP_EDIT_NAME_LEN];
-    char  display_name[AP_EDIT_DISPLAY_LEN]; // user-set; empty falls
-                                             // back to module's name
-                                             // plus an auto-suffix
-                                             // to disambiguate dupes
-    float params[AP_EDIT_PARAMS_SLOTS];
-    char  str_params[AP_EDIT_STR_SLOTS][AP_EDIT_STR_LEN];
-    bool  enabled;
-    bool  show_config;   // UI-only, not persisted: is the config
-                         // window visible for this entry?
+    char     module_name[AP_EDIT_NAME_LEN];
+    char     display_name[AP_EDIT_DISPLAY_LEN]; // user-set; empty falls
+                                                // back to module's name
+                                                // plus an auto-suffix
+                                                // to disambiguate dupes
+    float    params[AP_EDIT_PARAMS_SLOTS];
+    char     str_params[AP_EDIT_STR_SLOTS][AP_EDIT_STR_LEN];
+    bool     enabled;
+    bool     show_config;   // UI-only, not persisted: is the config
+                            // window visible for this entry?
+    uint32_t id;            // stable per-session identity; assigned on
+                            // ap_edit_stack_add, survives reorder. Used
+                            // to key per-entry ImGui window IDs so window
+                            // state follows the entry on drag-reorder.
 } ap_edit_entry;
 
 typedef struct ap_edit_stack {
     ap_edit_entry entries[AP_EDIT_STACK_MAX];
     int           count;
     int           focus;     // -1 when nothing focused
+    uint32_t      next_id;   // monotonic counter for entry IDs
 } ap_edit_stack;
 
 // Reset to empty, focus = -1.
