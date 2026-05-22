@@ -78,9 +78,21 @@ static void transform_render(const ap_module *self, float *params,
 
         bool changed = false;
         changed |= igInputInt("X (px)",      &x, 1, 16, 0);
+        if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
+            x = 0; changed = true;
+        }
         changed |= igInputInt("Y (px)",      &y, 1, 16, 0);
+        if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
+            y = 0; changed = true;
+        }
         changed |= igInputInt("Width (px)",  &w, 1, 16, 0);
+        if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
+            w = iw; changed = true;
+        }
         changed |= igInputInt("Height (px)", &h, 1, 16, 0);
+        if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
+            h = ih; changed = true;
+        }
         if (igButton("Reset crop", (ImVec2_c){ 0.0f, 0.0f })) {
             x = 0; y = 0; w = iw; h = ih;
             changed = true;
