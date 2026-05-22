@@ -12,6 +12,7 @@ bool ap_panel_visible_library_pipelines = false;
 bool ap_panel_visible_library_groups    = false;
 
 extern const ap_panel panel_photo_edit;
+extern const ap_panel panel_photo_keywords;
 extern const ap_panel panel_photo_metadata;
 extern const ap_panel panel_library_empty_state;
 extern const ap_panel panel_library_metadata;
@@ -25,6 +26,7 @@ extern const ap_panel panel_export_destination;
 
 const ap_panel *const ap_panel_registry[] = {
     &panel_photo_edit,
+    &panel_photo_keywords,
     &panel_photo_metadata,
     &panel_library_empty_state,
     &panel_library_metadata,

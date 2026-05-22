@@ -1883,11 +1883,13 @@ int ap_library_apply_pipeline_to_photo(ap_library *lib, int index,
     ap_photo_culling_clear(&culling);
     ap_photo_groups groups;
     groups.count = 0;
+    ap_photo_keywords keywords;
+    ap_photo_keywords_clear(&keywords);
     ap_sidecar_load(path, &existing_stack, &respect_orientation,
-                    &user_meta, user_set, &culling, &groups);
+                    &user_meta, user_set, &culling, &groups, &keywords);
 
     return ap_sidecar_save(path, &new_stack, respect_orientation,
-                           &user_meta, user_set, &culling, &groups);
+                           &user_meta, user_set, &culling, &groups, &keywords);
 }
 
 int ap_library_apply_stack_to_photo(ap_library *lib, int index,
@@ -1910,11 +1912,13 @@ int ap_library_apply_stack_to_photo(ap_library *lib, int index,
     ap_photo_culling_clear(&culling);
     ap_photo_groups groups;
     groups.count = 0;
+    ap_photo_keywords keywords;
+    ap_photo_keywords_clear(&keywords);
     ap_sidecar_load(path, &existing_stack, &respect_orientation,
-                    &user_meta, user_set, &culling, &groups);
+                    &user_meta, user_set, &culling, &groups, &keywords);
 
     return ap_sidecar_save(path, stack, respect_orientation,
-                           &user_meta, user_set, &culling, &groups);
+                           &user_meta, user_set, &culling, &groups, &keywords);
 }
 
 int ap_library_apply_metadata_patch(ap_library *lib, int index,
@@ -1940,9 +1944,11 @@ int ap_library_apply_metadata_patch(ap_library *lib, int index,
     ap_photo_culling_clear(&culling);
     ap_photo_groups groups;
     groups.count = 0;
+    ap_photo_keywords keywords;
+    ap_photo_keywords_clear(&keywords);
     bool had_sidecar = (ap_sidecar_load(path, &stack, &respect_orientation,
                                         &user_meta, user_set, &culling,
-                                        &groups) == 0);
+                                        &groups, &keywords) == 0);
     if (!had_sidecar) seed_default_stack(&stack);
 
     for (int i = 0; i < AP_META_FIELD_COUNT; i++) {
@@ -1953,7 +1959,7 @@ int ap_library_apply_metadata_patch(ap_library *lib, int index,
     }
 
     return ap_sidecar_save(path, &stack, respect_orientation,
-                           &user_meta, user_set, &culling, &groups);
+                           &user_meta, user_set, &culling, &groups, &keywords);
 }
 
 // Load-modify-save the n-th photo's sidecar so its on-disk `groups`
@@ -1974,17 +1980,19 @@ static int write_photo_sidecar_groups(ap_library *lib, int index)
     bool user_set[AP_META_FIELD_COUNT] = {0};
     ap_photo_culling culling;
     ap_photo_culling_clear(&culling);
-    ap_photo_groups discard;
-    discard.count = 0;
+    ap_photo_groups discard_groups;
+    discard_groups.count = 0;
+    ap_photo_keywords keywords;
+    ap_photo_keywords_clear(&keywords);
 
     bool had = (ap_sidecar_load(path, &stack, &respect_orientation,
                                 &user_meta, user_set, &culling,
-                                &discard) == 0);
+                                &discard_groups, &keywords) == 0);
     if (!had) seed_default_stack(&stack);
 
     return ap_sidecar_save(path, &stack, respect_orientation,
                            &user_meta, user_set, &culling,
-                           &lib->photo_groups[index]);
+                           &lib->photo_groups[index], &keywords);
 }
 
 // Load-modify-save the n-th photo's sidecar so its on-disk culling
@@ -2004,18 +2012,20 @@ static int write_photo_sidecar_culling(ap_library *lib, int index,
     ap_photo_metadata user_meta;
     ap_photo_metadata_clear(&user_meta);
     bool user_set[AP_META_FIELD_COUNT] = {0};
-    ap_photo_culling discard;
-    ap_photo_culling_clear(&discard);
+    ap_photo_culling discard_culling;
+    ap_photo_culling_clear(&discard_culling);
     ap_photo_groups groups;
     groups.count = 0;
+    ap_photo_keywords keywords;
+    ap_photo_keywords_clear(&keywords);
 
     bool had = (ap_sidecar_load(path, &stack, &respect_orientation,
-                                &user_meta, user_set, &discard,
-                                &groups) == 0);
+                                &user_meta, user_set, &discard_culling,
+                                &groups, &keywords) == 0);
     if (!had) seed_default_stack(&stack);
 
     return ap_sidecar_save(path, &stack, respect_orientation,
-                           &user_meta, user_set, culling, &groups);
+                           &user_meta, user_set, culling, &groups, &keywords);
 }
 
 ap_photo_culling ap_library_photo_culling(const ap_library *lib, int index)
