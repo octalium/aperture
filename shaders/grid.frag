@@ -20,7 +20,7 @@ layout(push_constant) uniform PushConstants {
     int   cell_gap_x_px;
     int   cell_gap_y_px;
     int   border_px;
-    int   _pad0;
+    int   hover_idx;
 } pc;
 
 // Aspect-correct UV inside a square cell. Letterbox bands fall back
@@ -76,5 +76,13 @@ void main() {
         }
     }
 
-    f_color = sample_cell(idx, in_cell);
+    vec4 cell_color = sample_cell(idx, in_cell);
+
+    // Hover: brighten the cell with a subtle additive tint so the user
+    // can see which cell is under the cursor without obscuring the thumb.
+    if (idx == pc.hover_idx && idx != pc.selected_idx) {
+        cell_color.rgb += vec3(0.08);
+    }
+
+    f_color = cell_color;
 }

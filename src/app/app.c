@@ -1009,10 +1009,30 @@ static void drive_grid_input(ap_app *app)
 
     // A popup (confirm modal, context menu) owns input while open —
     // don't also drive the grid behind it.
-    if (igIsPopupOpen_Str(NULL, ImGuiPopupFlags_AnyPopup)) return;
+    if (igIsPopupOpen_Str(NULL, ImGuiPopupFlags_AnyPopup)) {
+        ap_grid_set_hover(app->grid, -1);
+        return;
+    }
 
     int win_w = (int)io->DisplaySize.x;
     int win_h = (int)io->DisplaySize.y;
+
+    // Update the hover index every frame so the shader highlight and
+    // filename tooltip stay current. Clear to -1 when ImGui owns the
+    // mouse (a panel is active) so panels don't leave a stale highlight.
+    {
+        int hover = io->WantCaptureMouse ? -1
+                  : ap_grid_hit_test(app->grid,
+                                     io->MousePos.x, io->MousePos.y,
+                                     win_w, win_h);
+        ap_grid_set_hover(app->grid, hover);
+        if (hover >= 0 && hover < app->grid_map_count) {
+            int i = app->grid_map[hover];
+            const char *rel = ap_library_photo_relative_path(app->library, i);
+            if (rel) igSetTooltip("%s", rel);
+            igSetMouseCursor(ImGuiMouseCursor_Hand);
+        }
+    }
 
     if (!io->WantCaptureMouse) {
         if (io->MouseWheel != 0.0f) {

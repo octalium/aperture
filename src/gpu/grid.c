@@ -31,7 +31,7 @@ typedef struct {
     int   cell_gap_x_px;
     int   cell_gap_y_px;
     int   border_px;
-    int   _pad0;
+    int   hover_idx;
 } grid_push;
 
 struct ap_grid {
@@ -52,6 +52,7 @@ struct ap_grid {
 
     int photo_count;
     int selected_idx;
+    int hover_idx;                // -1 when no cell is hovered
 
     uint8_t *selected_bitmap;     // photo_count bits, allocated in
                                   // set_photo_count; NULL when empty
@@ -538,6 +539,7 @@ ap_grid *ap_grid_create(ap_gpu *g)
     grid->cell_gap_y   = GRID_DEFAULT_CELL_GAP_Y;
     grid->border_px    = GRID_DEFAULT_BORDER;
     grid->selected_idx = 0;
+    grid->hover_idx    = -1;
 
     if (create_placeholder(grid)  < 0) goto fail;
     if (create_descriptors(grid)  < 0) goto fail;
@@ -629,6 +631,12 @@ void ap_grid_set_photo_count(ap_grid *grid, int count)
     };
     vkUpdateDescriptorSets(grid->gpu->device, 1, &write, 0, NULL);
     free(infos);
+}
+
+void ap_grid_set_hover(ap_grid *grid, int idx)
+{
+    if (!grid) return;
+    grid->hover_idx = idx;
 }
 
 void ap_grid_set_selected(ap_grid *grid, int idx)
@@ -878,6 +886,7 @@ void ap_grid_record(ap_grid *grid, VkCommandBuffer cmd,
         .cell_gap_x_px   = L.cell_gap_x,
         .cell_gap_y_px   = L.cell_gap_y,
         .border_px       = grid->border_px,
+        .hover_idx       = grid->hover_idx,
     };
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, grid->pipeline);

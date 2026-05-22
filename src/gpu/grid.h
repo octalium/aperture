@@ -70,6 +70,12 @@ void ap_grid_set_thumbnail(ap_grid *grid, int idx,
 // by PageUp / PageDown to advance exactly one viewport of rows.
 int ap_grid_rows_per_page(const ap_grid *grid, int win_width, int win_height);
 
+// Set the hovered cell index (or -1 when no cell is under the cursor).
+// Called every frame before ap_grid_record so the push constant is
+// current when the draw call goes out. The grid uses this to tint the
+// hovered cell with a subtle highlight in the fragment shader.
+void ap_grid_set_hover(ap_grid *grid, int idx);
+
 // Restrict the grid render + layout to a sub-rect of the framebuffer.
 // Used by app.c to fit the grid to the ImGui dockspace's central node,
 // so docked panels don't paint over the thumb area and the grid
