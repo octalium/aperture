@@ -136,6 +136,28 @@ static void library_groups_draw(ap_app *app)
 
     igSeparator();
 
+    // Bulk-assign buttons — same "Apply to selection" affordance as
+    // the Metadata and Pipelines panels. Shown only when a named group
+    // filter is active and the grid has a non-empty selection; the
+    // context-menu items on each row remain as a secondary shortcut.
+    if (fkind == AP_GROUP_FILTER_GROUP && fname && fname[0] &&
+            sel_count > 0) {
+        char btn[AP_GROUP_NAME_LEN + 32];
+        snprintf(btn, sizeof(btn), "Add %d selected to group", sel_count);
+        if (igButton(btn, (ImVec2_c){ 0.0f, 0.0f })) {
+            int w = ap_app_assign_selection_to_group(app, fname, true);
+            snprintf(g_status, sizeof(g_status), "Added %d to %s", w, fname);
+        }
+        snprintf(btn, sizeof(btn), "Remove %d selected from group",
+                 sel_count);
+        if (igButton(btn, (ImVec2_c){ 0.0f, 0.0f })) {
+            int w = ap_app_assign_selection_to_group(app, fname, false);
+            snprintf(g_status, sizeof(g_status),
+                     "Removed %d from %s", w, fname);
+        }
+        igSpacing();
+    }
+
     // Rename box — same bottom-input pattern as the Pipelines panel:
     // right-click a group → Rename… to populate, then edit + Rename.
     if (g_rename_from[0]) {
@@ -178,8 +200,7 @@ static void library_groups_draw(ap_app *app)
         g_new_group[0] = '\0';
     }
 
-    igTextDisabled("right-click a group to assign the selection,");
-    igTextDisabled("rename, or delete it");
+    igTextDisabled("click a group to filter; right-click to rename or delete");
     if (g_status[0]) {
         igSeparator();
         igTextDisabled("%s", g_status);
