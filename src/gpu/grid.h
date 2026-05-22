@@ -70,6 +70,11 @@ void ap_grid_set_thumbnail(ap_grid *grid, int idx,
 // by PageUp / PageDown to advance exactly one viewport of rows.
 int ap_grid_rows_per_page(const ap_grid *grid, int win_width, int win_height);
 
+// Advance the eased scroll position and cell size toward their targets.
+// Call once per frame before ap_grid_record, passing the frame delta
+// time in seconds (from ImGuiIO::DeltaTime).
+void ap_grid_update(ap_grid *grid, float dt);
+
 // Set the hovered cell index (or -1 when no cell is under the cursor).
 // Called every frame before ap_grid_record so the push constant is
 // current when the draw call goes out. The grid uses this to tint the

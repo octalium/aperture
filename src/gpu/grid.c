@@ -7,6 +7,7 @@
 #include "grid_vert_spv.h"
 #include "grid_frag_spv.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -57,12 +58,14 @@ struct ap_grid {
     uint8_t *selected_bitmap;     // photo_count bits, allocated in
                                   // set_photo_count; NULL when empty
 
-    int cell_size;
-    int cell_gap_x;
-    int cell_gap_y;
-    int border_px;
+    int   cell_size;        // integer target (clamped, canonical)
+    float cell_size_f;      // fractional working value, lerped toward cell_size
+    int   cell_gap_x;
+    int   cell_gap_y;
+    int   border_px;
 
-    float scroll_y;
+    float scroll_y;         // current rendered scroll position
+    float scroll_y_target;  // target the easing is converging to
 
     // Sub-rect of the framebuffer to render + lay out within. Zero
     // size means "fall back to the swapchain extent passed to
@@ -136,7 +139,7 @@ static grid_layout layout_for(const ap_grid *g, int win_w, int win_h)
     grid_layout L = {
         .origin_x   = GRID_MARGIN,
         .origin_y   = GRID_MARGIN - (int)g->scroll_y,
-        .cell_size  = g->cell_size,
+        .cell_size  = (int)g->cell_size_f,
         .cell_gap_x = g->cell_gap_x,
         .cell_gap_y = g->cell_gap_y,
     };
@@ -535,6 +538,7 @@ ap_grid *ap_grid_create(ap_gpu *g)
     }
     grid->gpu          = g;
     grid->cell_size    = GRID_DEFAULT_CELL_SIZE;
+    grid->cell_size_f  = (float)GRID_DEFAULT_CELL_SIZE;
     grid->cell_gap_x   = GRID_DEFAULT_CELL_GAP_X;
     grid->cell_gap_y   = GRID_DEFAULT_CELL_GAP_Y;
     grid->border_px    = GRID_DEFAULT_BORDER;
@@ -597,7 +601,8 @@ void ap_grid_set_photo_count(ap_grid *grid, int count)
     if (grid->selected_idx >= count) {
         grid->selected_idx = count > 0 ? count - 1 : 0;
     }
-    grid->scroll_y = 0.0f;
+    grid->scroll_y        = 0.0f;
+    grid->scroll_y_target = 0.0f;
 
     // Reallocate the selection bitmap to match the new photo count.
     free(grid->selected_bitmap);
@@ -744,12 +749,35 @@ void ap_grid_set_cell_size(ap_grid *grid, int px)
     if (px < GRID_MIN_CELL_SIZE) px = GRID_MIN_CELL_SIZE;
     if (px > GRID_MAX_CELL_SIZE) px = GRID_MAX_CELL_SIZE;
     grid->cell_size = px;
+    // cell_size_f lerps toward cell_size each frame via ap_grid_update.
 }
 
 void ap_grid_reset_cell_size(ap_grid *grid)
 {
     if (!grid) return;
     grid->cell_size = GRID_DEFAULT_CELL_SIZE;
+    // Let the lerp animate the reset rather than snapping.
+}
+
+void ap_grid_update(ap_grid *grid, float dt)
+{
+    if (!grid || dt <= 0.0f) return;
+
+    // Exponential smoothing: value reaches ~63% of target per half-life.
+    // factor = 1 - e^(-dt / half_life)
+    const float scroll_half_life  = 0.10f;   // seconds
+    const float zoom_half_life    = 0.08f;   // seconds
+    float sf = 1.0f - expf(-dt / scroll_half_life);
+    float zf = 1.0f - expf(-dt / zoom_half_life);
+
+    grid->scroll_y    += (grid->scroll_y_target - grid->scroll_y)    * sf;
+    grid->cell_size_f += ((float)grid->cell_size - grid->cell_size_f) * zf;
+
+    // Snap to target when close enough to avoid permanent micro-drift.
+    if (fabsf(grid->scroll_y    - grid->scroll_y_target) < 0.5f)
+        grid->scroll_y    = grid->scroll_y_target;
+    if (fabsf(grid->cell_size_f - (float)grid->cell_size) < 0.5f)
+        grid->cell_size_f = (float)grid->cell_size;
 }
 
 void ap_grid_scroll(ap_grid *grid, float dy, int win_width, int win_height)
@@ -759,9 +787,9 @@ void ap_grid_scroll(ap_grid *grid, float dy, int win_width, int win_height)
     effective_rect(grid, win_width, win_height, &rx, &ry, &rw, &rh);
     (void)rx; (void)ry;
     float ms = max_scroll_for(grid, rw, rh);
-    grid->scroll_y += dy;
-    if (grid->scroll_y < 0.0f) grid->scroll_y = 0.0f;
-    if (grid->scroll_y > ms)   grid->scroll_y = ms;
+    grid->scroll_y_target += dy;
+    if (grid->scroll_y_target < 0.0f) grid->scroll_y_target = 0.0f;
+    if (grid->scroll_y_target > ms)   grid->scroll_y_target = ms;
 }
 
 void ap_grid_ensure_visible(ap_grid *grid, int idx,
@@ -777,18 +805,21 @@ void ap_grid_ensure_visible(ap_grid *grid, int idx,
     int pitch_y = L.cell_size + L.cell_gap_y;
     int row     = idx / L.cells_per_row;
 
-    // Where the cell *would* sit within the render rect at current scroll.
-    float cell_top    = (float)GRID_MARGIN + (float)(row * pitch_y) - grid->scroll_y;
+    // Where the cell *would* sit within the render rect at the current
+    // scroll target. Adjust the target (not scroll_y) so the easing
+    // carries it smoothly into view.
+    float cell_top    = (float)GRID_MARGIN + (float)(row * pitch_y)
+                      - grid->scroll_y_target;
     float cell_bottom = cell_top + (float)L.cell_size;
 
     if (cell_top < (float)GRID_MARGIN) {
-        grid->scroll_y -= (float)GRID_MARGIN - cell_top;
+        grid->scroll_y_target -= (float)GRID_MARGIN - cell_top;
     } else if (cell_bottom > (float)(rh - GRID_MARGIN)) {
-        grid->scroll_y += cell_bottom - (float)(rh - GRID_MARGIN);
+        grid->scroll_y_target += cell_bottom - (float)(rh - GRID_MARGIN);
     }
     float ms = max_scroll_for(grid, rw, rh);
-    if (grid->scroll_y < 0.0f) grid->scroll_y = 0.0f;
-    if (grid->scroll_y > ms)   grid->scroll_y = ms;
+    if (grid->scroll_y_target < 0.0f) grid->scroll_y_target = 0.0f;
+    if (grid->scroll_y_target > ms)   grid->scroll_y_target = ms;
 }
 
 int ap_grid_hit_test(const ap_grid *grid,

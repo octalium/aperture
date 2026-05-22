@@ -2086,6 +2086,11 @@ int ap_app_run_frame(ap_app *app)
         }
     }
 
+    if (app->grid) {
+        ImGuiIO *io = igGetIO_Nil();
+        ap_grid_update(app->grid, io ? io->DeltaTime : 0.0f);
+    }
+
     if (app->mode == AP_MODE_PHOTO && !app->photo_loading) {
         drive_canvas_input(app);
     } else if (app->mode == AP_MODE_LIBRARY && !app->photo_loading) {
