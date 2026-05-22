@@ -36,6 +36,11 @@ void ap_canvas_set_input(ap_canvas *canvas,
 // Pass NULL for the identity viewport. See src/edit/viewport.h.
 void ap_canvas_set_viewport(ap_canvas *canvas, const ap_viewport *vp);
 
+// Confine the canvas to a sub-rect of the swapchain (the dockspace
+// central node) so it fits beside the docked panels rather than behind
+// them. Pass w/h <= 0 to render to the full window.
+void ap_canvas_set_render_rect(ap_canvas *canvas, int x, int y, int w, int h);
+
 // View-state controls. Pan units are window pixels; zoom is a
 // multiplier on top of fit-to-window (1.0 = fit). win_width /
 // win_height are needed by ap_canvas_pan for clamp math; pass 0 for

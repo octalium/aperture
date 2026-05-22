@@ -1080,20 +1080,6 @@ static void drive_canvas_input(ap_app *app)
         ap_canvas_set_zoom(app->canvas, 1.0f, win_w, win_h);
     }
 
-    // Delete removes the focused edit entry (the one whose row was
-    // last clicked in the Edits panel). Gate on WantTextInput to avoid
-    // stealing Delete from text fields in the config windows.
-    if (!io->WantTextInput &&
-        igIsKeyPressed_Bool(ImGuiKey_Delete, false)) {
-        ap_edit_stack *stack = ap_photo_stack(app->photo);
-        if (stack) {
-            int focus = ap_edit_stack_focus(stack);
-            if (focus >= 0) {
-                ap_edit_stack_remove(stack, focus);
-                ap_app_rebuild_photo_graph(app);
-            }
-        }
-    }
 }
 
 static void open_selected_photo(ap_app *app)
@@ -1308,14 +1294,19 @@ static void drive_grid_input(ap_app *app)
     // Used by PageUp / PageDown to advance exactly one viewport of rows.
     int rows_per_page = ap_grid_rows_per_page(app->grid, win_w, win_h);
 
-    if      (igIsKeyPressed_Bool(ImGuiKey_RightArrow, true)) new_sel = sel + 1;
-    else if (igIsKeyPressed_Bool(ImGuiKey_LeftArrow,  true)) new_sel = sel - 1;
-    else if (igIsKeyPressed_Bool(ImGuiKey_DownArrow,  true)) new_sel = sel + cpr;
-    else if (igIsKeyPressed_Bool(ImGuiKey_UpArrow,    true)) new_sel = sel - cpr;
-    else if (igIsKeyPressed_Bool(ImGuiKey_Home,  false))     new_sel = 0;
-    else if (igIsKeyPressed_Bool(ImGuiKey_End,   false))     new_sel = n - 1;
-    else if (igIsKeyPressed_Bool(ImGuiKey_PageDown, true))   new_sel = sel + rows_per_page * cpr;
-    else if (igIsKeyPressed_Bool(ImGuiKey_PageUp,   true))   new_sel = sel - rows_per_page * cpr;
+    // Gate keyboard nav on WantTextInput so arrows / Home / End /
+    // PageUp / PageDown don't walk the grid while a panel text field
+    // (search box, rename field) has focus.
+    if (!io->WantTextInput) {
+        if      (igIsKeyPressed_Bool(ImGuiKey_RightArrow, true)) new_sel = sel + 1;
+        else if (igIsKeyPressed_Bool(ImGuiKey_LeftArrow,  true)) new_sel = sel - 1;
+        else if (igIsKeyPressed_Bool(ImGuiKey_DownArrow,  true)) new_sel = sel + cpr;
+        else if (igIsKeyPressed_Bool(ImGuiKey_UpArrow,    true)) new_sel = sel - cpr;
+        else if (igIsKeyPressed_Bool(ImGuiKey_Home,  false))     new_sel = 0;
+        else if (igIsKeyPressed_Bool(ImGuiKey_End,   false))     new_sel = n - 1;
+        else if (igIsKeyPressed_Bool(ImGuiKey_PageDown, true))   new_sel = sel + rows_per_page * cpr;
+        else if (igIsKeyPressed_Bool(ImGuiKey_PageUp,   true))   new_sel = sel - rows_per_page * cpr;
+    }
     if (new_sel != sel) {
         if (io->KeyShift) {
             ap_grid_select_range(app->grid, sel, new_sel);
@@ -1326,8 +1317,9 @@ static void drive_grid_input(ap_app *app)
                                win_w, win_h);
     }
 
-    if (!io->KeyCtrl && (igIsKeyPressed_Bool(ImGuiKey_Enter, false) ||
-                         igIsKeyPressed_Bool(ImGuiKey_Space, false))) {
+    if (!io->KeyCtrl && !io->WantTextInput &&
+        (igIsKeyPressed_Bool(ImGuiKey_Enter, false) ||
+         igIsKeyPressed_Bool(ImGuiKey_Space, false))) {
         open_selected_photo(app);
     }
 
@@ -2403,21 +2395,20 @@ int ap_app_run_frame(ap_app *app)
         igEnd();
     }
 
-    // Confine the grid to the dockspace central node so docked panels
-    // don't paint over it. dock_central was captured inside the
-    // dock-host window (correct ID scope) and stays NULL when
-    // show_panels is off — both cases fall through to full-window.
-    if (app->grid) {
-        if (dock_central &&
-            dock_central->Size.x > 0.0f && dock_central->Size.y > 0.0f) {
-            ap_grid_set_render_rect(app->grid,
-                                    (int)dock_central->Pos.x,
-                                    (int)dock_central->Pos.y,
-                                    (int)dock_central->Size.x,
-                                    (int)dock_central->Size.y);
-        } else {
-            ap_grid_set_render_rect(app->grid, 0, 0, 0, 0);
-        }
+    // Confine the grid and the canvas to the dockspace central node so
+    // docked panels don't paint over them — and so the canvas fits the
+    // visible area, not the whole window. dock_central was captured
+    // inside the dock-host window (correct ID scope) and stays NULL
+    // when show_panels is off — both cases fall through to full-window.
+    {
+        bool have_central = dock_central &&
+            dock_central->Size.x > 0.0f && dock_central->Size.y > 0.0f;
+        int cx = have_central ? (int)dock_central->Pos.x  : 0;
+        int cy = have_central ? (int)dock_central->Pos.y  : 0;
+        int cw = have_central ? (int)dock_central->Size.x : 0;
+        int ch = have_central ? (int)dock_central->Size.y : 0;
+        if (app->grid)   ap_grid_set_render_rect(app->grid, cx, cy, cw, ch);
+        if (app->canvas) ap_canvas_set_render_rect(app->canvas, cx, cy, cw, ch);
     }
 
     if (app->show_panels) {

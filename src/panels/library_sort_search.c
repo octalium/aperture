@@ -10,7 +10,9 @@
 // Library-mode Sort & Search panel: a compact sort selector and a
 // search box that filter the visible grid in real time.
 
-static bool g_visible = false;
+// Sort and search are core library functions, not optional tools —
+// the panel is visible by default.
+static bool g_visible = true;
 
 static void library_sort_search_draw(ap_app *app)
 {
