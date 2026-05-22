@@ -137,6 +137,16 @@ struct ap_app {
     int              grid_map_count;
     int              grid_map_cap;
 
+    // Library-grid rubber-band marquee: active while the user drags on
+    // empty grid space. Coords are window-absolute screen pixels.
+    bool             marquee_active;
+    float            marquee_x0, marquee_y0;  // drag start
+
+    // Library-grid thumbnail drag: active while dragging over selected
+    // cells. The ImGui drag-drop payload ("AP_THUMB_DRAG") carries a
+    // single int (always 1, payload is a presence signal only).
+    bool             thumb_drag_active;
+
     bool               import_modal;        // File -> Import
     char               import_source[4096];
     ap_import_settings import_settings;
@@ -1050,6 +1060,8 @@ static void drive_grid_input(ap_app *app)
             }
         }
         if (igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
+            app->marquee_active   = false;
+            app->thumb_drag_active = false;
             int hit = ap_grid_hit_test(app->grid,
                                        io->MousePos.x, io->MousePos.y,
                                        win_w, win_h);
@@ -1059,6 +1071,9 @@ static void drive_grid_input(ap_app *app)
                 return;
             }
         } else if (igIsMouseClicked_Bool(ImGuiMouseButton_Left, false)) {
+            // Record click origin for marquee / thumb-drag detection.
+            app->marquee_x0 = io->MousePos.x;
+            app->marquee_y0 = io->MousePos.y;
             int hit = ap_grid_hit_test(app->grid,
                                        io->MousePos.x, io->MousePos.y,
                                        win_w, win_h);
@@ -1071,7 +1086,56 @@ static void drive_grid_input(ap_app *app)
                 } else {
                     ap_grid_select_only(app->grid, hit);
                 }
+            } else {
+                // Down on empty space — potential marquee start.
+                app->marquee_active = true;
             }
+        }
+
+        // Rubber-band marquee: drag began on empty space. Cancelled if
+        // the mouse leaves the grid area (WantCaptureMouse becomes true).
+        if (app->marquee_active) {
+            if (!igIsMouseDown_Nil(ImGuiMouseButton_Left)) {
+                app->marquee_active = false;
+            } else if (igIsMouseDragging(ImGuiMouseButton_Left, -1.0f)) {
+                ap_grid_select_rect(app->grid,
+                                    app->marquee_x0, app->marquee_y0,
+                                    io->MousePos.x,  io->MousePos.y,
+                                    win_w, win_h);
+            }
+        }
+
+        // Thumbnail drag initiation: drag began on a selected cell.
+        if (!app->marquee_active && !app->thumb_drag_active) {
+            if (igIsMouseDragging(ImGuiMouseButton_Left, -1.0f)) {
+                int hit = ap_grid_hit_test(app->grid,
+                                           app->marquee_x0, app->marquee_y0,
+                                           win_w, win_h);
+                if (hit >= 0 && ap_grid_is_selected(app->grid, hit) &&
+                    ap_grid_selection_count(app->grid) > 0) {
+                    app->thumb_drag_active = true;
+                }
+            }
+        }
+    } else {
+        // ImGui owns the mouse — cancel the marquee (it can't extend into
+        // panels). The thumb drag persists: it was initiated on the grid
+        // and must reach the Groups panel to deliver its payload.
+        app->marquee_active = false;
+    }
+
+    // Thumbnail drag-drop source: runs regardless of WantCaptureMouse so
+    // the payload stays live while the user hovers over the Groups panel.
+    // Uses SourceExtern to emit without a prior ImGui widget interaction.
+    if (app->thumb_drag_active) {
+        if (!igIsMouseDown_Nil(ImGuiMouseButton_Left)) {
+            app->thumb_drag_active = false;
+        } else if (igBeginDragDropSource(ImGuiDragDropFlags_SourceExtern)) {
+            int sel = ap_grid_selection_count(app->grid);
+            igSetDragDropPayload("AP_THUMB_DRAG", &sel, sizeof(int),
+                                 ImGuiCond_Once);
+            igText("%d photo(s)", sel);
+            igEndDragDropSource();
         }
     }
 
@@ -1148,6 +1212,29 @@ static void draw_selection_overlay(ap_app *app)
         // last two are swapped vs upstream Dear ImGui's C++ signature.
         ImDrawList_AddRect(dl, tl, br, 0xFFB8C4D9, 0.0f, 2.0f, 0);
     }
+}
+
+static void draw_marquee_overlay(ap_app *app)
+{
+    if (!app->marquee_active) return;
+    ImGuiIO *io = igGetIO_Nil();
+    if (!io) return;
+    if (!igIsMouseDragging(ImGuiMouseButton_Left, -1.0f)) return;
+
+    ImDrawList *dl = igGetForegroundDrawList_ViewportPtr(NULL);
+    if (!dl) return;
+
+    ImVec2_c tl = { app->marquee_x0 < io->MousePos.x
+                        ? app->marquee_x0 : io->MousePos.x,
+                    app->marquee_y0 < io->MousePos.y
+                        ? app->marquee_y0 : io->MousePos.y };
+    ImVec2_c br = { app->marquee_x0 < io->MousePos.x
+                        ? io->MousePos.x : app->marquee_x0,
+                    app->marquee_y0 < io->MousePos.y
+                        ? io->MousePos.y : app->marquee_y0 };
+
+    ImDrawList_AddRectFilled(dl, tl, br, 0x26B8C4D9, 0.0f, 0);
+    ImDrawList_AddRect(dl, tl, br, 0xCCB8C4D9, 0.0f, 1.0f, 0);
 }
 
 static void draw_grid_labels(ap_app *app)
@@ -2105,6 +2192,7 @@ int ap_app_run_frame(ap_app *app)
         drive_grid_input(app);
         draw_grid_labels(app);
         draw_selection_overlay(app);
+        draw_marquee_overlay(app);
         submit_pending_thumbs(app);
     }
     drain_one_completed_job(app);

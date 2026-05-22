@@ -106,6 +106,14 @@ int ap_grid_hit_test(const ap_grid *grid,
                      float screen_x, float screen_y,
                      int win_width, int win_height);
 
+// Replace the selection with every cell whose on-screen rect overlaps
+// the given screen-space axis-aligned rectangle (normalised internally,
+// so sx0/sy0 may be > sx1/sy1). Clears the selection when no cells
+// overlap. Used by the rubber-band marquee in drive_grid_input.
+void ap_grid_select_rect(ap_grid *grid,
+                         float sx0, float sy0, float sx1, float sy1,
+                         int win_width, int win_height);
+
 // Compute the on-screen rect of a given cell (for ImGui label
 // overlays). Returns 0 on success; -1 if idx is out of range.
 int ap_grid_cell_rect(const ap_grid *grid, int idx,

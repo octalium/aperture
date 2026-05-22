@@ -960,6 +960,58 @@ int ap_grid_hit_test(const ap_grid *grid,
     return idx;
 }
 
+void ap_grid_select_rect(ap_grid *grid,
+                         float sx0, float sy0, float sx1, float sy1,
+                         int win_width, int win_height)
+{
+    if (!grid || !grid->selected_bitmap || grid->photo_count <= 0) return;
+
+    int rx, ry, rw, rh;
+    effective_rect(grid, win_width, win_height, &rx, &ry, &rw, &rh);
+    grid_layout L = layout_for(grid, rw, rh);
+    int pitch_x = L.cell_size + L.cell_gap_x;
+    int pitch_y = L.cell_size + L.cell_gap_y;
+    if (pitch_x <= 0 || pitch_y <= 0) return;
+
+    // Normalise the rect so min < max in both axes, then translate to
+    // layout-local coords (origin is the top-left of the first cell).
+    float ox = (float)(rx + L.origin_x);
+    float oy = (float)(ry + L.origin_y);
+    float lx0 = (sx0 < sx1 ? sx0 : sx1) - ox;
+    float ly0 = (sy0 < sy1 ? sy0 : sy1) - oy;
+    float lx1 = (sx0 < sx1 ? sx1 : sx0) - ox;
+    float ly1 = (sy0 < sy1 ? sy1 : sy0) - oy;
+
+    // Row and column range that could plausibly overlap the rect.
+    int row_lo = (int)(ly0 / (float)pitch_y);
+    int row_hi = (int)(ly1 / (float)pitch_y);
+    int col_lo = (int)(lx0 / (float)pitch_x);
+    int col_hi = (int)(lx1 / (float)pitch_x);
+    if (row_lo < 0) row_lo = 0;
+    if (col_lo < 0) col_lo = 0;
+    if (col_hi >= L.cells_per_row) col_hi = L.cells_per_row - 1;
+
+    selection_clear(grid);
+    int last_hit = -1;
+    for (int row = row_lo; row <= row_hi; row++) {
+        for (int col = col_lo; col <= col_hi; col++) {
+            int idx = row * L.cells_per_row + col;
+            if (idx < 0 || idx >= grid->photo_count) continue;
+
+            float cx0 = (float)(col * pitch_x);
+            float cy0 = (float)(row * pitch_y);
+            float cx1 = cx0 + (float)L.cell_size;
+            float cy1 = cy0 + (float)L.cell_size;
+
+            if (cx1 <= lx0 || cx0 >= lx1 || cy1 <= ly0 || cy0 >= ly1) continue;
+
+            BIT_SET(grid->selected_bitmap, idx);
+            last_hit = idx;
+        }
+    }
+    if (last_hit >= 0) grid->selected_idx = last_hit;
+}
+
 int ap_grid_cell_rect(const ap_grid *grid, int idx,
                       int win_width, int win_height,
                       float *out_x, float *out_y,
