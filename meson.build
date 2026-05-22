@@ -24,6 +24,7 @@ libraw_dep  = dependency('libraw')
 sqlite3_dep = dependency('sqlite3')
 tomlc99_dep = dependency('tomlc99')
 libjpeg_dep = dependency('libjpeg')
+libtiff_dep = dependency('libtiff-4')
 # Built from the wrap unconditionally — a system liblcms2, if present,
 # would otherwise be picked ahead of it; vendoring keeps the colour
 # engine version deterministic across machines.
@@ -45,6 +46,7 @@ aperture_deps = [
   sqlite3_dep,
   tomlc99_dep,
   libjpeg_dep,
+  libtiff_dep,
   lcms2_dep,
   nfd_dep,
   threads_dep,
