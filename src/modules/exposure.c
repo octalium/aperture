@@ -85,30 +85,20 @@ static const ap_module_variant exposure_variants[] = {
     },
 };
 
-static void slider_with_reset(const ap_module *self, float *params,
-                              const char *label, int slot,
-                              float lo, float hi, const char *fmt)
-{
-    igSliderFloat(label, &params[slot], lo, hi, fmt, 0);
-    if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
-        params[slot] = self->params_default[slot];
-    }
-}
-
 static void exposure_render(const ap_module *self, float *params,
                           const ap_module_render_ctx *ctx)
 {
     (void)ctx;
     if (!params) return;
     // The algorithm dropdown is drawn centrally by the config window.
-    slider_with_reset(self, params, "EV", SLOT_EV, -5.0f, 5.0f, "%.2f");
+    ap_module_slider_reset(self, params, "EV", SLOT_EV, -5.0f, 5.0f, "%.2f");
 
     int variant = (int)params[SLOT_ALGO];
     if (variant == VARIANT_SOFT) {
-        slider_with_reset(self, params, "Highlight knee", SLOT_HIGHLIGHT_KNEE,
-                          0.0f, 1.0f, "%.3f");
-        slider_with_reset(self, params, "Shadow knee", SLOT_SHADOW_KNEE,
-                          0.0f, 1.0f, "%.3f");
+        ap_module_slider_reset(self, params, "Highlight knee", SLOT_HIGHLIGHT_KNEE,
+                               0.0f, 1.0f, "%.3f");
+        ap_module_slider_reset(self, params, "Shadow knee", SLOT_SHADOW_KNEE,
+                               0.0f, 1.0f, "%.3f");
     }
 }
 

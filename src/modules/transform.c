@@ -63,7 +63,6 @@ static void transform_render(const ap_module *self, float *params,
                              const ap_module_render_ctx *ctx)
 {
     if (!params) return;
-    const float *def = self->params_default;
 
     int iw = ctx->image_width;
     int ih = ctx->image_height;
@@ -102,11 +101,8 @@ static void transform_render(const ap_module *self, float *params,
 
     // ---- Rotation -------------------------------------------------
     igSeparatorText("Rotation");
-    igSliderFloat("Angle (deg)", &params[SLOT_ROTATION],
-                  -180.0f, 180.0f, "%.1f", 0);
-    if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
-        params[SLOT_ROTATION] = def[SLOT_ROTATION];
-    }
+    ap_module_slider_reset(self, params, "Angle (deg)", SLOT_ROTATION,
+                           -180.0f, 180.0f, "%.1f");
 
     // ---- Flip -----------------------------------------------------
     igSeparatorText("Flip");
@@ -118,14 +114,8 @@ static void transform_render(const ap_module *self, float *params,
 
     // ---- Scale ----------------------------------------------------
     igSeparatorText("Scale");
-    igSliderFloat("Scale X", &params[SLOT_SCALE_X], 0.25f, 4.0f, "%.2f", 0);
-    if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
-        params[SLOT_SCALE_X] = def[SLOT_SCALE_X];
-    }
-    igSliderFloat("Scale Y", &params[SLOT_SCALE_Y], 0.25f, 4.0f, "%.2f", 0);
-    if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
-        params[SLOT_SCALE_Y] = def[SLOT_SCALE_Y];
-    }
+    ap_module_slider_reset(self, params, "Scale X", SLOT_SCALE_X, 0.25f, 4.0f, "%.2f");
+    ap_module_slider_reset(self, params, "Scale Y", SLOT_SCALE_Y, 0.25f, 4.0f, "%.2f");
 }
 
 // Metadata-only: spv_data == NULL so the pipeline graph skips it.

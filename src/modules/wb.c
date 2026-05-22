@@ -92,16 +92,6 @@ static const ap_module_variant wb_variants[] = {
     },
 };
 
-static void slider_with_reset(const ap_module *self, float *params,
-                              const char *label, int slot,
-                              float lo, float hi)
-{
-    igSliderFloat(label, &params[slot], lo, hi, "%.3f", 0);
-    if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
-        params[slot] = self->params_default[slot];
-    }
-}
-
 static void wb_render(const ap_module *self, float *params,
                           const ap_module_render_ctx *ctx)
 {
@@ -110,9 +100,9 @@ static void wb_render(const ap_module *self, float *params,
     // The algorithm dropdown is drawn centrally by the config window.
     int variant = (int)params[SLOT_ALGO];
     if (variant == VARIANT_MANUAL) {
-        slider_with_reset(self, params, "R", SLOT_R, 0.1f, 4.0f);
-        slider_with_reset(self, params, "G", SLOT_G, 0.1f, 4.0f);
-        slider_with_reset(self, params, "B", SLOT_B, 0.1f, 4.0f);
+        ap_module_slider_reset(self, params, "R", SLOT_R, 0.1f, 4.0f, "%.3f");
+        ap_module_slider_reset(self, params, "G", SLOT_G, 0.1f, 4.0f, "%.3f");
+        ap_module_slider_reset(self, params, "B", SLOT_B, 0.1f, 4.0f, "%.3f");
     } else {
         igTextDisabled("multipliers from the raw's metadata");
     }

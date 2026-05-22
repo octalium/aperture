@@ -97,6 +97,17 @@ void ap_module_resolve(const ap_module *self, const float *params,
     out->pack_push = self->pack_push;
 }
 
+void ap_module_slider_reset(const ap_module *self, float *params,
+                            const char *label, int slot,
+                            float lo, float hi, const char *fmt)
+{
+    igSliderFloat(label, &params[slot], lo, hi, fmt,
+                  ImGuiSliderFlags_AlwaysClamp);
+    if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
+        params[slot] = self->params_default[slot];
+    }
+}
+
 bool ap_module_render_variant_combo(const ap_module *self, float *params)
 {
     if (!self || !params) return false;

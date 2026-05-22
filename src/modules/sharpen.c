@@ -121,25 +121,15 @@ static const ap_module_variant sharpen_variants[] = {
     },
 };
 
-static void slider_with_reset(const ap_module *self, float *params,
-                              const char *label, int slot,
-                              float lo, float hi, const char *fmt)
-{
-    igSliderFloat(label, &params[slot], lo, hi, fmt, 0);
-    if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
-        params[slot] = self->params_default[slot];
-    }
-}
-
 static void sharpen_render(const ap_module *self, float *params,
                            const ap_module_render_ctx *ctx)
 {
     (void)ctx;
     if (!params) return;
-    slider_with_reset(self, params, "Amount",    SLOT_AMOUNT,    0.0f, 5.0f,  "%.2f");
-    slider_with_reset(self, params, "Threshold", SLOT_THRESHOLD, 0.0f, 0.10f, "%.4f");
+    ap_module_slider_reset(self, params, "Amount",    SLOT_AMOUNT,    0.0f, 5.0f,  "%.2f");
+    ap_module_slider_reset(self, params, "Threshold", SLOT_THRESHOLD, 0.0f, 0.10f, "%.4f");
     if ((int)params[SLOT_ALGO] == VARIANT_GAUSS) {
-        slider_with_reset(self, params, "Radius", SLOT_RADIUS, 1.0f, 16.0f, "%.0f");
+        ap_module_slider_reset(self, params, "Radius", SLOT_RADIUS, 1.0f, 16.0f, "%.0f");
     }
 }
 

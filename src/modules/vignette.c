@@ -31,24 +31,14 @@ static int vignette_pack_push(const ap_module *self,
     return 0;
 }
 
-static void slider_with_reset(const ap_module *self, float *params,
-                              const char *label, int slot,
-                              float lo, float hi, const char *fmt)
-{
-    igSliderFloat(label, &params[slot], lo, hi, fmt, 0);
-    if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
-        params[slot] = self->params_default[slot];
-    }
-}
-
 static void vignette_render(const ap_module *self, float *params,
                           const ap_module_render_ctx *ctx)
 {
     (void)ctx;
     if (!params) return;
-    slider_with_reset(self, params, "Amount",   SLOT_AMOUNT,   -1.0f, 1.0f, "%.2f");
-    slider_with_reset(self, params, "Midpoint", SLOT_MIDPOINT,  0.0f, 1.0f, "%.2f");
-    slider_with_reset(self, params, "Feather",  SLOT_FEATHER,   0.0f, 1.0f, "%.2f");
+    ap_module_slider_reset(self, params, "Amount",   SLOT_AMOUNT,   -1.0f, 1.0f, "%.2f");
+    ap_module_slider_reset(self, params, "Midpoint", SLOT_MIDPOINT,  0.0f, 1.0f, "%.2f");
+    ap_module_slider_reset(self, params, "Feather",  SLOT_FEATHER,   0.0f, 1.0f, "%.2f");
 }
 
 const ap_module module_vignette = {

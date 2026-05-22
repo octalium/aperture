@@ -125,16 +125,6 @@ static const ap_module_variant tone_variants[] = {
     },
 };
 
-static void slider_with_reset(const ap_module *self, float *params,
-                              const char *label, int slot,
-                              float lo, float hi, const char *fmt)
-{
-    igSliderFloat(label, &params[slot], lo, hi, fmt, 0);
-    if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
-        params[slot] = self->params_default[slot];
-    }
-}
-
 static void tone_render(const ap_module *self, float *params,
                           const ap_module_render_ctx *ctx)
 {
@@ -143,17 +133,17 @@ static void tone_render(const ap_module *self, float *params,
 
     int variant = (int)params[SLOT_ALGO];
     if (variant == VARIANT_FILMIC) {
-        slider_with_reset(self, params, "Exposure",        SLOT_FILMIC_EX, 0.1f,  4.0f,  "%.2f");
-        slider_with_reset(self, params, "Shoulder",        SLOT_FILMIC_A,  0.01f, 1.0f,  "%.3f");
-        slider_with_reset(self, params, "Linear strength", SLOT_FILMIC_B,  0.01f, 1.0f,  "%.3f");
-        slider_with_reset(self, params, "Linear angle",    SLOT_FILMIC_C,  0.0f,  1.0f,  "%.3f");
-        slider_with_reset(self, params, "Toe strength",    SLOT_FILMIC_D,  0.0f,  1.0f,  "%.3f");
-        slider_with_reset(self, params, "Toe numerator",   SLOT_FILMIC_E,  0.0f,  0.2f,  "%.3f");
-        slider_with_reset(self, params, "Toe denominator", SLOT_FILMIC_F,  0.05f, 1.0f,  "%.3f");
-        slider_with_reset(self, params, "Linear white",    SLOT_FILMIC_W,  1.0f,  20.0f, "%.1f");
+        ap_module_slider_reset(self, params, "Pre-gain",        SLOT_FILMIC_EX, 0.1f,  4.0f,  "%.2f");
+        ap_module_slider_reset(self, params, "Shoulder",        SLOT_FILMIC_A,  0.01f, 1.0f,  "%.3f");
+        ap_module_slider_reset(self, params, "Linear strength", SLOT_FILMIC_B,  0.01f, 1.0f,  "%.3f");
+        ap_module_slider_reset(self, params, "Linear angle",    SLOT_FILMIC_C,  0.0f,  1.0f,  "%.3f");
+        ap_module_slider_reset(self, params, "Toe strength",    SLOT_FILMIC_D,  0.0f,  1.0f,  "%.3f");
+        ap_module_slider_reset(self, params, "Toe numerator",   SLOT_FILMIC_E,  0.0f,  0.2f,  "%.3f");
+        ap_module_slider_reset(self, params, "Toe denominator", SLOT_FILMIC_F,  0.05f, 1.0f,  "%.3f");
+        ap_module_slider_reset(self, params, "Linear white",    SLOT_FILMIC_W,  1.0f,  20.0f, "%.1f");
     } else {
-        slider_with_reset(self, params, "Contrast", SLOT_CONTRAST, 0.5f,  4.0f,  "%.2f");
-        slider_with_reset(self, params, "Pivot",    SLOT_PIVOT,    0.05f, 0.5f,  "%.3f");
+        ap_module_slider_reset(self, params, "Contrast", SLOT_CONTRAST, 0.5f,  4.0f,  "%.2f");
+        ap_module_slider_reset(self, params, "Pivot",    SLOT_PIVOT,    0.05f, 0.5f,  "%.3f");
     }
 }
 
