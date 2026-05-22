@@ -9,7 +9,18 @@ static VkSurfaceFormatKHR pick_surface_format(VkPhysicalDevice dev, VkSurfaceKHR
 {
     uint32_t count = 0;
     vkGetPhysicalDeviceSurfaceFormatsKHR(dev, surface, &count, NULL);
+
+    VkSurfaceFormatKHR fallback = {
+        .format     = VK_FORMAT_B8G8R8A8_SRGB,
+        .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+    };
+    if (count == 0) return fallback;
+
     VkSurfaceFormatKHR *formats = calloc(count, sizeof(*formats));
+    if (!formats) {
+        AP_ERROR("swapchain: surface format list: out of memory");
+        return fallback;
+    }
     vkGetPhysicalDeviceSurfaceFormatsKHR(dev, surface, &count, formats);
 
     VkSurfaceFormatKHR chosen = formats[0];
