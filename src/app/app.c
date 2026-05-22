@@ -1080,20 +1080,6 @@ static void drive_canvas_input(ap_app *app)
         ap_canvas_set_zoom(app->canvas, 1.0f, win_w, win_h);
     }
 
-    // Delete removes the focused edit entry (the one whose row was
-    // last clicked in the Edits panel). Gate on WantTextInput to avoid
-    // stealing Delete from text fields in the config windows.
-    if (!io->WantTextInput &&
-        igIsKeyPressed_Bool(ImGuiKey_Delete, false)) {
-        ap_edit_stack *stack = ap_photo_stack(app->photo);
-        if (stack) {
-            int focus = ap_edit_stack_focus(stack);
-            if (focus >= 0) {
-                ap_edit_stack_remove(stack, focus);
-                ap_app_rebuild_photo_graph(app);
-            }
-        }
-    }
 }
 
 static void open_selected_photo(ap_app *app)
@@ -1308,14 +1294,19 @@ static void drive_grid_input(ap_app *app)
     // Used by PageUp / PageDown to advance exactly one viewport of rows.
     int rows_per_page = ap_grid_rows_per_page(app->grid, win_w, win_h);
 
-    if      (igIsKeyPressed_Bool(ImGuiKey_RightArrow, true)) new_sel = sel + 1;
-    else if (igIsKeyPressed_Bool(ImGuiKey_LeftArrow,  true)) new_sel = sel - 1;
-    else if (igIsKeyPressed_Bool(ImGuiKey_DownArrow,  true)) new_sel = sel + cpr;
-    else if (igIsKeyPressed_Bool(ImGuiKey_UpArrow,    true)) new_sel = sel - cpr;
-    else if (igIsKeyPressed_Bool(ImGuiKey_Home,  false))     new_sel = 0;
-    else if (igIsKeyPressed_Bool(ImGuiKey_End,   false))     new_sel = n - 1;
-    else if (igIsKeyPressed_Bool(ImGuiKey_PageDown, true))   new_sel = sel + rows_per_page * cpr;
-    else if (igIsKeyPressed_Bool(ImGuiKey_PageUp,   true))   new_sel = sel - rows_per_page * cpr;
+    // Gate keyboard nav on WantTextInput so arrows / Home / End /
+    // PageUp / PageDown don't walk the grid while a panel text field
+    // (search box, rename field) has focus.
+    if (!io->WantTextInput) {
+        if      (igIsKeyPressed_Bool(ImGuiKey_RightArrow, true)) new_sel = sel + 1;
+        else if (igIsKeyPressed_Bool(ImGuiKey_LeftArrow,  true)) new_sel = sel - 1;
+        else if (igIsKeyPressed_Bool(ImGuiKey_DownArrow,  true)) new_sel = sel + cpr;
+        else if (igIsKeyPressed_Bool(ImGuiKey_UpArrow,    true)) new_sel = sel - cpr;
+        else if (igIsKeyPressed_Bool(ImGuiKey_Home,  false))     new_sel = 0;
+        else if (igIsKeyPressed_Bool(ImGuiKey_End,   false))     new_sel = n - 1;
+        else if (igIsKeyPressed_Bool(ImGuiKey_PageDown, true))   new_sel = sel + rows_per_page * cpr;
+        else if (igIsKeyPressed_Bool(ImGuiKey_PageUp,   true))   new_sel = sel - rows_per_page * cpr;
+    }
     if (new_sel != sel) {
         if (io->KeyShift) {
             ap_grid_select_range(app->grid, sel, new_sel);
@@ -1326,8 +1317,9 @@ static void drive_grid_input(ap_app *app)
                                win_w, win_h);
     }
 
-    if (!io->KeyCtrl && (igIsKeyPressed_Bool(ImGuiKey_Enter, false) ||
-                         igIsKeyPressed_Bool(ImGuiKey_Space, false))) {
+    if (!io->KeyCtrl && !io->WantTextInput &&
+        (igIsKeyPressed_Bool(ImGuiKey_Enter, false) ||
+         igIsKeyPressed_Bool(ImGuiKey_Space, false))) {
         open_selected_photo(app);
     }
 
