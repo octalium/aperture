@@ -35,8 +35,10 @@ void ap_import_settings_load(const ap_library *lib, ap_import_settings *out)
     if (!lib) return;
 
     char buf[AP_IMPORT_PATTERN_LEN];
-    if (ap_library_setting_get(lib, KEY_SUBDIR, buf, sizeof(buf)) == 0 && buf[0]) {
-        snprintf(out->subdir, sizeof(out->subdir), "%s", buf);
+    char subdir[AP_IMPORT_SUBDIR_LEN];
+    if (ap_library_setting_get(lib, KEY_SUBDIR, subdir,
+                               sizeof(subdir)) == 0 && subdir[0]) {
+        snprintf(out->subdir, sizeof(out->subdir), "%s", subdir);
     }
     if (ap_library_setting_get(lib, KEY_NAMING, buf, sizeof(buf)) == 0) {
         out->naming = (atoi(buf) == AP_IMPORT_NAME_PATTERN)
