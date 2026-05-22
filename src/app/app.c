@@ -734,15 +734,24 @@ void ap_app_enter_export(ap_app *app)
     bind_mode_view(app);
 }
 
-int ap_app_run_export(ap_app *app)
+// Build the output path for `src` under `s` using `seq` as the {SEQ}
+// token, honouring the collision policy. Returns 0 on success and
+// writes the path into `out` / `out_len`; returns 1 when the file
+// was skipped by the SKIP policy; returns -1 on a hard error.
+static int resolve_output_path(const ap_export_settings *s,
+                               const char *src,
+                               const char *library_root,
+                               int seq,
+                               char *out, size_t out_len)
 {
-    if (!app || !app->photo) return -1;
-    const ap_export_settings *s = &app->export_settings;
+    char dir[4096];
+    if (ap_export_resolve_dir(s, src, library_root, dir, sizeof(dir)) != 0)
+        return -1;
+    if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+        AP_ERROR("export: mkdir(%s): %s", dir, strerror(errno));
+        return -1;
+    }
 
-    const char *src = ap_photo_path(app->photo);
-
-    // Source basename without its extension — the export stem builder
-    // works from this.
     const char *slash = strrchr(src, '/');
     const char *base  = slash ? slash + 1 : src;
     char src_stem[1024];
@@ -750,24 +759,6 @@ int ap_app_run_export(ap_app *app)
     char *dot = strrchr(src_stem, '.');
     if (dot) *dot = '\0';
 
-    char dir[4096];
-    if (ap_export_resolve_dir(s, src,
-                              app->library ? ap_library_root(app->library)
-                                           : NULL,
-                              dir, sizeof(dir)) != 0) {
-        ap_toast_push(AP_TOAST_ERROR, "Export: bad destination.");
-        return -1;
-    }
-    if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
-        AP_ERROR("export: mkdir(%s): %s", dir, strerror(errno));
-        ap_toast_push(AP_TOAST_ERROR, "Export: cannot create folder.");
-        return -1;
-    }
-
-    // The capture-time / mtime feeding the naming tokens: the source
-    // file's modification time. EXIF capture time would be preferable
-    // but is not exposed off the metadata table here; mtime is a sane
-    // stand-in and matches what the import path falls back to.
     time_t when = time(NULL);
     {
         struct stat st;
@@ -775,38 +766,53 @@ int ap_app_run_export(ap_app *app)
     }
 
     char stem[1024];
-    ap_export_format_stem(s, src_stem, when, 1, stem, sizeof(stem));
+    ap_export_format_stem(s, src_stem, when, seq, stem, sizeof(stem));
     const char *ext = ap_export_format_extension(s->format);
 
-    char out[4096];
-    int n = snprintf(out, sizeof(out), "%s/%s.%s", dir, stem, ext);
-    if (n <= 0 || (size_t)n >= sizeof(out)) {
+    int n = snprintf(out, out_len, "%s/%s.%s", dir, stem, ext);
+    if (n <= 0 || (size_t)n >= out_len) {
         AP_ERROR("export: output path too long");
-        ap_toast_push(AP_TOAST_ERROR, "Export: path too long.");
         return -1;
     }
 
-    // Collision policy. SKIP bails; SUFFIX walks _1, _2, ... until a
-    // free name is found; OVERWRITE leaves `out` as-is.
     struct stat st;
     if (stat(out, &st) == 0) {
-        if (s->collision == AP_EXPORT_COLLIDE_SKIP) {
-            ap_toast_push(AP_TOAST_INFO, "Export skipped — file exists.");
+        if (s->collision == AP_EXPORT_COLLIDE_SKIP)
             return 1;
-        }
         if (s->collision == AP_EXPORT_COLLIDE_SUFFIX) {
             int suffix = 1;
             do {
-                n = snprintf(out, sizeof(out), "%s/%s_%d.%s",
+                n = snprintf(out, out_len, "%s/%s_%d.%s",
                              dir, stem, suffix, ext);
-                if (n <= 0 || (size_t)n >= sizeof(out)) {
+                if (n <= 0 || (size_t)n >= out_len) {
                     AP_ERROR("export: suffixed path too long");
-                    ap_toast_push(AP_TOAST_ERROR, "Export: path too long.");
                     return -1;
                 }
                 suffix++;
             } while (stat(out, &st) == 0 && suffix < 10000);
         }
+    }
+    return 0;
+}
+
+int ap_app_run_export(ap_app *app)
+{
+    if (!app || !app->photo) return -1;
+    const ap_export_settings *s = &app->export_settings;
+    const char *src = ap_photo_path(app->photo);
+
+    char out[4096];
+    int pr = resolve_output_path(s, src,
+                                 app->library ? ap_library_root(app->library)
+                                              : NULL,
+                                 1, out, sizeof(out));
+    if (pr < 0) {
+        ap_toast_push(AP_TOAST_ERROR, "Export: bad destination.");
+        return -1;
+    }
+    if (pr == 1) {
+        ap_toast_push(AP_TOAST_INFO, "Export skipped — file exists.");
+        return 1;
     }
 
     if (queue_export_job(app, app->photo, s, out) != 0) {
@@ -816,6 +822,79 @@ int ap_app_run_export(ap_app *app)
 
     // Persist the settings now that the user has committed to them.
     ap_export_settings_save(app->library, &app->export_settings);
+    return 0;
+}
+
+int ap_app_batch_export_selection(ap_app *app, const ap_export_settings *s,
+                                  int *out_queued, int *out_skipped)
+{
+    if (!app || !app->library || !app->grid || !s) return -1;
+
+    if (out_queued)  *out_queued  = 0;
+    if (out_skipped) *out_skipped = 0;
+
+    const char *lib_root = ap_library_root(app->library);
+
+    int seq     = 1;
+    int queued  = 0;
+    int skipped = 0;
+
+    for (int c = 0; c < app->grid_map_count; c++) {
+        if (!ap_grid_is_selected(app->grid, c)) continue;
+        int i = app->grid_map[c];
+
+        // Skip the currently-open photo: it may have unsaved in-memory
+        // edits that differ from the sidecar; the user should close it
+        // first if they want to include it.
+        if (app->photo && i == app->photo_library_idx) continue;
+
+        char abs[4096];
+        if (ap_library_photo_absolute_path(app->library, i,
+                                           abs, sizeof(abs)) != 0) {
+            AP_WARN("batch export: cannot build path for index %d", i);
+            continue;
+        }
+
+        char out_path[4096];
+        int pr = resolve_output_path(s, abs, lib_root, seq,
+                                     out_path, sizeof(out_path));
+        if (pr < 0) {
+            AP_ERROR("batch export: cannot resolve output path for %s", abs);
+            continue;
+        }
+        if (pr == 1) {
+            skipped++;
+            seq++;
+            continue;
+        }
+
+        // Open the photo synchronously on the main thread: decode raw +
+        // build GPU pipeline. We operate an entirely separate ap_photo
+        // so the canvas / open-photo state is untouched. The readback
+        // inside queue_export_job calls vkDeviceWaitIdle on its own
+        // graph — no need to touch gpu->current_graph here.
+        ap_photo *tmp = ap_photo_open(app->gpu, abs);
+        if (!tmp) {
+            AP_WARN("batch export: cannot open %s — skipping", abs);
+            continue;
+        }
+
+        if (queue_export_job(app, tmp, s, out_path) == 0) {
+            queued++;
+        } else {
+            AP_WARN("batch export: encode queue failed for %s", abs);
+        }
+
+        // Close without persisting: we did not touch the sidecar and
+        // the thumbnail is unchanged. The pipeline readback already
+        // called vkDeviceWaitIdle, so the graph's images are idle.
+        ap_photo_close(tmp);
+
+        seq++;
+    }
+
+    if (out_queued)  *out_queued  = queued;
+    if (out_skipped) *out_skipped = skipped;
     return 0;
 }
 
