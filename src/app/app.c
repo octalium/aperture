@@ -307,14 +307,6 @@ static void drain_all_workers(ap_app *app)
     }
 }
 
-// Wait + drain only the thumbnail jobs (and discard any other
-// stragglers). Used when the library these jobs were decoded for is
-// about to be torn down.
-static void discard_completed_thumb_jobs(ap_app *app)
-{
-    drain_all_workers(app);
-}
-
 void ap_app_destroy(ap_app *app)
 {
     if (!app) return;
@@ -634,20 +626,42 @@ int ap_app_request_jpeg_export(ap_app *app, ap_photo *photo,
 // Rebuild the cell -> library-photo map from the active group filter,
 // resize the grid to the visible count, and re-bind each visible
 // cell's thumbnail from the library cache (the cells have just been
-// reassigned, so their bound textures are stale).
+// reassigned, so their bound textures are stale). The selection and
+// focus are preserved: photos that remain visible keep their selected
+// state; photos filtered out simply drop from the selection.
 static void rebuild_grid_map(ap_app *app)
 {
-    app->grid_map_count = 0;
     if (!app->library) {
+        app->grid_map_count = 0;
         if (app->grid) ap_grid_set_photo_count(app->grid, 0);
         return;
     }
 
     int n = ap_library_photo_count(app->library);
+
+    // Snapshot which library indices are selected and which is focused
+    // before touching anything, so we can restore them afterward.
+    int   old_focus_lib = -1;
+    bool *lib_was_sel   = NULL;
+    if (app->grid && app->grid_map_count > 0 && n > 0) {
+        lib_was_sel = calloc((size_t)n, sizeof(bool));
+        if (lib_was_sel) {
+            int fc = ap_grid_selected(app->grid);
+            if (fc >= 0 && fc < app->grid_map_count)
+                old_focus_lib = app->grid_map[fc];
+            for (int c = 0; c < app->grid_map_count; c++) {
+                if (ap_grid_is_selected(app->grid, c))
+                    lib_was_sel[app->grid_map[c]] = true;
+            }
+        }
+    }
+
+    app->grid_map_count = 0;
     if (n > app->grid_map_cap) {
         int *m = realloc(app->grid_map, (size_t)n * sizeof(int));
         if (!m) {
             AP_ERROR("app: grid map allocation failed");
+            free(lib_was_sel);
             return;
         }
         app->grid_map     = m;
@@ -677,9 +691,36 @@ static void rebuild_grid_map(ap_app *app)
         }
     }
 
-    if (!app->grid) return;
+    if (!app->grid) {
+        free(lib_was_sel);
+        return;
+    }
     ap_grid_set_photo_count(app->grid, app->grid_map_count);
-    ap_grid_set_selected(app->grid, 0);
+
+    if (lib_was_sel && app->grid_map_count > 0) {
+        // Restore focus to the cell showing the previously-focused photo,
+        // falling back to cell 0 if that photo is no longer visible.
+        int new_focus = 0;
+        if (old_focus_lib >= 0 && old_focus_lib < n) {
+            for (int c = 0; c < app->grid_map_count; c++) {
+                if (app->grid_map[c] == old_focus_lib) {
+                    new_focus = c;
+                    break;
+                }
+            }
+        }
+        ap_grid_select_only(app->grid, new_focus);
+        for (int c = 0; c < app->grid_map_count; c++) {
+            if (c == new_focus) continue;
+            if (lib_was_sel[app->grid_map[c]])
+                ap_grid_select_toggle(app->grid, c);
+        }
+    } else {
+        ap_grid_set_selected(app->grid, 0);
+    }
+
+    free(lib_was_sel);
+
     for (int c = 0; c < app->grid_map_count; c++) {
         ap_thumbnail *t = ap_library_thumbnail(app->library,
                                                app->grid_map[c]);
@@ -731,7 +772,7 @@ void ap_app_close_library(ap_app *app)
     // and toss the buffers - they belong to the library that's going
     // away. Then drop GPU references before the textures vanish.
     ap_worker_pool_wait_idle(app->workers);
-    discard_completed_thumb_jobs(app);
+    drain_all_workers(app);
     ap_app_wait_idle(app);
     ap_grid_set_photo_count(app->grid, 0);
     app->grid_map_count = 0;
@@ -1092,7 +1133,7 @@ static void drive_grid_input(ap_app *app)
 static void draw_selection_overlay(ap_app *app)
 {
     if (!app->library || !app->grid) return;
-    int n = ap_library_photo_count(app->library);
+    int n = app->grid_map_count;
     if (n <= 0) return;
     int sel_count = ap_grid_selection_count(app->grid);
     if (sel_count <= 1) return;   // focus highlight alone is enough
