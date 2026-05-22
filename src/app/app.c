@@ -2395,21 +2395,20 @@ int ap_app_run_frame(ap_app *app)
         igEnd();
     }
 
-    // Confine the grid to the dockspace central node so docked panels
-    // don't paint over it. dock_central was captured inside the
-    // dock-host window (correct ID scope) and stays NULL when
-    // show_panels is off — both cases fall through to full-window.
-    if (app->grid) {
-        if (dock_central &&
-            dock_central->Size.x > 0.0f && dock_central->Size.y > 0.0f) {
-            ap_grid_set_render_rect(app->grid,
-                                    (int)dock_central->Pos.x,
-                                    (int)dock_central->Pos.y,
-                                    (int)dock_central->Size.x,
-                                    (int)dock_central->Size.y);
-        } else {
-            ap_grid_set_render_rect(app->grid, 0, 0, 0, 0);
-        }
+    // Confine the grid and the canvas to the dockspace central node so
+    // docked panels don't paint over them — and so the canvas fits the
+    // visible area, not the whole window. dock_central was captured
+    // inside the dock-host window (correct ID scope) and stays NULL
+    // when show_panels is off — both cases fall through to full-window.
+    {
+        bool have_central = dock_central &&
+            dock_central->Size.x > 0.0f && dock_central->Size.y > 0.0f;
+        int cx = have_central ? (int)dock_central->Pos.x  : 0;
+        int cy = have_central ? (int)dock_central->Pos.y  : 0;
+        int cw = have_central ? (int)dock_central->Size.x : 0;
+        int ch = have_central ? (int)dock_central->Size.y : 0;
+        if (app->grid)   ap_grid_set_render_rect(app->grid, cx, cy, cw, ch);
+        if (app->canvas) ap_canvas_set_render_rect(app->canvas, cx, cy, cw, ch);
     }
 
     if (app->show_panels) {

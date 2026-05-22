@@ -53,6 +53,10 @@ struct ap_canvas {
     float zoom;
     float pan_x;
     float pan_y;
+
+    // Sub-rect of the swapchain the canvas fits + renders within (the
+    // dockspace central node). Zero size means "use the full window".
+    int rect_x, rect_y, rect_w, rect_h;
 };
 
 static int create_descriptor(ap_canvas *canvas)
@@ -322,6 +326,40 @@ static void canvas_effective_size(const ap_canvas *canvas,
                             out_w, out_h);
 }
 
+// Resolve the effective render rect: the stored sub-rect (the dockspace
+// central node) when set, otherwise the full window. Mirrors ap_grid's
+// effective_rect so the canvas fits beside the panels, not behind them.
+static void canvas_effective_rect(const ap_canvas *canvas,
+                                  int win_w, int win_h,
+                                  int *rx, int *ry, int *rw, int *rh)
+{
+    if (canvas->rect_w > 0 && canvas->rect_h > 0) {
+        *rx = canvas->rect_x;
+        *ry = canvas->rect_y;
+        *rw = canvas->rect_w;
+        *rh = canvas->rect_h;
+    } else {
+        *rx = 0;
+        *ry = 0;
+        *rw = win_w;
+        *rh = win_h;
+    }
+}
+
+void ap_canvas_set_render_rect(ap_canvas *canvas, int x, int y, int w, int h)
+{
+    if (!canvas) return;
+    if (w <= 0 || h <= 0) {
+        canvas->rect_x = canvas->rect_y = 0;
+        canvas->rect_w = canvas->rect_h = 0;
+        return;
+    }
+    canvas->rect_x = x;
+    canvas->rect_y = y;
+    canvas->rect_w = w;
+    canvas->rect_h = h;
+}
+
 void ap_canvas_set_viewport(ap_canvas *canvas, const ap_viewport *vp)
 {
     if (!canvas) return;
@@ -346,20 +384,24 @@ void ap_canvas_pan(ap_canvas *canvas, float dx, float dy,
 
     if (win_width <= 0 || win_height <= 0) return;
 
+    int rx, ry, rw, rh;
+    canvas_effective_rect(canvas, win_width, win_height, &rx, &ry, &rw, &rh);
+    (void)rx; (void)ry;
+
     int eff_w, eff_h;
     canvas_effective_size(canvas, &eff_w, &eff_h);
-    float fs = fit_scale_for(eff_w, eff_h, win_width, win_height);
+    float fs = fit_scale_for(eff_w, eff_h, rw, rh);
     if (fs <= 0.0f) return;
 
     // Displayed half-extents in screen pixels. At least a quarter of
     // the scaled image must remain on-screen: limit the pan magnitude
-    // to (displayed_half - window_quarter). When the image is smaller
-    // than the window in that axis the limit is zero, preventing any
+    // to (displayed_half - rect_quarter). When the image is smaller
+    // than the rect in that axis the limit is zero, preventing any
     // pan at all (the image is already fully visible).
     float displayed_half_x = (float)eff_w * fs * canvas->zoom * 0.5f;
     float displayed_half_y = (float)eff_h * fs * canvas->zoom * 0.5f;
-    float win_quarter_x    = (float)win_width  * 0.25f;
-    float win_quarter_y    = (float)win_height * 0.25f;
+    float win_quarter_x    = (float)rw * 0.25f;
+    float win_quarter_y    = (float)rh * 0.25f;
 
     float limit_x = displayed_half_x - win_quarter_x;
     float limit_y = displayed_half_y - win_quarter_y;
@@ -383,8 +425,10 @@ void ap_canvas_zoom_at(ap_canvas *canvas, float factor,
     if (new_zoom > 64.0f) new_zoom = 64.0f;
     float real_factor = new_zoom / canvas->zoom;
 
-    float cx = (float)win_width  * 0.5f;
-    float cy = (float)win_height * 0.5f;
+    int rx, ry, rw, rh;
+    canvas_effective_rect(canvas, win_width, win_height, &rx, &ry, &rw, &rh);
+    float cx = (float)rx + (float)rw * 0.5f;
+    float cy = (float)ry + (float)rh * 0.5f;
     float ax = anchor_screen_x - cx;
     float ay = anchor_screen_y - cy;
 
@@ -397,9 +441,12 @@ void ap_canvas_set_zoom(ap_canvas *canvas, float zoom,
                         int win_width, int win_height)
 {
     if (!canvas || !canvas->has_input || zoom <= 0.0f) return;
+    int rx, ry, rw, rh;
+    canvas_effective_rect(canvas, win_width, win_height, &rx, &ry, &rw, &rh);
+    (void)rx; (void)ry;
     int eff_w, eff_h;
     canvas_effective_size(canvas, &eff_w, &eff_h);
-    float fs = fit_scale_for(eff_w, eff_h, win_width, win_height);
+    float fs = fit_scale_for(eff_w, eff_h, rw, rh);
     if (fs <= 0.0f) return;
     // Caller passes effective scale (e.g. 1.0 = 100%, 0 means fit).
     // Translate to internal user-zoom (relative to fit).
@@ -417,9 +464,12 @@ float ap_canvas_effective_scale(const ap_canvas *canvas,
                                 int win_width, int win_height)
 {
     if (!canvas || !canvas->has_input) return 0.0f;
+    int rx, ry, rw, rh;
+    canvas_effective_rect(canvas, win_width, win_height, &rx, &ry, &rw, &rh);
+    (void)rx; (void)ry;
     int eff_w, eff_h;
     canvas_effective_size(canvas, &eff_w, &eff_h);
-    float fs = fit_scale_for(eff_w, eff_h, win_width, win_height);
+    float fs = fit_scale_for(eff_w, eff_h, rw, rh);
     return fs * canvas->zoom;
 }
 
@@ -429,15 +479,18 @@ void ap_canvas_record(ap_canvas *canvas, VkCommandBuffer cmd,
     if (!canvas || !canvas->has_input) return;
     if (win_width <= 0 || win_height <= 0) return;
 
+    int rx, ry, rw, rh;
+    canvas_effective_rect(canvas, win_width, win_height, &rx, &ry, &rw, &rh);
+
     VkViewport viewport = {
-        .x = 0.0f, .y = 0.0f,
-        .width  = (float)win_width,
-        .height = (float)win_height,
+        .x = (float)rx, .y = (float)ry,
+        .width  = (float)rw,
+        .height = (float)rh,
         .minDepth = 0.0f, .maxDepth = 1.0f,
     };
     VkRect2D scissor = {
-        .offset = { 0, 0 },
-        .extent = { (uint32_t)win_width, (uint32_t)win_height },
+        .offset = { rx, ry },
+        .extent = { (uint32_t)rw, (uint32_t)rh },
     };
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
@@ -451,10 +504,10 @@ void ap_canvas_record(ap_canvas *canvas, VkCommandBuffer cmd,
 
     canvas_push pc = {
         .image_size_px  = { (float)eff_w, (float)eff_h },
-        .window_size_px = { (float)win_width, (float)win_height },
+        .window_size_px = { (float)rw, (float)rh },
         .pan_px         = { canvas->pan_x, canvas->pan_y },
         .zoom           = canvas->zoom,
-        .fit_scale      = fit_scale_for(eff_w, eff_h, win_width, win_height),
+        .fit_scale      = fit_scale_for(eff_w, eff_h, rw, rh),
         .bg_color       = { 0.10f, 0.10f, 0.10f, 1.0f },
         .crop_rect      = { vp->crop_x0, vp->crop_y0,
                             vp->crop_x1, vp->crop_y1 },
