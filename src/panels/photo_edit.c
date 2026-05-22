@@ -148,6 +148,40 @@ static void edits_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
     if (igButton("Apply pipeline...", (ImVec2_c){ 0.0f, 0.0f })) {
         open_apply_popup();
     }
+
+    igSeparator();
+
+    // Copy / Paste edits clipboard. Copy is disabled on an empty stack.
+    if (n == 0) igBeginDisabled(true);
+    if (igButton("Copy edits", (ImVec2_c){ 0.0f, 0.0f })) {
+        ap_app_copy_edits(app);
+    }
+    if (n == 0) igEndDisabled();
+    igSameLine(0.0f, -1.0f);
+
+    bool has_clipboard = ap_app_has_edit_clipboard(app);
+    if (!has_clipboard) igBeginDisabled(true);
+    if (igButton("Paste edits", (ImVec2_c){ 0.0f, 0.0f })) {
+        ap_app_paste_edits(app);
+    }
+    if (!has_clipboard) igEndDisabled();
+    igSameLine(0.0f, -1.0f);
+
+    // Sync the clipboard's stack to the library grid's selection. The
+    // button is enabled when there's a clipboard and a library selection
+    // to apply it to (mirroring the Metadata panel's Sync to selection).
+    int sel_count = ap_app_grid_selection_count(app);
+    bool can_sync = has_clipboard && sel_count > 0;
+    if (!can_sync) igBeginDisabled(true);
+    if (igButton("Sync to selection", (ImVec2_c){ 0.0f, 0.0f })) {
+        ap_app_sync_edits_to_selection(app);
+    }
+    if (!can_sync) igEndDisabled();
+    if (igIsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        igSetTooltip("Copy edits first, then select photos in the library "
+                     "grid and click to apply");
+    }
+
     igSeparator();
 
     igTextDisabled("drag rows to reorder  ·  right-click for actions");

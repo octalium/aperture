@@ -150,6 +150,9 @@ struct ap_app {
     // single int (always 1, payload is a presence signal only).
     bool             thumb_drag_active;
 
+    ap_edit_stack      edit_clipboard;       // copy/paste edits between photos
+    bool               edit_clipboard_valid; // true once copy has been called
+
     bool               import_modal;        // File -> Import
     char               import_source[4096];
     ap_import_settings import_settings;
@@ -831,6 +834,50 @@ int ap_app_apply_pipeline_to_selection(ap_app *app, int64_t pipeline_id)
             // the new stack on the next pump cycle. The stored
             // edit-render blob's freshness check already handles the
             // sidecar-mtime side.
+            ap_library_invalidate_thumbnail(app->library, i);
+        }
+    }
+    return wrote;
+}
+
+int ap_app_copy_edits(ap_app *app)
+{
+    if (!app || !app->photo) return -1;
+    const ap_edit_stack *stack = ap_photo_stack(app->photo);
+    if (!stack) return -1;
+    app->edit_clipboard       = *stack;
+    app->edit_clipboard_valid = true;
+    return 0;
+}
+
+int ap_app_paste_edits(ap_app *app)
+{
+    if (!app || !app->photo || !app->edit_clipboard_valid) return -1;
+    ap_edit_stack *stack = ap_photo_stack(app->photo);
+    if (!stack) return -1;
+    *stack = app->edit_clipboard;
+    ap_app_rebuild_photo_graph(app);
+    return 0;
+}
+
+bool ap_app_has_edit_clipboard(const ap_app *app)
+{
+    return app && app->edit_clipboard_valid;
+}
+
+int ap_app_sync_edits_to_selection(ap_app *app)
+{
+    if (!app || !app->library || !app->grid) return -1;
+    if (!app->edit_clipboard_valid) return -1;
+
+    int wrote = 0;
+    for (int c = 0; c < app->grid_map_count; c++) {
+        if (!ap_grid_is_selected(app->grid, c)) continue;
+        int i = app->grid_map[c];
+        if (app->photo && i == app->photo_library_idx) continue;
+        if (ap_library_apply_stack_to_photo(app->library, i,
+                                            &app->edit_clipboard) == 0) {
+            wrote++;
             ap_library_invalidate_thumbnail(app->library, i);
         }
     }
@@ -2067,6 +2114,15 @@ static void drive_global_hotkeys(ap_app *app)
     }
     if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_E, false) && app->photo) {
         trigger_quick_export(app);
+    }
+    if (io->KeyCtrl && !io->WantTextInput
+        && igIsKeyPressed_Bool(ImGuiKey_C, false) && app->photo) {
+        ap_app_copy_edits(app);
+    }
+    if (io->KeyCtrl && !io->WantTextInput
+        && igIsKeyPressed_Bool(ImGuiKey_V, false) && app->photo
+        && app->edit_clipboard_valid) {
+        ap_app_paste_edits(app);
     }
     if (igIsKeyPressed_Bool(ImGuiKey_GraveAccent, false)
         && !io->WantTextInput) {
