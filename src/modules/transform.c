@@ -54,6 +54,23 @@ ap_viewport ap_transform_viewport(const float *params)
     return vp;
 }
 
+// Encode a viewport into the slot layout — inverse of the decode
+// above. The interactive crop / straighten overlay (src/app/app.c)
+// uses this so the canvas-side handles never duplicate the layout.
+void ap_transform_set_viewport(float *params, const ap_viewport *vp)
+{
+    if (!params || !vp) return;
+    params[SLOT_X0]       = vp->crop_x0;
+    params[SLOT_Y0]       = vp->crop_y0;
+    params[SLOT_X1]       = vp->crop_x1;
+    params[SLOT_Y1]       = vp->crop_y1;
+    params[SLOT_ROTATION] = vp->rotation_deg;
+    params[SLOT_FLIP_X]   = vp->flip_x ? 1.0f : 0.0f;
+    params[SLOT_FLIP_Y]   = vp->flip_y ? 1.0f : 0.0f;
+    params[SLOT_SCALE_X]  = vp->scale_x;
+    params[SLOT_SCALE_Y]  = vp->scale_y;
+}
+
 static int clampi(int v, int lo, int hi)
 {
     return v < lo ? lo : (v > hi ? hi : v);
@@ -69,6 +86,26 @@ static void transform_render(const ap_module *self, float *params,
 
     // ---- Crop, in pixels ------------------------------------------
     igSeparatorText("Crop");
+
+    // Interactive overlay: arm the canvas crop tool — draggable
+    // handles, a rule-of-thirds grid, an aspect-ratio lock and a
+    // straighten line, all driving the slots below. The button is a
+    // toggle; the config window disarms a re-armed tool.
+    {
+        bool armed = (*ctx->request_canvas_tool == AP_CANVAS_TOOL_CROP);
+        if (armed) {
+            ImVec4_c on = { 0.20f, 0.45f, 0.70f, 1.0f };
+            igPushStyleColor_Vec4(ImGuiCol_Button, on);
+        }
+        if (igButton(armed ? "Adjusting on canvas — press to finish"
+                           : "Adjust crop & straighten on canvas",
+                     (ImVec2_c){ 0.0f, 0.0f })) {
+            *ctx->request_canvas_tool = armed ? AP_CANVAS_TOOL_NONE
+                                              : AP_CANVAS_TOOL_CROP;
+        }
+        if (armed) igPopStyleColor(1);
+    }
+
     if (iw > 0 && ih > 0) {
         int x = (int)lroundf(params[SLOT_X0] * (float)iw);
         int y = (int)lroundf(params[SLOT_Y0] * (float)ih);

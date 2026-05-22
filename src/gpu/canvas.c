@@ -473,6 +473,121 @@ float ap_canvas_effective_scale(const ap_canvas *canvas,
     return fs * canvas->zoom;
 }
 
+// Screen pixel -> framed-output [0,1]. This is the canvas fragment
+// shader's first step inverted: screen -> framed_px -> normalized.
+bool ap_canvas_screen_to_framed_uv(const ap_canvas *canvas,
+                                   float screen_x, float screen_y,
+                                   int win_width, int win_height,
+                                   float *u, float *v)
+{
+    if (!canvas || !canvas->has_input || !u || !v) {
+        if (u) *u = 0.0f;
+        if (v) *v = 0.0f;
+        return false;
+    }
+
+    int rx, ry, rw, rh;
+    canvas_effective_rect(canvas, win_width, win_height, &rx, &ry, &rw, &rh);
+    int eff_w, eff_h;
+    canvas_effective_size(canvas, &eff_w, &eff_h);
+    float fs = fit_scale_for(eff_w, eff_h, rw, rh);
+    float scale = fs * canvas->zoom;
+    if (scale <= 0.0f || eff_w <= 0 || eff_h <= 0) {
+        *u = 0.0f;
+        *v = 0.0f;
+        return false;
+    }
+
+    float cx = (float)rx + (float)rw * 0.5f;
+    float cy = (float)ry + (float)rh * 0.5f;
+    float framed_x = (screen_x - cx - canvas->pan_x) / scale
+                   + (float)eff_w * 0.5f;
+    float framed_y = (screen_y - cy - canvas->pan_y) / scale
+                   + (float)eff_h * 0.5f;
+
+    *u = framed_x / (float)eff_w;
+    *v = framed_y / (float)eff_h;
+    return (*u >= 0.0f && *u <= 1.0f && *v >= 0.0f && *v <= 1.0f);
+}
+
+void ap_canvas_framed_uv_to_screen(const ap_canvas *canvas,
+                                   float u, float v,
+                                   int win_width, int win_height,
+                                   float *screen_x, float *screen_y)
+{
+    if (!canvas || !screen_x || !screen_y) return;
+
+    int rx, ry, rw, rh;
+    canvas_effective_rect(canvas, win_width, win_height, &rx, &ry, &rw, &rh);
+    int eff_w, eff_h;
+    canvas_effective_size(canvas, &eff_w, &eff_h);
+    float fs = fit_scale_for(eff_w, eff_h, rw, rh);
+    float scale = fs * canvas->zoom;
+
+    float cx = (float)rx + (float)rw * 0.5f;
+    float cy = (float)ry + (float)rh * 0.5f;
+    float framed_x = u * (float)eff_w;
+    float framed_y = v * (float)eff_h;
+
+    *screen_x = (framed_x - (float)eff_w * 0.5f) * scale + cx + canvas->pan_x;
+    *screen_y = (framed_y - (float)eff_h * 0.5f) * scale + cy + canvas->pan_y;
+}
+
+bool ap_canvas_screen_to_source_uv(const ap_canvas *canvas,
+                                   float screen_x, float screen_y,
+                                   int win_width, int win_height,
+                                   float *u, float *v)
+{
+    if (!canvas || !canvas->has_input || !u || !v) {
+        if (u) *u = 0.0f;
+        if (v) *v = 0.0f;
+        return false;
+    }
+
+    float t_x, t_y;
+    bool inside_frame = ap_canvas_screen_to_framed_uv(canvas, screen_x,
+                                                      screen_y, win_width,
+                                                      win_height, &t_x, &t_y);
+    if (!inside_frame) {
+        *u = 0.0f;
+        *v = 0.0f;
+        return false;
+    }
+
+    // Viewport backward map — mirrors canvas.frag's framed -> source UV.
+    const ap_viewport *vp = &canvas->viewport;
+    if (vp->flip_x) t_x = 1.0f - t_x;
+    if (vp->flip_y) t_y = 1.0f - t_y;
+
+    float sx = vp->scale_x > 1e-4f ? vp->scale_x : 1e-4f;
+    float sy = vp->scale_y > 1e-4f ? vp->scale_y : 1e-4f;
+    t_x = 0.5f + (t_x - 0.5f) / sx;
+    t_y = 0.5f + (t_y - 0.5f) / sy;
+
+    float crop_w = vp->crop_x1 - vp->crop_x0;
+    float crop_h = vp->crop_y1 - vp->crop_y0;
+    float rf_x = vp->crop_x0 + t_x * crop_w;
+    float rf_y = vp->crop_y0 + t_y * crop_h;
+
+    float src_w = (float)canvas->image_width;
+    float src_h = (float)canvas->image_height;
+    float zoomf = ap_viewport_autozoom(vp, canvas->image_width,
+                                       canvas->image_height);
+    if (zoomf < 1e-4f) zoomf = 1e-4f;
+
+    float c_x = (rf_x - 0.5f) * src_w / zoomf;
+    float c_y = (rf_y - 0.5f) * src_h / zoomf;
+    float ang = -vp->rotation_deg * (float)(M_PI / 180.0);
+    float cs = cosf(ang);
+    float sn = sinf(ang);
+    float src_cx = c_x * cs - c_y * sn;
+    float src_cy = c_x * sn + c_y * cs;
+
+    *u = (src_cx + src_w * 0.5f) / src_w;
+    *v = (src_cy + src_h * 0.5f) / src_h;
+    return (*u >= 0.0f && *u <= 1.0f && *v >= 0.0f && *v <= 1.0f);
+}
+
 void ap_canvas_record(ap_canvas *canvas, VkCommandBuffer cmd,
                       int win_width, int win_height)
 {

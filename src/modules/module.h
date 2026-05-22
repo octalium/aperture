@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "app/canvas_tool.h"
 #include "edit/stack.h"
 #include "gpu/gpu.h"
 #include "io/raw.h"
@@ -69,6 +70,15 @@ typedef struct {
     // undo snapshot once per drag-start so continuous slider motion is a
     // single undo step. Never NULL.
     bool *snapshot_requested;
+
+    // render_params writes an ap_canvas_tool here to ask the app to
+    // arm an interactive canvas tool (white-balance eyedropper,
+    // interactive crop). The config window forwards the request to the
+    // app, which owns the tool state and drives the canvas overlay.
+    // Pre-set to the currently-armed tool so a module can both read
+    // the live state (to draw an active/inactive toggle) and change
+    // it. Never NULL.
+    ap_canvas_tool *request_canvas_tool;
 } ap_module_render_ctx;
 
 // Render an ImGui config widget for the module's per-instance
