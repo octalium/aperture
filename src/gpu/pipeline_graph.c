@@ -1,20 +1,7 @@
-#include "pipeline_graph.h"
-
-#include "gpu_internal.h"
-
-#include "color/icc.h"
-#include "core/log.h"
-#include "modules/module.h"
-
-#include <stdbool.h>
-#include <stdlib.h>
-#include <string.h>
+#include "pipeline_graph_priv.h"
 
 #define WORKGROUP_SIZE 16
 #define MAX_MODULES    16
-// A multi-pass module expands into several stages, so the stage array
-// needs headroom over the chain-module count.
-#define MAX_STAGES     32
 
 // Max long edge of the GPU-side thumb image. The close path blits the
 // rendered output into here (linear filter, basically free on the GPU)
@@ -23,103 +10,12 @@
 // so the JPEG encoder's CPU downsample step becomes a no-op copy.
 #define THUMB_MAX_EDGE 384
 
-// One compute dispatch. A single-pass module is one stage; a
-// multi-pass variant expands into several. read0 -> binding 0,
-// write -> binding 1, read1 (aux) -> binding 2.
-typedef struct {
-    const ap_module       *module;       // for diagnostics
-    int                    entry_idx;    // edit-stack index, or -1
-    size_t                 push_size;
-    ap_module_pack_push_fn pack_push;
-    VkDescriptorSetLayout  dsl;
-    VkPipelineLayout       pl;
-    VkPipeline             pipeline;
-    VkDescriptorSet        ds;
-    VkImageView            read0_view;
-    VkImageView            read1_view;
-    VkImageView            write_view;
-    VkImage                write_image;  // post-dispatch barrier target
-
-    // Per-stage colour LUT, for a variant that declares bake_lut. A
-    // small DIM x DIM*DIM RGBA32F image, baked + uploaded at graph
-    // build time and routed to the aux binding (binding 2). NULL when
-    // the stage uses no LUT.
-    VkImage                lut_image;
-    VkDeviceMemory         lut_memory;
-    VkImageView            lut_view;
-} graph_stage;
-
-struct ap_pipeline_graph {
-    struct ap_gpu *gpu;
-    int width;
-    int height;
-
-    bool            has_meta;
-    ap_raw_metadata meta;
-
-    // Change detection. record_snapshot is the edit stack as of the
-    // last compute dispatch; while it still matches, the display image
-    // is current and the dispatch is skipped entirely.
-    bool            has_recorded;
-    ap_edit_stack   record_snapshot;
-
-    VkDescriptorPool descriptor_pool;
-
-    VkImage        stage_a_image;
-    VkDeviceMemory stage_a_memory;
-    VkImageView    stage_a_view;
-
-    VkImage        stage_b_image;
-    VkDeviceMemory stage_b_memory;
-    VkImageView    stage_b_view;
-
-    // Scratch buffers for multi-pass modules' intermediates.
-    // scratch_count is the max any one module needs; modules run
-    // sequentially so the pool is shared.
-    int            scratch_count;
-    VkImage        scratch_image[AP_MODULE_MAX_SCRATCH];
-    VkDeviceMemory scratch_memory[AP_MODULE_MAX_SCRATCH];
-    VkImageView    scratch_view[AP_MODULE_MAX_SCRATCH];
-
-    VkImage        display_image;
-    VkDeviceMemory display_memory;
-    VkImageView    display_view_unorm;
-    VkImageView    display_view_srgb;
-    VkSampler      display_sampler;
-
-    // GPU-side downsample target for ap_pipeline_graph_readback_thumb.
-    // Allocated alongside display_image so the close path can blit
-    // display -> thumb (linear filter) and read back the small image
-    // instead of pulling the full rendered output across PCIe.
-    VkImage        thumb_image;
-    VkDeviceMemory thumb_memory;
-    int            thumb_width;
-    int            thumb_height;
-
-    int          stage_count;
-    graph_stage  stages[MAX_STAGES];
-};
-
-static int find_memory_type(VkPhysicalDevice phys, uint32_t type_bits,
-                            VkMemoryPropertyFlags props)
-{
-    VkPhysicalDeviceMemoryProperties mp;
-    vkGetPhysicalDeviceMemoryProperties(phys, &mp);
-    for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
-        if ((type_bits & (1u << i)) &&
-            (mp.memoryTypes[i].propertyFlags & props) == props) {
-            return (int)i;
-        }
-    }
-    return -1;
-}
-
-static int create_image(VkDevice device, VkPhysicalDevice physical,
-                        int width, int height, VkFormat format,
-                        VkImageUsageFlags usage,
-                        VkImageCreateFlags flags,
-                        const VkFormat *view_formats, uint32_t view_format_count,
-                        VkImage *out_image, VkDeviceMemory *out_memory)
+int graph_create_image(VkDevice device, VkPhysicalDevice physical,
+                       int width, int height, VkFormat format,
+                       VkImageUsageFlags usage,
+                       VkImageCreateFlags flags,
+                       const VkFormat *view_formats, uint32_t view_format_count,
+                       VkImage *out_image, VkDeviceMemory *out_memory)
 {
     VkImageFormatListCreateInfo fmt_list = {
         .sType           = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO,
@@ -149,7 +45,7 @@ static int create_image(VkDevice device, VkPhysicalDevice physical,
 
     VkMemoryRequirements mreq;
     vkGetImageMemoryRequirements(device, *out_image, &mreq);
-    int mt = find_memory_type(physical, mreq.memoryTypeBits,
+    int mt = gpu_find_memory_type(physical, mreq.memoryTypeBits,
                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (mt < 0) {
         AP_ERROR("graph: no device-local memory type");
@@ -171,9 +67,9 @@ static int create_image(VkDevice device, VkPhysicalDevice physical,
     return 0;
 }
 
-static int create_view(VkDevice device, VkImage image, VkFormat format,
-                       VkImageUsageFlags view_usage_override,
-                       VkImageView *out_view)
+int graph_create_view(VkDevice device, VkImage image, VkFormat format,
+                      VkImageUsageFlags view_usage_override,
+                      VkImageView *out_view)
 {
     VkImageViewUsageCreateInfo usage_ci = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
@@ -201,21 +97,21 @@ static int create_view(VkDevice device, VkImage image, VkFormat format,
 
 static int create_buffers(ap_pipeline_graph *graph, int width, int height)
 {
-    if (create_image(graph->gpu->device, graph->gpu->physical, width, height,
+    if (graph_create_image(graph->gpu->device, graph->gpu->physical, width, height,
                      VK_FORMAT_R16G16B16A16_SFLOAT,
                      VK_IMAGE_USAGE_STORAGE_BIT,
                      0, NULL, 0,
                      &graph->stage_a_image, &graph->stage_a_memory) < 0) return -1;
-    if (create_view(graph->gpu->device, graph->stage_a_image,
+    if (graph_create_view(graph->gpu->device, graph->stage_a_image,
                     VK_FORMAT_R16G16B16A16_SFLOAT, 0,
                     &graph->stage_a_view) < 0) return -1;
 
-    if (create_image(graph->gpu->device, graph->gpu->physical, width, height,
+    if (graph_create_image(graph->gpu->device, graph->gpu->physical, width, height,
                      VK_FORMAT_R16G16B16A16_SFLOAT,
                      VK_IMAGE_USAGE_STORAGE_BIT,
                      0, NULL, 0,
                      &graph->stage_b_image, &graph->stage_b_memory) < 0) return -1;
-    if (create_view(graph->gpu->device, graph->stage_b_image,
+    if (graph_create_view(graph->gpu->device, graph->stage_b_image,
                     VK_FORMAT_R16G16B16A16_SFLOAT, 0,
                     &graph->stage_b_view) < 0) return -1;
 
@@ -223,13 +119,13 @@ static int create_buffers(ap_pipeline_graph *graph, int width, int height)
     // by the caller before create_buffers). Same RGBA16F format as the
     // ping-pong working buffers.
     for (int i = 0; i < graph->scratch_count; i++) {
-        if (create_image(graph->gpu->device, graph->gpu->physical, width, height,
+        if (graph_create_image(graph->gpu->device, graph->gpu->physical, width, height,
                          VK_FORMAT_R16G16B16A16_SFLOAT,
                          VK_IMAGE_USAGE_STORAGE_BIT,
                          0, NULL, 0,
                          &graph->scratch_image[i],
                          &graph->scratch_memory[i]) < 0) return -1;
-        if (create_view(graph->gpu->device, graph->scratch_image[i],
+        if (graph_create_view(graph->gpu->device, graph->scratch_image[i],
                         VK_FORMAT_R16G16B16A16_SFLOAT, 0,
                         &graph->scratch_view[i]) < 0) return -1;
     }
@@ -237,7 +133,7 @@ static int create_buffers(ap_pipeline_graph *graph, int width, int height)
     VkFormat display_view_formats[2] = {
         VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB,
     };
-    if (create_image(graph->gpu->device, graph->gpu->physical, width, height,
+    if (graph_create_image(graph->gpu->device, graph->gpu->physical, width, height,
                      VK_FORMAT_R8G8B8A8_UNORM,
                      VK_IMAGE_USAGE_STORAGE_BIT
                        | VK_IMAGE_USAGE_SAMPLED_BIT
@@ -245,10 +141,10 @@ static int create_buffers(ap_pipeline_graph *graph, int width, int height)
                      VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT,
                      display_view_formats, 2,
                      &graph->display_image, &graph->display_memory) < 0) return -1;
-    if (create_view(graph->gpu->device, graph->display_image,
+    if (graph_create_view(graph->gpu->device, graph->display_image,
                     VK_FORMAT_R8G8B8A8_UNORM, 0,
                     &graph->display_view_unorm) < 0) return -1;
-    if (create_view(graph->gpu->device, graph->display_image,
+    if (graph_create_view(graph->gpu->device, graph->display_image,
                     VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_USAGE_SAMPLED_BIT,
                     &graph->display_view_srgb) < 0) return -1;
 
@@ -282,7 +178,7 @@ static int create_buffers(ap_pipeline_graph *graph, int width, int height)
     if (graph->thumb_width  < 1) graph->thumb_width  = 1;
     if (graph->thumb_height < 1) graph->thumb_height = 1;
 
-    if (create_image(graph->gpu->device, graph->gpu->physical,
+    if (graph_create_image(graph->gpu->device, graph->gpu->physical,
                      graph->thumb_width, graph->thumb_height,
                      VK_FORMAT_R8G8B8A8_UNORM,
                      VK_IMAGE_USAGE_TRANSFER_DST_BIT
@@ -435,202 +331,6 @@ static void resolve_buf(ap_pipeline_graph *graph, ap_pass_buf b,
             *res_image = out_image;
         }
     }
-}
-
-// Identity LUT — out = in. Used when a stage declares bake_lut but the
-// module's bake fails, so the stage degrades to a pass-through.
-static void fill_identity_lut(float *lut)
-{
-    const int dim = AP_ICC_LUT_DIM;
-    int idx = 0;
-    for (int b = 0; b < dim; b++) {
-        for (int g = 0; g < dim; g++) {
-            for (int r = 0; r < dim; r++) {
-                lut[idx * 4 + 0] = (float)r / (float)(dim - 1);
-                lut[idx * 4 + 1] = (float)g / (float)(dim - 1);
-                lut[idx * 4 + 2] = (float)b / (float)(dim - 1);
-                lut[idx * 4 + 3] = 1.0f;
-                idx++;
-            }
-        }
-    }
-}
-
-// Create the stage's LUT image — a DIM x DIM*DIM RGBA32F image, the
-// row-major form of the DIM^3 colour grid — and upload `data` into it,
-// leaving it in GENERAL layout for the shader to imageLoad.
-static int create_lut_image(ap_pipeline_graph *graph, graph_stage *st,
-                            const float *data)
-{
-    VkDevice dev = graph->gpu->device;
-    const int       w     = AP_ICC_LUT_DIM;
-    const int       h     = AP_ICC_LUT_DIM * AP_ICC_LUT_DIM;
-    const VkDeviceSize bytes =
-        (VkDeviceSize)w * (VkDeviceSize)h * 4u * sizeof(float);
-
-    if (create_image(dev, graph->gpu->physical, w, h,
-                     VK_FORMAT_R32G32B32A32_SFLOAT,
-                     VK_IMAGE_USAGE_STORAGE_BIT
-                       | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                     0, NULL, 0,
-                     &st->lut_image, &st->lut_memory) < 0) {
-        return -1;
-    }
-    if (create_view(dev, st->lut_image, VK_FORMAT_R32G32B32A32_SFLOAT,
-                    0, &st->lut_view) < 0) {
-        return -1;
-    }
-
-    VkBufferCreateInfo bci = {
-        .sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size        = bytes,
-        .usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-    };
-    VkBuffer       staging     = VK_NULL_HANDLE;
-    VkDeviceMemory staging_mem = VK_NULL_HANDLE;
-    int rc = -1;
-
-    if (vkCreateBuffer(dev, &bci, NULL, &staging) != VK_SUCCESS) {
-        AP_ERROR("graph: LUT staging buffer create failed");
-        return -1;
-    }
-    VkMemoryRequirements mreq;
-    vkGetBufferMemoryRequirements(dev, staging, &mreq);
-    int mt = find_memory_type(graph->gpu->physical, mreq.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (mt < 0) {
-        AP_ERROR("graph: no host-visible memory for LUT staging");
-        goto out;
-    }
-    VkMemoryAllocateInfo mai = {
-        .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .allocationSize  = mreq.size,
-        .memoryTypeIndex = (uint32_t)mt,
-    };
-    if (vkAllocateMemory(dev, &mai, NULL, &staging_mem) != VK_SUCCESS) {
-        AP_ERROR("graph: LUT staging memory alloc failed");
-        goto out;
-    }
-    vkBindBufferMemory(dev, staging, staging_mem, 0);
-
-    void *map = NULL;
-    if (vkMapMemory(dev, staging_mem, 0, bytes, 0, &map) != VK_SUCCESS) {
-        AP_ERROR("graph: LUT staging map failed");
-        goto out;
-    }
-    memcpy(map, data, (size_t)bytes);
-    vkUnmapMemory(dev, staging_mem);
-
-    VkCommandBufferAllocateInfo cba = {
-        .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .commandPool        = graph->gpu->command_pool,
-        .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = 1,
-    };
-    VkCommandBuffer cmd = VK_NULL_HANDLE;
-    vkAllocateCommandBuffers(dev, &cba, &cmd);
-    VkCommandBufferBeginInfo begin = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-    };
-    vkBeginCommandBuffer(cmd, &begin);
-
-    VkImageMemoryBarrier2 to_dst = {
-        .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .srcStageMask  = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-        .srcAccessMask = 0,
-        .dstStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT,
-        .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        .oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED,
-        .newLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = st->lut_image,
-        .subresourceRange = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .baseMipLevel = 0, .levelCount = 1,
-            .baseArrayLayer = 0, .layerCount = 1,
-        },
-    };
-    VkDependencyInfo dep_dst = {
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &to_dst,
-    };
-    vkCmdPipelineBarrier2(cmd, &dep_dst);
-
-    VkBufferImageCopy region = {
-        .imageSubresource = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1,
-        },
-        .imageExtent = { (uint32_t)w, (uint32_t)h, 1 },
-    };
-    vkCmdCopyBufferToImage(cmd, staging, st->lut_image,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-
-    VkImageMemoryBarrier2 to_gen = to_dst;
-    to_gen.srcStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT;
-    to_gen.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    to_gen.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    to_gen.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
-    to_gen.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    to_gen.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
-    VkDependencyInfo dep_gen = {
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &to_gen,
-    };
-    vkCmdPipelineBarrier2(cmd, &dep_gen);
-
-    vkEndCommandBuffer(cmd);
-    VkCommandBufferSubmitInfo cmd_si = {
-        .sType         = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-        .commandBuffer = cmd,
-    };
-    VkSubmitInfo2 submit = {
-        .sType                  = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-        .commandBufferInfoCount = 1,
-        .pCommandBufferInfos    = &cmd_si,
-    };
-    vkQueueSubmit2(graph->gpu->graphics_queue, 1, &submit, VK_NULL_HANDLE);
-    vkQueueWaitIdle(graph->gpu->graphics_queue);
-    vkFreeCommandBuffers(dev, graph->gpu->command_pool, 1, &cmd);
-    rc = 0;
-
-out:
-    if (staging_mem) vkFreeMemory(dev, staging_mem, NULL);
-    if (staging)     vkDestroyBuffer(dev, staging, NULL);
-    return rc;
-}
-
-// Bake the stage's LUT (from the module variant's bake_lut callback)
-// and upload it. On a bake failure an identity LUT is substituted so
-// the stage passes through.
-static int build_stage_lut(ap_pipeline_graph *graph, graph_stage *st,
-                           const ap_module_active *a,
-                           const ap_edit_stack *stack)
-{
-    const float *params = NULL;
-    const char (*str_params)[AP_EDIT_STR_LEN] = NULL;
-    if (st->entry_idx >= 0 && stack) {
-        const ap_edit_entry *e = ap_edit_stack_at_const(stack, st->entry_idx);
-        if (e) { params = e->params; str_params = e->str_params; }
-    }
-    const ap_raw_metadata *meta = graph->has_meta ? &graph->meta : NULL;
-
-    size_t n = (size_t)AP_ICC_LUT_DIM * AP_ICC_LUT_DIM
-             * AP_ICC_LUT_DIM * 4u;
-    float *lut = malloc(n * sizeof(float));
-    if (!lut) {
-        AP_ERROR("graph: LUT buffer allocation failed");
-        return -1;
-    }
-    if (a->bake_lut(params, str_params, meta, lut) != 0) {
-        fill_identity_lut(lut);
-    }
-    int rc = create_lut_image(graph, st, lut);
-    free(lut);
-    return rc;
 }
 
 // Walk the resolved chain, expanding multi-pass variants into one
@@ -1162,7 +862,7 @@ int ap_pipeline_graph_readback(ap_pipeline_graph *graph,
 
     VkMemoryRequirements mreq;
     vkGetBufferMemoryRequirements(graph->gpu->device, staging, &mreq);
-    int mt = find_memory_type(graph->gpu->physical, mreq.memoryTypeBits,
+    int mt = gpu_find_memory_type(graph->gpu->physical, mreq.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (mt < 0) {
         AP_ERROR("readback: no host-visible memory type");
@@ -1315,7 +1015,7 @@ int ap_pipeline_graph_readback_thumb(ap_pipeline_graph *graph,
 
     VkMemoryRequirements mreq;
     vkGetBufferMemoryRequirements(graph->gpu->device, staging, &mreq);
-    int mt = find_memory_type(graph->gpu->physical, mreq.memoryTypeBits,
+    int mt = gpu_find_memory_type(graph->gpu->physical, mreq.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (mt < 0) {
         AP_ERROR("readback_thumb: no host-visible memory type");

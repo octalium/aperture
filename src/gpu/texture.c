@@ -18,20 +18,6 @@ struct ap_texture {
     int            height;
 };
 
-static int find_memory_type(VkPhysicalDevice phys, uint32_t type_bits,
-                            VkMemoryPropertyFlags props)
-{
-    VkPhysicalDeviceMemoryProperties mp;
-    vkGetPhysicalDeviceMemoryProperties(phys, &mp);
-    for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
-        if ((type_bits & (1u << i)) &&
-            (mp.memoryTypes[i].propertyFlags & props) == props) {
-            return (int)i;
-        }
-    }
-    return -1;
-}
-
 static void transition(VkCommandBuffer cmd, VkImage image,
                        VkImageLayout old_layout, VkImageLayout new_layout,
                        VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
@@ -103,7 +89,7 @@ static ap_texture *create_from_cpu_buffer(ap_gpu *g, const void *pixels,
 
     VkMemoryRequirements bmreq;
     vkGetBufferMemoryRequirements(g->device, staging, &bmreq);
-    int staging_type = find_memory_type(g->physical, bmreq.memoryTypeBits,
+    int staging_type = gpu_find_memory_type(g->physical, bmreq.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (staging_type < 0) {
         AP_ERROR("no host-visible coherent memory type available");
@@ -145,7 +131,7 @@ static ap_texture *create_from_cpu_buffer(ap_gpu *g, const void *pixels,
 
     VkMemoryRequirements imreq;
     vkGetImageMemoryRequirements(g->device, t->image, &imreq);
-    int image_type = find_memory_type(g->physical, imreq.memoryTypeBits,
+    int image_type = gpu_find_memory_type(g->physical, imreq.memoryTypeBits,
                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (image_type < 0) {
         AP_ERROR("no device-local memory type available");

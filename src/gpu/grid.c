@@ -76,6 +76,11 @@ struct ap_grid {
 #define BIT_SET(bm, i) ((bm)[(i) >> 3] |=  (1u << ((i) & 7)))
 #define BIT_CLR(bm, i) ((bm)[(i) >> 3] &= ~(1u << ((i) & 7)))
 
+static inline size_t bitmap_bytes(int count)
+{
+    return (size_t)((count + 7) / 8);
+}
+
 typedef struct {
     int origin_x, origin_y;
     int cells_per_row;
@@ -152,20 +157,6 @@ static float max_scroll_for(const ap_grid *g, int win_w, int win_h)
     return (float)(content_h - win_h);
 }
 
-static int find_memory_type(VkPhysicalDevice phys, uint32_t type_bits,
-                            VkMemoryPropertyFlags props)
-{
-    VkPhysicalDeviceMemoryProperties mp;
-    vkGetPhysicalDeviceMemoryProperties(phys, &mp);
-    for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
-        if ((type_bits & (1u << i)) &&
-            (mp.memoryTypes[i].propertyFlags & props) == props) {
-            return (int)i;
-        }
-    }
-    return -1;
-}
-
 static int create_placeholder(ap_grid *grid)
 {
     VkDevice dev = grid->gpu->device;
@@ -191,7 +182,7 @@ static int create_placeholder(ap_grid *grid)
 
     VkMemoryRequirements mreq;
     vkGetImageMemoryRequirements(dev, grid->placeholder_image, &mreq);
-    int mt = find_memory_type(grid->gpu->physical, mreq.memoryTypeBits,
+    int mt = gpu_find_memory_type(grid->gpu->physical, mreq.memoryTypeBits,
                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (mt < 0) {
         AP_ERROR("grid: no device-local memory for placeholder");
@@ -590,7 +581,7 @@ void ap_grid_set_photo_count(ap_grid *grid, int count)
     free(grid->selected_bitmap);
     grid->selected_bitmap = NULL;
     if (count > 0) {
-        size_t bytes = (size_t)((count + 7) / 8);
+        size_t bytes = bitmap_bytes(count);
         grid->selected_bitmap = calloc(bytes, 1);
         if (grid->selected_bitmap && count > 0) {
             BIT_SET(grid->selected_bitmap, grid->selected_idx);
@@ -634,7 +625,7 @@ void ap_grid_set_selected(ap_grid *grid, int idx)
 static void selection_clear(ap_grid *grid)
 {
     if (!grid->selected_bitmap || grid->photo_count <= 0) return;
-    memset(grid->selected_bitmap, 0, (size_t)((grid->photo_count + 7) / 8));
+    memset(grid->selected_bitmap, 0, bitmap_bytes(grid->photo_count));
 }
 
 void ap_grid_select_only(ap_grid *grid, int idx)
