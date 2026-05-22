@@ -117,6 +117,17 @@ const char *ap_app_group_filter_name(const ap_app *app);
 int         ap_app_copy_edits(ap_app *app);
 int         ap_app_paste_edits(ap_app *app);
 
+// Undo / redo the most recent edit-stack mutation on the open photo.
+// Both snapshot before mutating (caller responsibility) and rebuild the
+// pipeline graph. Return true when a state was available; false = no-op.
+bool ap_app_undo(ap_app *app);
+bool ap_app_redo(ap_app *app);
+
+// Snapshot the open photo's current edit stack into its undo history.
+// Must be called before every stack mutation so the mutation is undoable.
+// No-op when no photo is open.
+void ap_app_edit_snapshot(ap_app *app);
+
 // True when the edit clipboard holds a stack (i.e. copy has been called
 // at least once).
 bool        ap_app_has_edit_clipboard(const ap_app *app);

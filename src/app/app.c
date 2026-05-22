@@ -857,6 +857,7 @@ int ap_app_paste_edits(ap_app *app)
     if (!app || !app->photo || !app->edit_clipboard_valid) return -1;
     ap_edit_stack *stack = ap_photo_stack(app->photo);
     if (!stack) return -1;
+    ap_photo_edit_snapshot(app->photo);
     *stack = app->edit_clipboard;
     ap_app_rebuild_photo_graph(app);
     return 0;
@@ -865,6 +866,28 @@ int ap_app_paste_edits(ap_app *app)
 bool ap_app_has_edit_clipboard(const ap_app *app)
 {
     return app && app->edit_clipboard_valid;
+}
+
+void ap_app_edit_snapshot(ap_app *app)
+{
+    if (!app || !app->photo) return;
+    ap_photo_edit_snapshot(app->photo);
+}
+
+bool ap_app_undo(ap_app *app)
+{
+    if (!app || !app->photo) return false;
+    if (!ap_photo_undo(app->photo)) return false;
+    ap_app_rebuild_photo_graph(app);
+    return true;
+}
+
+bool ap_app_redo(ap_app *app)
+{
+    if (!app || !app->photo) return false;
+    if (!ap_photo_redo(app->photo)) return false;
+    ap_app_rebuild_photo_graph(app);
+    return true;
 }
 
 int ap_app_sync_edits_to_selection(ap_app *app)
@@ -2149,6 +2172,18 @@ static void drive_global_hotkeys(ap_app *app)
         && igIsKeyPressed_Bool(ImGuiKey_V, false) && app->photo
         && app->edit_clipboard_valid) {
         ap_app_paste_edits(app);
+    }
+    if (io->KeyCtrl && !io->WantTextInput
+        && igIsKeyPressed_Bool(ImGuiKey_Z, false) && app->photo) {
+        if (io->KeyShift) {
+            ap_app_redo(app);
+        } else {
+            ap_app_undo(app);
+        }
+    }
+    if (io->KeyCtrl && !io->WantTextInput
+        && igIsKeyPressed_Bool(ImGuiKey_Y, false) && app->photo) {
+        ap_app_redo(app);
     }
     if (igIsKeyPressed_Bool(ImGuiKey_GraveAccent, false)
         && !io->WantTextInput) {

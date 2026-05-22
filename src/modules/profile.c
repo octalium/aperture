@@ -99,7 +99,8 @@ static void profile_render(const ap_module *self, float *params,
     // Re-bake the LUT once the path edit is committed (Enter / focus
     // loss) — the LUT is built when the graph is assembled.
     if (igIsItemDeactivatedAfterEdit()) {
-        *ctx->request_rebuild = true;
+        *ctx->request_rebuild   = true;
+        *ctx->snapshot_requested = true;
     }
     igTextDisabled(".icc profile (matrix or cLUT); pass-through if it "
                    "can't be loaded");

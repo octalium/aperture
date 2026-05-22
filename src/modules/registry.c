@@ -97,16 +97,39 @@ void ap_module_resolve(const ap_module *self, const float *params,
     out->pack_push = self->pack_push;
 }
 
+// Current render context: set by the config window before calling
+// render_params so ap_module_slider_reset can signal drag activation
+// without changing the slider helper's call signature. NULL outside
+// of a render_params call.
+static const ap_module_render_ctx *g_render_ctx;
+
+void ap_module_render_ctx_push(const ap_module_render_ctx *ctx)
+{
+    g_render_ctx = ctx;
+}
+
+void ap_module_render_ctx_pop(void)
+{
+    g_render_ctx = NULL;
+}
+
 void ap_module_slider_reset(const ap_module *self, float *params,
                             const char *label, int slot,
                             float lo, float hi, const char *fmt)
 {
     igSliderFloat(label, &params[slot], lo, hi, fmt,
                   ImGuiSliderFlags_AlwaysClamp);
+    if (igIsItemActivated() && g_render_ctx && g_render_ctx->snapshot_requested) {
+        *g_render_ctx->snapshot_requested = true;
+    }
     if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
+        if (g_render_ctx && g_render_ctx->snapshot_requested) {
+            *g_render_ctx->snapshot_requested = true;
+        }
         params[slot] = self->params_default[slot];
     }
 }
+
 
 bool ap_module_render_variant_combo(const ap_module *self, float *params)
 {
