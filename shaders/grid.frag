@@ -1,7 +1,7 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
 
-#define MAX_THUMBS 4096
+#define MAX_THUMBS 65536
 
 layout(location = 0) in  vec2 v_screen_uv;
 layout(location = 0) out vec4 f_color;

@@ -18,7 +18,8 @@
 #define GRID_MARGIN             16
 #define GRID_MIN_CELL_SIZE      64
 #define GRID_MAX_CELL_SIZE      512
-#define GRID_MAX_THUMBS         4096   // matches MAX_THUMBS in grid.frag
+#define GRID_THUMB_CAP_INIT     4096   // starting descriptor array size
+#define GRID_THUMB_CAP_MAX      65536  // hard cap; matches MAX_THUMBS in grid.frag
 
 typedef struct {
     float window_size_px[2];
@@ -52,6 +53,7 @@ struct ap_grid {
     VkSampler      placeholder_sampler;
 
     int photo_count;
+    int thumb_capacity;           // current descriptor array size (>= photo_count)
     int selected_idx;
     int hover_idx;                // -1 when no cell is hovered
 
@@ -166,6 +168,8 @@ static float max_scroll_for(const ap_grid *g, int win_w, int win_h)
     if (content_h <= win_h) return 0.0f;
     return (float)(content_h - win_h);
 }
+
+static int create_pipeline(ap_grid *grid);
 
 static int find_memory_type(VkPhysicalDevice phys, uint32_t type_bits,
                             VkMemoryPropertyFlags props)
@@ -319,12 +323,12 @@ static int create_placeholder(ap_grid *grid)
     return 0;
 }
 
-static int create_descriptors(ap_grid *grid)
+static int create_descriptors(ap_grid *grid, int capacity)
 {
     VkDescriptorSetLayoutBinding binding = {
         .binding         = 0,
         .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        .descriptorCount = GRID_MAX_THUMBS,
+        .descriptorCount = (uint32_t)capacity,
         .stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT,
     };
     VkDescriptorBindingFlags binding_flag = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
@@ -348,7 +352,7 @@ static int create_descriptors(ap_grid *grid)
 
     VkDescriptorPoolSize pool_size = {
         .type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        .descriptorCount = GRID_MAX_THUMBS,
+        .descriptorCount = (uint32_t)capacity,
     };
     VkDescriptorPoolCreateInfo pci = {
         .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -376,12 +380,12 @@ static int create_descriptors(ap_grid *grid)
 
     // Bind the placeholder into every slot up-front so unloaded cells
     // sample a defined texel.
-    VkDescriptorImageInfo *infos = calloc(GRID_MAX_THUMBS, sizeof(*infos));
+    VkDescriptorImageInfo *infos = calloc((size_t)capacity, sizeof(*infos));
     if (!infos) {
         AP_ERROR("grid: placeholder bind alloc failed");
         return -1;
     }
-    for (int i = 0; i < GRID_MAX_THUMBS; i++) {
+    for (int i = 0; i < capacity; i++) {
         infos[i].sampler     = grid->placeholder_sampler;
         infos[i].imageView   = grid->placeholder_view;
         infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -391,12 +395,43 @@ static int create_descriptors(ap_grid *grid)
         .dstSet          = grid->ds,
         .dstBinding      = 0,
         .dstArrayElement = 0,
-        .descriptorCount = GRID_MAX_THUMBS,
+        .descriptorCount = (uint32_t)capacity,
         .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         .pImageInfo      = infos,
     };
     vkUpdateDescriptorSets(grid->gpu->device, 1, &write, 0, NULL);
     free(infos);
+    grid->thumb_capacity = capacity;
+    return 0;
+}
+
+// Tear down descriptors + pipeline layout + pipeline (but not the
+// placeholder or GPU) and rebuild with a larger capacity. Called when
+// set_photo_count receives a count exceeding the current capacity.
+// The caller must have the GPU idle before invoking this.
+static int regrow_descriptors(ap_grid *grid, int new_capacity)
+{
+    VkDevice dev = grid->gpu->device;
+    if (grid->pipeline) {
+        vkDestroyPipeline(dev, grid->pipeline, NULL);
+        grid->pipeline = VK_NULL_HANDLE;
+    }
+    if (grid->pl) {
+        vkDestroyPipelineLayout(dev, grid->pl, NULL);
+        grid->pl = VK_NULL_HANDLE;
+    }
+    if (grid->pool) {
+        vkDestroyDescriptorPool(dev, grid->pool, NULL);
+        grid->pool = VK_NULL_HANDLE;
+    }
+    if (grid->dsl) {
+        vkDestroyDescriptorSetLayout(dev, grid->dsl, NULL);
+        grid->dsl = VK_NULL_HANDLE;
+    }
+    grid->ds = VK_NULL_HANDLE;
+
+    if (create_descriptors(grid, new_capacity) < 0) return -1;
+    if (create_pipeline(grid)                  < 0) return -1;
     return 0;
 }
 
@@ -545,9 +580,9 @@ ap_grid *ap_grid_create(ap_gpu *g)
     grid->selected_idx = 0;
     grid->hover_idx    = -1;
 
-    if (create_placeholder(grid)  < 0) goto fail;
-    if (create_descriptors(grid)  < 0) goto fail;
-    if (create_pipeline(grid)     < 0) goto fail;
+    if (create_placeholder(grid)                    < 0) goto fail;
+    if (create_descriptors(grid, GRID_THUMB_CAP_INIT) < 0) goto fail;
+    if (create_pipeline(grid)                       < 0) goto fail;
     return grid;
 
 fail:
@@ -574,7 +609,7 @@ void ap_grid_destroy(ap_grid *grid)
 void ap_grid_set_thumbnail(ap_grid *grid, int idx,
                            VkImageView view, VkSampler sampler)
 {
-    if (!grid || idx < 0 || idx >= GRID_MAX_THUMBS) return;
+    if (!grid || idx < 0 || idx >= grid->thumb_capacity) return;
 
     VkDescriptorImageInfo info = {
         .sampler     = (view && sampler) ? sampler : grid->placeholder_sampler,
@@ -597,6 +632,28 @@ void ap_grid_set_photo_count(ap_grid *grid, int count)
 {
     if (!grid) return;
     if (count < 0) count = 0;
+
+    // Grow the descriptor capacity when the new photo count exceeds it.
+    // Cap at GRID_THUMB_CAP_MAX (matches MAX_THUMBS in grid.frag).
+    if (count > grid->thumb_capacity) {
+        if (count > GRID_THUMB_CAP_MAX) {
+            AP_WARN("grid: library has %d photos; only %d will be shown "
+                    "(GRID_THUMB_CAP_MAX)", count, GRID_THUMB_CAP_MAX);
+            count = GRID_THUMB_CAP_MAX;
+        }
+        // Double the capacity (clamped to GRID_THUMB_CAP_MAX) so repeated
+        // small grows don't each trigger a full rebuild.
+        int new_cap = grid->thumb_capacity * 2;
+        if (new_cap < count)         new_cap = count;
+        if (new_cap > GRID_THUMB_CAP_MAX) new_cap = GRID_THUMB_CAP_MAX;
+        AP_INFO("grid: growing descriptor capacity %d -> %d",
+                grid->thumb_capacity, new_cap);
+        if (regrow_descriptors(grid, new_cap) != 0) {
+            AP_ERROR("grid: descriptor regrow failed; keeping old capacity");
+            if (count > grid->thumb_capacity) count = grid->thumb_capacity;
+        }
+    }
+
     grid->photo_count = count;
     if (grid->selected_idx >= count) {
         grid->selected_idx = count > 0 ? count - 1 : 0;
@@ -618,9 +675,10 @@ void ap_grid_set_photo_count(ap_grid *grid, int count)
     // Reset the entire descriptor array back to the placeholder. The
     // previous library's ap_thumbnail textures are about to be (or
     // have just been) destroyed; their views can't stay bound.
-    VkDescriptorImageInfo *infos = calloc(GRID_MAX_THUMBS, sizeof(*infos));
+    VkDescriptorImageInfo *infos = calloc((size_t)grid->thumb_capacity,
+                                          sizeof(*infos));
     if (!infos) return;
-    for (int i = 0; i < GRID_MAX_THUMBS; i++) {
+    for (int i = 0; i < grid->thumb_capacity; i++) {
         infos[i].sampler     = grid->placeholder_sampler;
         infos[i].imageView   = grid->placeholder_view;
         infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -630,7 +688,7 @@ void ap_grid_set_photo_count(ap_grid *grid, int count)
         .dstSet          = grid->ds,
         .dstBinding      = 0,
         .dstArrayElement = 0,
-        .descriptorCount = GRID_MAX_THUMBS,
+        .descriptorCount = (uint32_t)grid->thumb_capacity,
         .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         .pImageInfo      = infos,
     };
