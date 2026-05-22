@@ -307,14 +307,6 @@ static void drain_all_workers(ap_app *app)
     }
 }
 
-// Wait + drain only the thumbnail jobs (and discard any other
-// stragglers). Used when the library these jobs were decoded for is
-// about to be torn down.
-static void discard_completed_thumb_jobs(ap_app *app)
-{
-    drain_all_workers(app);
-}
-
 void ap_app_destroy(ap_app *app)
 {
     if (!app) return;
@@ -731,7 +723,7 @@ void ap_app_close_library(ap_app *app)
     // and toss the buffers - they belong to the library that's going
     // away. Then drop GPU references before the textures vanish.
     ap_worker_pool_wait_idle(app->workers);
-    discard_completed_thumb_jobs(app);
+    drain_all_workers(app);
     ap_app_wait_idle(app);
     ap_grid_set_photo_count(app->grid, 0);
     app->grid_map_count = 0;
