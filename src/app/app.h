@@ -1,6 +1,7 @@
 #ifndef APERTURE_APP_H
 #define APERTURE_APP_H
 
+#include "app/canvas_tool.h"
 #include "edit/stack.h"
 #include "library/library.h"
 #include "output/export.h"
@@ -188,6 +189,21 @@ ap_library_sort ap_app_sort(const ap_app *app);
 // shows all photos. Rebuilds the grid map immediately.
 void        ap_app_set_search(ap_app *app, const char *query);
 const char *ap_app_search(const ap_app *app);
+
+// Interactive canvas tools. A module's config window arms a tool
+// (white-balance eyedropper / interactive crop) via ap_app_set_canvas_tool,
+// passing the index of the edit-stack entry the tool drives. The
+// photo-mode canvas-input handler then routes clicks / drags on the
+// image into that entry instead of panning the view. Arming
+// AP_CANVAS_TOOL_NONE disarms. Re-arming the same tool on the same
+// entry toggles it off — the config-window button reads back the
+// active tool to behave as a toggle. The tool is cleared on photo
+// close. ap_app_canvas_tool_entry returns the bound entry index, or
+// -1 when no tool is armed.
+void           ap_app_set_canvas_tool(ap_app *app, ap_canvas_tool tool,
+                                      int entry_idx);
+ap_canvas_tool ap_app_canvas_tool(const ap_app *app);
+int            ap_app_canvas_tool_entry(const ap_app *app);
 
 #ifdef __cplusplus
 }

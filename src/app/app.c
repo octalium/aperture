@@ -9,8 +9,10 @@
 #include "gpu/gpu.h"
 #include "gpu/grid.h"
 #include "gpu/pipeline_graph.h"
+#include "edit/viewport.h"
 #include "library/import.h"
 #include "library/library.h"
+#include "modules/wb.h"
 #include "output/export.h"
 #include "output/jpeg.h"
 #include "output/png.h"
@@ -25,6 +27,7 @@
 #include "cimgui.h"
 
 #include <errno.h>
+#include <math.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
@@ -180,9 +183,42 @@ struct ap_app {
     char             save_layout_input[AP_LAYOUT_NAME_LEN];
     bool             delete_modal;         // Delete key -> confirm prompt
     bool             quit_requested;
+
+    // Interactive canvas tool — armed by a module's config window,
+    // driven by the photo-mode canvas-input handler. canvas_tool_entry
+    // is the edit-stack entry index the tool writes to. crop_drag_*
+    // track an in-progress crop-handle or straighten drag; see
+    // drive_crop_tool.
+    ap_canvas_tool   canvas_tool;
+    int              canvas_tool_entry;
+    int              crop_drag_handle;     // crop handle enum, or -1 idle
+    bool             crop_aspect_locked;
+    float            crop_aspect_ratio;    // width / height when locked
+    float            crop_drag_u0, crop_drag_v0; // straighten line start
+};
+
+// Crop-overlay interaction handle: the eight rectangle handles, a
+// whole-rect move, and the straighten drag. CROP_HANDLE_NONE marks an
+// idle overlay (no drag in progress).
+enum {
+    CROP_HANDLE_NONE       = -1,
+    CROP_HANDLE_TL         = 0,
+    CROP_HANDLE_TR         = 1,
+    CROP_HANDLE_BL         = 2,
+    CROP_HANDLE_BR         = 3,
+    CROP_HANDLE_L          = 4,
+    CROP_HANDLE_R          = 5,
+    CROP_HANDLE_T          = 6,
+    CROP_HANDLE_B          = 7,
+    CROP_HANDLE_MOVE       = 8,
+    CROP_HANDLE_STRAIGHTEN = 9,
 };
 
 #define THUMB_MAX_INFLIGHT 8
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 // Set by SIGTERM / SIGINT; polled by ap_app_should_run so the main
 // loop exits cleanly (running per-photo save-on-close, library
@@ -243,6 +279,10 @@ ap_app *ap_app_create(int width, int height, const char *title)
     app->show_panels = true;
     app->show_rendered_thumbnails = true;
     app->photo_library_idx = -1;
+    app->canvas_tool = AP_CANVAS_TOOL_NONE;
+    app->canvas_tool_entry = -1;
+    app->crop_drag_handle = CROP_HANDLE_NONE;
+    app->crop_aspect_ratio = 1.0f;
 
     app->gpu = ap_gpu_create(width, height, title);
     if (!app->gpu) {
@@ -428,6 +468,11 @@ static void photo_open_job_run(ap_work_item *self)
 static void release_photo(ap_app *app)
 {
     if (!app->photo) return;
+    // An armed canvas tool refers to an edit-stack entry of the photo
+    // being torn down — drop it so the next photo starts clean.
+    app->canvas_tool       = AP_CANVAS_TOOL_NONE;
+    app->canvas_tool_entry = -1;
+    app->crop_drag_handle  = CROP_HANDLE_NONE;
     ap_app_wait_idle(app);
     ap_canvas_set_input(app->canvas, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
     ap_gpu_set_graph(app->gpu, NULL);
@@ -1217,6 +1262,33 @@ const char *ap_app_search(const ap_app *app)
     return app ? app->search_buf : "";
 }
 
+void ap_app_set_canvas_tool(ap_app *app, ap_canvas_tool tool, int entry_idx)
+{
+    if (!app) return;
+    // Re-arming the same tool on the same entry toggles it off, so the
+    // config-window button reads as a press-on / press-off control.
+    if (tool != AP_CANVAS_TOOL_NONE &&
+        app->canvas_tool == tool && app->canvas_tool_entry == entry_idx) {
+        app->canvas_tool       = AP_CANVAS_TOOL_NONE;
+        app->canvas_tool_entry = -1;
+    } else {
+        app->canvas_tool       = tool;
+        app->canvas_tool_entry = (tool == AP_CANVAS_TOOL_NONE) ? -1
+                                                               : entry_idx;
+    }
+    app->crop_drag_handle = CROP_HANDLE_NONE;
+}
+
+ap_canvas_tool ap_app_canvas_tool(const ap_app *app)
+{
+    return app ? app->canvas_tool : AP_CANVAS_TOOL_NONE;
+}
+
+int ap_app_canvas_tool_entry(const ap_app *app)
+{
+    return app ? app->canvas_tool_entry : -1;
+}
+
 int ap_app_grid_selection_count(const ap_app *app)
 {
     if (!app || !app->grid) return 0;
@@ -1259,6 +1331,345 @@ static void navigate_library_relative(ap_app *app, int dir)
                                        abs, sizeof(abs)) != 0) return;
     app->photo_library_idx = new_idx;
     ap_app_open_photo(app, abs);
+}
+
+// ---- interactive canvas tools ----------------------------------------
+
+// Resolve the edit-stack entry an armed canvas tool drives, verifying
+// it is still the module the tool expects. A stack reorder / removal
+// can shift indices out from under the stored binding; when the entry
+// no longer matches, the tool is disarmed and NULL returned rather
+// than writing into the wrong module's params.
+static ap_edit_entry *canvas_tool_entry(ap_app *app, const char *module)
+{
+    if (!app->photo || app->canvas_tool_entry < 0) return NULL;
+    ap_edit_stack *stack = ap_photo_stack(app->photo);
+    if (!stack) return NULL;
+    ap_edit_entry *e = ap_edit_stack_at(stack, app->canvas_tool_entry);
+    if (!e || strcmp(e->module_name, module) != 0) {
+        app->canvas_tool       = AP_CANVAS_TOOL_NONE;
+        app->canvas_tool_entry = -1;
+        return NULL;
+    }
+    return e;
+}
+
+// White-balance eyedropper: on a left-click inside the image, sample
+// the clicked pixel from the rendered output and solve the bound White
+// Balance entry's multipliers to neutralise it. The rendered image is
+// read back in full (synchronous, one-shot on click) and the source
+// pixel under the cursor is sampled. Returns true when the click was
+// consumed so the caller skips view panning this frame.
+static bool drive_wb_eyedropper(ap_app *app, ImGuiIO *io)
+{
+    ap_edit_entry *e = canvas_tool_entry(app, "wb");
+    if (!e) return false;
+
+    igSetMouseCursor(ImGuiMouseCursor_Hand);
+
+    if (io->WantCaptureMouse) return false;
+    if (!igIsMouseClicked_Bool(ImGuiMouseButton_Left, false)) return false;
+
+    int win_w = (int)io->DisplaySize.x;
+    int win_h = (int)io->DisplaySize.y;
+
+    float u = 0.0f, v = 0.0f;
+    if (!ap_canvas_screen_to_source_uv(app->canvas, io->MousePos.x,
+                                       io->MousePos.y, win_w, win_h,
+                                       &u, &v)) {
+        return false;   // clicked outside the image — ignore
+    }
+
+    ap_pipeline_graph *graph = ap_photo_graph(app->photo);
+    if (!graph) return false;
+    int gw = ap_pipeline_graph_output_width(graph);
+    int gh = ap_pipeline_graph_output_height(graph);
+    if (gw <= 0 || gh <= 0) return false;
+
+    size_t bytes = (size_t)gw * (size_t)gh * 4u;
+    uint8_t *rgba = malloc(bytes);
+    if (!rgba) {
+        AP_ERROR("eyedropper: out of memory (%zu bytes)", bytes);
+        return true;
+    }
+    if (ap_pipeline_graph_readback(graph, rgba, bytes) != 0) {
+        free(rgba);
+        ap_toast_push(AP_TOAST_ERROR, "Eyedropper: pixel readback failed.");
+        return true;
+    }
+
+    int px = (int)(u * (float)gw);
+    int py = (int)(v * (float)gh);
+    if (px < 0) px = 0; else if (px >= gw) px = gw - 1;
+    if (py < 0) py = 0; else if (py >= gh) py = gh - 1;
+    const uint8_t *p = &rgba[((size_t)py * (size_t)gw + (size_t)px) * 4u];
+    float sr = (float)p[0], sg = (float)p[1], sb = (float)p[2];
+    free(rgba);
+
+    ap_app_edit_snapshot(app);
+    if (ap_wb_apply_neutral_pick(e->params, sr, sg, sb)) {
+        ap_app_rebuild_photo_graph(app);
+        ap_toast_push(AP_TOAST_INFO, "White balance set from picked pixel.");
+    } else {
+        ap_toast_push(AP_TOAST_INFO,
+                      "Eyedropper: pixel too dark — pick a brighter area.");
+    }
+    return true;
+}
+
+// Crop-overlay geometry: the eight handle positions of the crop rect
+// in framed-output [0,1] space. The crop rect is itself a [0,1] sub-
+// rect of the framed output. Order matches the CROP_HANDLE_* enum for
+// the corner / edge handles (0..7).
+static void crop_handle_uv(const ap_viewport *vp, int handle,
+                           float *u, float *v)
+{
+    float x0 = vp->crop_x0, y0 = vp->crop_y0;
+    float x1 = vp->crop_x1, y1 = vp->crop_y1;
+    float mx = 0.5f * (x0 + x1);
+    float my = 0.5f * (y0 + y1);
+    switch (handle) {
+    case CROP_HANDLE_TL: *u = x0; *v = y0; break;
+    case CROP_HANDLE_TR: *u = x1; *v = y0; break;
+    case CROP_HANDLE_BL: *u = x0; *v = y1; break;
+    case CROP_HANDLE_BR: *u = x1; *v = y1; break;
+    case CROP_HANDLE_L:  *u = x0; *v = my; break;
+    case CROP_HANDLE_R:  *u = x1; *v = my; break;
+    case CROP_HANDLE_T:  *u = mx; *v = y0; break;
+    case CROP_HANDLE_B:  *u = mx; *v = y1; break;
+    default:             *u = mx; *v = my; break;
+    }
+}
+
+// While the crop tool is armed the app feeds the canvas a viewport
+// with an identity crop (full frame visible, see crop_tool_viewport),
+// so the canvas's framed-output [0,1] space is the whole rotated
+// frame. The crop rect's crop_x0..y1 are normalized over that same
+// frame, so the overlay handles live directly in framed-output space
+// — no extra crop-relative remap is needed.
+
+// Re-clamp a crop rect to stay inside [0,1], keep a minimum size, and
+// keep x0<x1 / y0<y1.
+static void crop_rect_sanitize(ap_viewport *vp)
+{
+    const float min_sz = 0.02f;
+    if (vp->crop_x0 < 0.0f) vp->crop_x0 = 0.0f;
+    if (vp->crop_y0 < 0.0f) vp->crop_y0 = 0.0f;
+    if (vp->crop_x1 > 1.0f) vp->crop_x1 = 1.0f;
+    if (vp->crop_y1 > 1.0f) vp->crop_y1 = 1.0f;
+    if (vp->crop_x1 - vp->crop_x0 < min_sz) {
+        if (vp->crop_x0 + min_sz <= 1.0f) vp->crop_x1 = vp->crop_x0 + min_sz;
+        else vp->crop_x0 = vp->crop_x1 - min_sz;
+    }
+    if (vp->crop_y1 - vp->crop_y0 < min_sz) {
+        if (vp->crop_y0 + min_sz <= 1.0f) vp->crop_y1 = vp->crop_y0 + min_sz;
+        else vp->crop_y0 = vp->crop_y1 - min_sz;
+    }
+}
+
+// Apply a drag at framed-output coordinate (u,v) to the crop rect for
+// the given handle. When the aspect lock is on, edge / corner drags
+// hold app->crop_aspect_ratio (width/height of the framed image's crop
+// in pixels). The straighten handle is handled separately.
+static void crop_apply_drag(ap_app *app, ap_viewport *vp, int handle,
+                            float u, float v, int img_w, int img_h)
+{
+    if (u < 0.0f) u = 0.0f; else if (u > 1.0f) u = 1.0f;
+    if (v < 0.0f) v = 0.0f; else if (v > 1.0f) v = 1.0f;
+
+    if (handle == CROP_HANDLE_MOVE) {
+        float w  = vp->crop_x1 - vp->crop_x0;
+        float h  = vp->crop_y1 - vp->crop_y0;
+        float nx = u - w * 0.5f;
+        float ny = v - h * 0.5f;
+        if (nx < 0.0f) nx = 0.0f;
+        if (ny < 0.0f) ny = 0.0f;
+        if (nx + w > 1.0f) nx = 1.0f - w;
+        if (ny + h > 1.0f) ny = 1.0f - h;
+        vp->crop_x0 = nx; vp->crop_y0 = ny;
+        vp->crop_x1 = nx + w; vp->crop_y1 = ny + h;
+        return;
+    }
+
+    switch (handle) {
+    case CROP_HANDLE_TL: vp->crop_x0 = u; vp->crop_y0 = v; break;
+    case CROP_HANDLE_TR: vp->crop_x1 = u; vp->crop_y0 = v; break;
+    case CROP_HANDLE_BL: vp->crop_x0 = u; vp->crop_y1 = v; break;
+    case CROP_HANDLE_BR: vp->crop_x1 = u; vp->crop_y1 = v; break;
+    case CROP_HANDLE_L:  vp->crop_x0 = u; break;
+    case CROP_HANDLE_R:  vp->crop_x1 = u; break;
+    case CROP_HANDLE_T:  vp->crop_y0 = v; break;
+    case CROP_HANDLE_B:  vp->crop_y1 = v; break;
+    default: break;
+    }
+
+    // Keep ordering before the aspect step so width / height are signed
+    // correctly.
+    if (vp->crop_x1 < vp->crop_x0) {
+        float t = vp->crop_x0; vp->crop_x0 = vp->crop_x1; vp->crop_x1 = t;
+    }
+    if (vp->crop_y1 < vp->crop_y0) {
+        float t = vp->crop_y0; vp->crop_y0 = vp->crop_y1; vp->crop_y1 = t;
+    }
+
+    // Aspect lock: after a free drag, recover the locked ratio by
+    // pulling the axis that was *not* dragged. Ratio is in pixels, so
+    // convert through the framed image dimensions.
+    if (app->crop_aspect_locked && app->crop_aspect_ratio > 0.0f &&
+        img_w > 0 && img_h > 0) {
+        float ratio_norm = app->crop_aspect_ratio
+                         * (float)img_h / (float)img_w;  // norm-w / norm-h
+        bool x_edge = (handle == CROP_HANDLE_L || handle == CROP_HANDLE_R);
+        bool y_edge = (handle == CROP_HANDLE_T || handle == CROP_HANDLE_B);
+        float cw = vp->crop_x1 - vp->crop_x0;
+        float ch = vp->crop_y1 - vp->crop_y0;
+        if (y_edge) {
+            cw = ch * ratio_norm;   // height changed -> match width
+        } else if (x_edge) {
+            ch = cw / ratio_norm;   // width changed -> match height
+        } else {
+            // Corner: keep width, derive height.
+            ch = cw / ratio_norm;
+        }
+        // Re-anchor on the fixed corner so the dragged handle leads.
+        switch (handle) {
+        case CROP_HANDLE_TL:
+            vp->crop_x0 = vp->crop_x1 - cw;
+            vp->crop_y0 = vp->crop_y1 - ch; break;
+        case CROP_HANDLE_TR:
+            vp->crop_x1 = vp->crop_x0 + cw;
+            vp->crop_y0 = vp->crop_y1 - ch; break;
+        case CROP_HANDLE_BL:
+            vp->crop_x0 = vp->crop_x1 - cw;
+            vp->crop_y1 = vp->crop_y0 + ch; break;
+        case CROP_HANDLE_BR:
+            vp->crop_x1 = vp->crop_x0 + cw;
+            vp->crop_y1 = vp->crop_y0 + ch; break;
+        case CROP_HANDLE_L: case CROP_HANDLE_R: {
+            float mid = 0.5f * (vp->crop_y0 + vp->crop_y1);
+            vp->crop_y0 = mid - ch * 0.5f;
+            vp->crop_y1 = mid + ch * 0.5f; break;
+        }
+        case CROP_HANDLE_T: case CROP_HANDLE_B: {
+            float mid = 0.5f * (vp->crop_x0 + vp->crop_x1);
+            vp->crop_x0 = mid - cw * 0.5f;
+            vp->crop_x1 = mid + cw * 0.5f; break;
+        }
+        default: break;
+        }
+    }
+
+    crop_rect_sanitize(vp);
+}
+
+// Interactive crop / straighten overlay. Drives the bound Transform
+// entry's crop + rotation slots from drag handles. While the tool is
+// armed the canvas is fed an identity-crop viewport (full frame
+// visible) so the user always sees the whole image to crop within;
+// drive_canvas_view's pan is suppressed by the caller. Returns nothing
+// — the drawing half is draw_crop_overlay.
+static void drive_crop_tool(ap_app *app, ImGuiIO *io)
+{
+    ap_edit_entry *e = canvas_tool_entry(app, "transform");
+    if (!e) return;
+
+    int win_w = (int)io->DisplaySize.x;
+    int win_h = (int)io->DisplaySize.y;
+    int img_w = ap_photo_width(app->photo);
+    int img_h = ap_photo_height(app->photo);
+
+    ap_viewport vp = ap_transform_viewport(e->params);
+
+    // Hit-test radius for handles, in screen pixels.
+    const float grab_r = 11.0f;
+
+    if (io->WantCaptureMouse && app->crop_drag_handle == CROP_HANDLE_NONE) {
+        return;
+    }
+
+    // Begin a drag: pick the closest handle under the cursor. The
+    // straighten handle (a separate gesture) starts on a Shift-click
+    // anywhere inside the crop rect; a plain click inside grabs MOVE.
+    if (igIsMouseClicked_Bool(ImGuiMouseButton_Left, false) &&
+        app->crop_drag_handle == CROP_HANDLE_NONE) {
+        float best_d2 = grab_r * grab_r;
+        int   best    = CROP_HANDLE_NONE;
+        for (int h = CROP_HANDLE_TL; h <= CROP_HANDLE_B; h++) {
+            float hu, hv, sx, sy;
+            crop_handle_uv(&vp, h, &hu, &hv);
+            ap_canvas_framed_uv_to_screen(app->canvas, hu, hv,
+                                          win_w, win_h, &sx, &sy);
+            float dx = sx - io->MousePos.x;
+            float dy = sy - io->MousePos.y;
+            float d2 = dx * dx + dy * dy;
+            if (d2 < best_d2) { best_d2 = d2; best = h; }
+        }
+        if (best == CROP_HANDLE_NONE) {
+            // Inside the crop rect? -> straighten (Shift) or move.
+            float fu, fv;
+            ap_canvas_screen_to_framed_uv(app->canvas, io->MousePos.x,
+                                          io->MousePos.y, win_w, win_h,
+                                          &fu, &fv);
+            if (fu >= vp.crop_x0 && fu <= vp.crop_x1 &&
+                fv >= vp.crop_y0 && fv <= vp.crop_y1) {
+                if (io->KeyShift) {
+                    best = CROP_HANDLE_STRAIGHTEN;
+                    app->crop_drag_u0 = fu;
+                    app->crop_drag_v0 = fv;
+                } else {
+                    best = CROP_HANDLE_MOVE;
+                }
+            }
+        }
+        if (best != CROP_HANDLE_NONE) {
+            ap_app_edit_snapshot(app);
+            app->crop_drag_handle = best;
+        }
+    }
+
+    // Continue an active drag.
+    if (app->crop_drag_handle != CROP_HANDLE_NONE) {
+        if (!igIsMouseDown_Nil(ImGuiMouseButton_Left)) {
+            app->crop_drag_handle = CROP_HANDLE_NONE;
+        } else if (app->crop_drag_handle == CROP_HANDLE_STRAIGHTEN) {
+            // Straighten: the drag vector's angle off horizontal is the
+            // correction; add it to the current rotation. Converting to
+            // screen space keeps the angle visually true under the
+            // canvas zoom (uniform scale -> angle preserved).
+            float su0, sv0, su1, sv1;
+            ap_canvas_framed_uv_to_screen(app->canvas, app->crop_drag_u0,
+                                          app->crop_drag_v0, win_w, win_h,
+                                          &su0, &sv0);
+            su1 = io->MousePos.x;
+            sv1 = io->MousePos.y;
+            float dx = su1 - su0;
+            float dy = sv1 - sv0;
+            if (dx * dx + dy * dy > 4.0f) {
+                float ang = atan2f(dy, dx) * (float)(180.0 / M_PI);
+                // Snap the drawn line to the nearest of horizontal /
+                // vertical: a near-vertical drag means "this should be
+                // vertical".
+                if (ang > 90.0f)       ang -= 180.0f;
+                else if (ang < -90.0f) ang += 180.0f;
+                if (ang > 45.0f)       ang -= 90.0f;
+                else if (ang < -45.0f) ang += 90.0f;
+                float rot = vp.rotation_deg - ang;
+                if (rot > 180.0f)  rot -= 360.0f;
+                if (rot < -180.0f) rot += 360.0f;
+                if (rot > 180.0f)  rot = 180.0f;
+                if (rot < -180.0f) rot = -180.0f;
+                vp.rotation_deg = rot;
+            }
+        } else {
+            float fu, fv;
+            ap_canvas_screen_to_framed_uv(app->canvas, io->MousePos.x,
+                                          io->MousePos.y, win_w, win_h,
+                                          &fu, &fv);
+            crop_apply_drag(app, &vp, app->crop_drag_handle, fu, fv,
+                            img_w, img_h);
+        }
+        ap_transform_set_viewport(e->params, &vp);
+    }
 }
 
 // Pan / zoom the canvas from the mouse and the F / 0 / 1 view keys.
@@ -1318,7 +1729,13 @@ static void drive_canvas_input(ap_app *app)
     if (!io) return;
 
     if (igIsKeyPressed_Bool(ImGuiKey_Escape, false)) {
-        ap_app_close_photo(app);
+        // Escape disarms an active canvas tool first; only with no tool
+        // armed does it close the photo.
+        if (app->canvas_tool != AP_CANVAS_TOOL_NONE) {
+            ap_app_set_canvas_tool(app, AP_CANVAS_TOOL_NONE, -1);
+        } else {
+            ap_app_close_photo(app);
+        }
         return;
     }
 
@@ -1336,6 +1753,21 @@ static void drive_canvas_input(ap_app *app)
             navigate_library_relative(app, -1);
             return;
         }
+    }
+
+    // Interactive canvas tools take the mouse when armed. The
+    // eyedropper consumes a click but otherwise leaves the view free
+    // to pan / zoom between picks; the crop tool owns mouse drags
+    // entirely, so view panning is suppressed while it is armed.
+    switch (app->canvas_tool) {
+    case AP_CANVAS_TOOL_WB_EYEDROPPER:
+        if (drive_wb_eyedropper(app, io)) return;
+        break;
+    case AP_CANVAS_TOOL_CROP:
+        drive_crop_tool(app, io);
+        return;
+    case AP_CANVAS_TOOL_NONE:
+        break;
     }
 
     drive_canvas_view(app, io);
@@ -2675,6 +3107,216 @@ static void draw_canvas_zoom_overlay(ap_app *app)
     ImDrawList_AddText_Vec2(dl, (ImVec2_c){ x, y }, 0xFFEEEEEE, label, NULL);
 }
 
+// The crop overlay: dimmed margin outside the crop rect, a rule-of-
+// thirds grid inside it, the rect outline, and eight grab handles.
+// Drawn on the foreground draw list so it sits over the canvas but
+// under ImGui windows. Only runs while the crop tool is armed; the
+// canvas is showing the full frame (see the viewport push).
+static void draw_crop_overlay(ap_app *app)
+{
+    if (app->canvas_tool != AP_CANVAS_TOOL_CROP) return;
+    ap_edit_entry *e = canvas_tool_entry(app, "transform");
+    if (!e) return;
+
+    ImGuiIO *io = igGetIO_Nil();
+    if (!io) return;
+    int win_w = (int)io->DisplaySize.x;
+    int win_h = (int)io->DisplaySize.y;
+
+    ImDrawList *dl = igGetForegroundDrawList_ViewportPtr(NULL);
+    if (!dl) return;
+
+    ap_viewport vp = ap_transform_viewport(e->params);
+
+    // The four crop-rect corners in screen pixels.
+    float x0s, y0s, x1s, y1s;
+    ap_canvas_framed_uv_to_screen(app->canvas, vp.crop_x0, vp.crop_y0,
+                                  win_w, win_h, &x0s, &y0s);
+    ap_canvas_framed_uv_to_screen(app->canvas, vp.crop_x1, vp.crop_y1,
+                                  win_w, win_h, &x1s, &y1s);
+
+    // The full framed image rect in screen pixels — the dim mask
+    // covers the framed image outside the crop, not the whole window.
+    float fx0, fy0, fx1, fy1;
+    ap_canvas_framed_uv_to_screen(app->canvas, 0.0f, 0.0f,
+                                  win_w, win_h, &fx0, &fy0);
+    ap_canvas_framed_uv_to_screen(app->canvas, 1.0f, 1.0f,
+                                  win_w, win_h, &fx1, &fy1);
+
+    // Dim the four margin bands between the framed image and the crop.
+    const unsigned dim = 0x99000000u;
+    ImDrawList_AddRectFilled(dl, (ImVec2_c){ fx0, fy0 },
+                             (ImVec2_c){ fx1, y0s }, dim, 0.0f, 0);
+    ImDrawList_AddRectFilled(dl, (ImVec2_c){ fx0, y1s },
+                             (ImVec2_c){ fx1, fy1 }, dim, 0.0f, 0);
+    ImDrawList_AddRectFilled(dl, (ImVec2_c){ fx0, y0s },
+                             (ImVec2_c){ x0s, y1s }, dim, 0.0f, 0);
+    ImDrawList_AddRectFilled(dl, (ImVec2_c){ x1s, y0s },
+                             (ImVec2_c){ fx1, y1s }, dim, 0.0f, 0);
+
+    // Rule-of-thirds grid inside the crop rect.
+    const unsigned grid_col = 0x66FFFFFFu;
+    for (int i = 1; i <= 2; i++) {
+        float t = (float)i / 3.0f;
+        float gx = x0s + (x1s - x0s) * t;
+        float gy = y0s + (y1s - y0s) * t;
+        ImDrawList_AddLine(dl, (ImVec2_c){ gx, y0s },
+                           (ImVec2_c){ gx, y1s }, grid_col, 1.0f);
+        ImDrawList_AddLine(dl, (ImVec2_c){ x0s, gy },
+                           (ImVec2_c){ x1s, gy }, grid_col, 1.0f);
+    }
+
+    // Crop rect outline.
+    ImDrawList_AddRect(dl, (ImVec2_c){ x0s, y0s }, (ImVec2_c){ x1s, y1s },
+                       0xFFEEEEEE, 0.0f, 2.0f, 0);
+
+    // Handles — eight filled squares.
+    const float hs = 5.0f;
+    for (int h = CROP_HANDLE_TL; h <= CROP_HANDLE_B; h++) {
+        float hu, hv, sx, sy;
+        crop_handle_uv(&vp, h, &hu, &hv);
+        ap_canvas_framed_uv_to_screen(app->canvas, hu, hv,
+                                      win_w, win_h, &sx, &sy);
+        unsigned col = (h == app->crop_drag_handle) ? 0xFF55D6F2u
+                                                    : 0xFFEEEEEEu;
+        ImDrawList_AddRectFilled(dl, (ImVec2_c){ sx - hs, sy - hs },
+                                 (ImVec2_c){ sx + hs, sy + hs }, col,
+                                 0.0f, 0);
+        ImDrawList_AddRect(dl, (ImVec2_c){ sx - hs, sy - hs },
+                           (ImVec2_c){ sx + hs, sy + hs }, 0xFF101010u,
+                           0.0f, 1.5f, 0);
+    }
+
+    // Straighten guide: while a straighten drag is active draw the
+    // line the user is dragging.
+    if (app->crop_drag_handle == CROP_HANDLE_STRAIGHTEN) {
+        float su0, sv0;
+        ap_canvas_framed_uv_to_screen(app->canvas, app->crop_drag_u0,
+                                      app->crop_drag_v0, win_w, win_h,
+                                      &su0, &sv0);
+        ImDrawList_AddLine(dl, (ImVec2_c){ su0, sv0 },
+                           io->MousePos, 0xFF55D6F2u, 2.0f);
+    }
+}
+
+// Aspect-ratio presets for the crop tool toolbar. "Free" disables the
+// lock; the rest lock the crop to a fixed width:height.
+typedef struct {
+    const char *label;
+    float       w, h;       // 0,0 for Free
+} crop_aspect_preset;
+
+static const crop_aspect_preset crop_aspect_presets[] = {
+    { "Free",  0.0f, 0.0f },
+    { "1:1",   1.0f, 1.0f },
+    { "3:2",   3.0f, 2.0f },
+    { "4:3",   4.0f, 3.0f },
+    { "16:9", 16.0f, 9.0f },
+    { "2:3",   2.0f, 3.0f },
+    { "3:4",   3.0f, 4.0f },
+    { "9:16",  9.0f, 16.0f },
+};
+
+// Floating toolbar shown while the crop tool is armed: aspect-ratio
+// lock, reset, and a Done button. Aspect lock and straighten state
+// live on the app; the toolbar is their UI surface.
+static void draw_crop_toolbar(ap_app *app)
+{
+    if (app->canvas_tool != AP_CANVAS_TOOL_CROP) return;
+    ap_edit_entry *e = canvas_tool_entry(app, "transform");
+    if (!e) return;
+
+    ImGuiIO *io = igGetIO_Nil();
+    if (!io) return;
+
+    igSetNextWindowBgAlpha(0.85f);
+    igSetNextWindowPos((ImVec2_c){ io->DisplaySize.x * 0.5f, 36.0f },
+                       ImGuiCond_Appearing, (ImVec2_c){ 0.5f, 0.0f });
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse
+                           | ImGuiWindowFlags_AlwaysAutoResize
+                           | ImGuiWindowFlags_NoDocking;
+    if (!igBegin("Crop##overlay", NULL, flags)) {
+        igEnd();
+        return;
+    }
+
+    int n_presets = (int)(sizeof(crop_aspect_presets) /
+                          sizeof(crop_aspect_presets[0]));
+
+    igText("Aspect");
+    igSameLine(0.0f, -1.0f);
+    igSetNextItemWidth(110.0f);
+    const char *cur = "Free";
+    if (app->crop_aspect_locked) {
+        for (int i = 1; i < n_presets; i++) {
+            float r = crop_aspect_presets[i].w / crop_aspect_presets[i].h;
+            if (fabsf(r - app->crop_aspect_ratio) < 0.001f) {
+                cur = crop_aspect_presets[i].label;
+                break;
+            }
+        }
+    }
+    if (igBeginCombo("##aspect", cur, 0)) {
+        for (int i = 0; i < n_presets; i++) {
+            const crop_aspect_preset *p = &crop_aspect_presets[i];
+            bool selected = (i == 0) ? !app->crop_aspect_locked
+                : (app->crop_aspect_locked &&
+                   strcmp(cur, p->label) == 0);
+            if (igSelectable_Bool(p->label, selected, 0,
+                                  (ImVec2_c){ 0.0f, 0.0f })) {
+                if (i == 0) {
+                    app->crop_aspect_locked = false;
+                } else {
+                    app->crop_aspect_locked = true;
+                    app->crop_aspect_ratio  = p->w / p->h;
+                    // Re-shape the current crop to the new ratio about
+                    // its centre so the lock takes effect immediately.
+                    ap_viewport vp = ap_transform_viewport(e->params);
+                    int iw = ap_photo_width(app->photo);
+                    int ih = ap_photo_height(app->photo);
+                    if (iw > 0 && ih > 0) {
+                        float ratio_norm = app->crop_aspect_ratio
+                                         * (float)ih / (float)iw;
+                        float cx = 0.5f * (vp.crop_x0 + vp.crop_x1);
+                        float cy = 0.5f * (vp.crop_y0 + vp.crop_y1);
+                        float cw = vp.crop_x1 - vp.crop_x0;
+                        float ch = cw / ratio_norm;
+                        if (ch > 1.0f) { ch = 1.0f; cw = ch * ratio_norm; }
+                        ap_app_edit_snapshot(app);
+                        vp.crop_x0 = cx - cw * 0.5f;
+                        vp.crop_x1 = cx + cw * 0.5f;
+                        vp.crop_y0 = cy - ch * 0.5f;
+                        vp.crop_y1 = cy + ch * 0.5f;
+                        crop_rect_sanitize(&vp);
+                        ap_transform_set_viewport(e->params, &vp);
+                    }
+                }
+            }
+        }
+        igEndCombo();
+    }
+
+    igSameLine(0.0f, 16.0f);
+    if (igButton("Reset crop", (ImVec2_c){ 0.0f, 0.0f })) {
+        ap_viewport vp = ap_transform_viewport(e->params);
+        ap_app_edit_snapshot(app);
+        vp.crop_x0 = 0.0f; vp.crop_y0 = 0.0f;
+        vp.crop_x1 = 1.0f; vp.crop_y1 = 1.0f;
+        vp.rotation_deg = 0.0f;
+        ap_transform_set_viewport(e->params, &vp);
+    }
+
+    igSameLine(0.0f, 8.0f);
+    if (igButton("Done", (ImVec2_c){ 0.0f, 0.0f })) {
+        ap_app_set_canvas_tool(app, AP_CANVAS_TOOL_NONE, -1);
+    }
+
+    igSeparator();
+    igTextDisabled("drag handles to crop  ·  shift-drag inside to straighten");
+
+    igEnd();
+}
+
 static void draw_loading_overlay(ap_app *app)
 {
     if (!app->photo_loading) return;
@@ -2861,8 +3503,36 @@ int ap_app_run_frame(ap_app *app)
         ap_grid_update(app->grid, io ? io->DeltaTime : 0.0f);
     }
 
+    // Push the active viewport to the canvas before the mode-input
+    // handlers run — the pipeline renders full-frame, the canvas
+    // applies the Transform module's crop / rotation / flip / scale at
+    // presentation. The panels above may have changed it this frame,
+    // and the crop tool's coordinate mapping (drive_crop_tool) reads
+    // the canvas viewport, so it must be current here, not pushed at
+    // end of frame.
+    //
+    // While the interactive crop tool is armed the canvas shows the
+    // *full* rotated frame (crop reset to the whole frame) so the user
+    // can drag the crop rect over the entire image; the crop overlay
+    // draws the rect on top. Rotation / flip / scale stay applied so
+    // straighten previews live.
+    if (app->canvas) {
+        if (app->photo) {
+            ap_viewport vp = ap_photo_viewport(app->photo);
+            if (app->canvas_tool == AP_CANVAS_TOOL_CROP) {
+                vp.crop_x0 = 0.0f; vp.crop_y0 = 0.0f;
+                vp.crop_x1 = 1.0f; vp.crop_y1 = 1.0f;
+            }
+            ap_canvas_set_viewport(app->canvas, &vp);
+        } else {
+            ap_canvas_set_viewport(app->canvas, NULL);
+        }
+    }
+
     if (app->mode == AP_MODE_PHOTO && !app->photo_loading) {
         drive_canvas_input(app);
+        draw_crop_overlay(app);
+        draw_crop_toolbar(app);
         draw_canvas_zoom_overlay(app);
     } else if (app->mode == AP_MODE_EXPORT && !app->photo_loading) {
         drive_export_input(app);
@@ -2877,19 +3547,6 @@ int ap_app_run_frame(ap_app *app)
     drain_one_completed_job(app);
     draw_loading_overlay(app);
     ap_toast_draw();
-
-    // Push the active viewport to the canvas every frame — the
-    // pipeline renders full-frame, the canvas applies the Transform
-    // module's crop / rotation / flip / scale at presentation. Cheap;
-    // the Transform config window may have changed it this frame.
-    if (app->canvas) {
-        if (app->photo) {
-            ap_viewport vp = ap_photo_viewport(app->photo);
-            ap_canvas_set_viewport(app->canvas, &vp);
-        } else {
-            ap_canvas_set_viewport(app->canvas, NULL);
-        }
-    }
 
     const ap_edit_stack *stack = NULL;
     if (app->photo) {
