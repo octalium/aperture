@@ -743,6 +743,55 @@ int ap_grid_cell_size(const ap_grid *grid)
     return grid ? grid->cell_size : 0;
 }
 
+void ap_grid_zoom_at(ap_grid *grid, int new_cell_px,
+                     float screen_x, float screen_y,
+                     int win_width, int win_height)
+{
+    if (!grid || grid->photo_count <= 0) return;
+    (void)screen_x;
+
+    if (new_cell_px < GRID_MIN_CELL_SIZE) new_cell_px = GRID_MIN_CELL_SIZE;
+    if (new_cell_px > GRID_MAX_CELL_SIZE) new_cell_px = GRID_MAX_CELL_SIZE;
+
+    int rx, ry, rw, rh;
+    effective_rect(grid, win_width, win_height, &rx, &ry, &rw, &rh);
+    (void)rw; (void)rh;
+
+    // old pitch uses the fractional cell size (what's currently rendered)
+    float old_pitch = grid->cell_size_f + (float)grid->cell_gap_y;
+    float new_pitch = (float)new_cell_px  + (float)grid->cell_gap_y;
+    if (old_pitch <= 0.0f || new_pitch <= 0.0f) {
+        grid->cell_size = new_cell_px;
+        return;
+    }
+
+    // Y distance from the render-rect top to the cursor, adjusted for
+    // the current scroll target. This is the position in the unscrolled
+    // content space (relative to GRID_MARGIN origin) that the cursor
+    // currently points at.
+    float viewport_y      = screen_y - (float)ry - (float)GRID_MARGIN;
+    float content_y       = viewport_y + grid->scroll_y_target;
+
+    // After rescaling, the same content fraction maps to a new content_y.
+    float new_content_y   = content_y * (new_pitch / old_pitch);
+
+    // Adjust scroll so the cursor stays over the same content point.
+    float new_scroll      = new_content_y - viewport_y;
+
+    grid->cell_size   = new_cell_px;
+
+    // Clamp the new scroll to the max for the new layout.
+    // Temporarily set cell_size_f to compute max_scroll correctly.
+    float saved_f = grid->cell_size_f;
+    grid->cell_size_f = (float)new_cell_px;
+    float ms = max_scroll_for(grid, rw, rh);
+    grid->cell_size_f = saved_f;
+
+    if (new_scroll < 0.0f) new_scroll = 0.0f;
+    if (new_scroll > ms)   new_scroll = ms;
+    grid->scroll_y_target = new_scroll;
+}
+
 void ap_grid_set_cell_size(ap_grid *grid, int px)
 {
     if (!grid) return;

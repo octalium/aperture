@@ -49,6 +49,13 @@ int  ap_grid_cell_size(const ap_grid *grid);
 void ap_grid_set_cell_size(ap_grid *grid, int px);
 void ap_grid_reset_cell_size(ap_grid *grid);
 
+// Change cell size and adjust scroll_y_target so the content point
+// currently under (screen_x, screen_y) stays stationary after the
+// resize. Clamps cell size to the valid range. No-op on empty grids.
+void ap_grid_zoom_at(ap_grid *grid, int new_cell_px,
+                     float screen_x, float screen_y,
+                     int win_width, int win_height);
+
 // Vertical scroll. `dy` is in window pixels - positive scrolls
 // content up (reveals content below). Clamps to [0, max_scroll]
 // based on the supplied window dims and current photo count.

@@ -1040,7 +1040,9 @@ static void drive_grid_input(ap_app *app)
                 int cur  = ap_grid_cell_size(app->grid);
                 int step = 16;
                 int next = cur + (int)(io->MouseWheel) * step;
-                ap_grid_set_cell_size(app->grid, next);
+                ap_grid_zoom_at(app->grid, next,
+                                io->MousePos.x, io->MousePos.y,
+                                win_w, win_h);
             } else {
                 const float wheel_step_px = 60.0f;
                 ap_grid_scroll(app->grid, -io->MouseWheel * wheel_step_px,
@@ -1892,8 +1894,11 @@ static void drive_global_hotkeys(ap_app *app)
             ap_canvas_zoom_at(app->canvas, 1.15f,
                               win_w * 0.5f, win_h * 0.5f, win_w, win_h);
         } else {
-            ap_grid_set_cell_size(app->grid,
-                                  ap_grid_cell_size(app->grid) + 16);
+            int win_w = (int)io->DisplaySize.x;
+            int win_h = (int)io->DisplaySize.y;
+            ap_grid_zoom_at(app->grid,
+                            ap_grid_cell_size(app->grid) + 16,
+                            win_w * 0.5f, win_h * 0.5f, win_w, win_h);
         }
     }
     if (io->KeyCtrl && (igIsKeyPressed_Bool(ImGuiKey_Minus, true) ||
@@ -1904,8 +1909,11 @@ static void drive_global_hotkeys(ap_app *app)
             ap_canvas_zoom_at(app->canvas, 1.0f / 1.15f,
                               win_w * 0.5f, win_h * 0.5f, win_w, win_h);
         } else {
-            ap_grid_set_cell_size(app->grid,
-                                  ap_grid_cell_size(app->grid) - 16);
+            int win_w = (int)io->DisplaySize.x;
+            int win_h = (int)io->DisplaySize.y;
+            ap_grid_zoom_at(app->grid,
+                            ap_grid_cell_size(app->grid) - 16,
+                            win_w * 0.5f, win_h * 0.5f, win_w, win_h);
         }
     }
 }
