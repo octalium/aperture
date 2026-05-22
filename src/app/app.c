@@ -1092,7 +1092,7 @@ static void drive_grid_input(ap_app *app)
 static void draw_selection_overlay(ap_app *app)
 {
     if (!app->library || !app->grid) return;
-    int n = ap_library_photo_count(app->library);
+    int n = app->grid_map_count;
     if (n <= 0) return;
     int sel_count = ap_grid_selection_count(app->grid);
     if (sel_count <= 1) return;   // focus highlight alone is enough
