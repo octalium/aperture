@@ -260,25 +260,6 @@ void draw_menubar(ap_app *app)
         igEndMenu();
     }
 
-    if (app->export_inflight > 0) {
-        char exporting[40];
-        if (app->export_inflight == 1) {
-            snprintf(exporting, sizeof(exporting), "Exporting...");
-        } else {
-            snprintf(exporting, sizeof(exporting),
-                     "Exporting (%d)...", app->export_inflight);
-        }
-        ImVec2_c label_sz = igCalcTextSize(exporting, NULL, false, -1.0f);
-        ImGuiStyle *style = igGetStyle();
-        float right_x = igGetWindowWidth()
-                        - label_sz.x
-                        - style->FramePadding.x * 2.0f
-                        - style->ItemSpacing.x;
-        igSetCursorPosX(right_x);
-        ImVec4_c dim = { 0.75f, 0.75f, 0.75f, 1.0f };
-        igTextColored(dim, "%s", exporting);
-    }
-
     igEndMainMenuBar();
 }
 

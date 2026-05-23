@@ -239,12 +239,16 @@ int ap_app_open_photo(ap_app *app, const char *path)
     snprintf(app->loading_path, sizeof(app->loading_path), "%s", path);
     app->photo_loading = true;
 
+    {
+        const char *slash = strrchr(path, '/');
+        const char *name  = slash ? slash + 1 : path;
+        j->status_id = ap_status_progress_begin(name, 0);
+    }
+
     // Flip into photo mode synchronously so the workspace appears
     // instantly. The canvas binds with no input until the worker lands
     // and install_loaded_photo rebinds it to the freshly built pipeline.
-    // draw_loading_overlay covers the gap. If we are already in photo
-    // mode (prev/next nav), the previous photo stays visible until the
-    // new one is installed.
+    // ap_status_draw shows the in-flight entry while the decode runs.
     if (app->mode != AP_MODE_PHOTO) {
         app->mode = AP_MODE_PHOTO;
         bind_mode_view(app);
@@ -259,7 +263,8 @@ void ap_app_close_photo(ap_app *app)
     if (!app) return;
 
     // Invalidate any in-flight async open so its result is discarded
-    // when it lands.
+    // when it lands.  discard_completed_item finishes the status entry
+    // when the stale job surfaces.
     if (app->photo_loading) {
         app->photo_load_gen++;
         app->photo_loading = false;
@@ -418,6 +423,13 @@ int ap_app_request_jpeg_export(ap_app *app, ap_photo *photo,
     j->format       = AP_EXPORT_FORMAT_JPEG;
     j->jpeg_quality = quality;
     snprintf(j->out_path, sizeof(j->out_path), "%s", out_path);
+    {
+        const char *slash = strrchr(out_path, '/');
+        const char *name  = slash ? slash + 1 : out_path;
+        char label[160];
+        snprintf(label, sizeof(label), "Exporting %s", name);
+        j->status_id = ap_status_progress_begin(label, 0);
+    }
 
     app->export_inflight++;
     AP_INFO("export: queued %s (%dx%d, q=%d)", j->out_path, w, h, quality);
@@ -480,6 +492,13 @@ static int queue_export_job(ap_app *app, ap_photo *photo,
     j->tiff_depth     = s->tiff_depth;
     j->tiff_compress  = s->tiff_compress;
     snprintf(j->out_path, sizeof(j->out_path), "%s", out_path);
+    {
+        const char *slash = strrchr(out_path, '/');
+        const char *name  = slash ? slash + 1 : out_path;
+        char label[160];
+        snprintf(label, sizeof(label), "Exporting %s", name);
+        j->status_id = ap_status_progress_begin(label, 0);
+    }
 
     app->export_inflight++;
     AP_INFO("export: queued %s (%dx%d, format=%d)",
@@ -2011,20 +2030,6 @@ static void draw_crop_toolbar(ap_app *app)
     igEnd();
 }
 
-static void draw_loading_overlay(ap_app *app)
-{
-    if (!app->photo_loading) return;
-    ImGuiIO *io = igGetIO_Nil();
-    if (!io) return;
-    ImDrawList *dl = igGetForegroundDrawList_ViewportPtr(NULL);
-    if (!dl) return;
-
-    ImVec2_c center = { io->DisplaySize.x * 0.5f, io->DisplaySize.y * 0.5f };
-    char msg[5120];
-    snprintf(msg, sizeof(msg), "loading %s", app->loading_path);
-    ImVec2_c pos = { center.x - 200.0f, center.y - 8.0f };
-    ImDrawList_AddText_Vec2(dl, pos, 0xFFEEEEEE, msg, NULL);
-}
 
 int ap_app_run_frame(ap_app *app)
 {
@@ -2218,7 +2223,7 @@ int ap_app_run_frame(ap_app *app)
         submit_pending_thumbs(app);
     }
     drain_one_completed_job(app);
-    draw_loading_overlay(app);
+    ap_status_draw();
     ap_toast_draw();
 
     const ap_edit_stack *stack = NULL;

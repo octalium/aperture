@@ -29,6 +29,7 @@
 #include "photo/thumbnail.h"
 #include "ui/file_dialog.h"
 #include "ui/imgui.h"
+#include "ui/status.h"
 #include "ui/toast.h"
 
 #include "cimgui.h"
@@ -79,6 +80,7 @@ struct ap_app {
     bool             compare_original;
 
     bool             import_modal;
+    bool             import_inflight;
     char             import_source[4096];
     ap_import_settings import_settings;
     char             import_status[160];
@@ -145,6 +147,11 @@ void thumb_job_run(ap_work_item *self);
 void thumb_encode_job_run(ap_work_item *self);
 void photo_open_job_run(ap_work_item *self);
 void export_job_run(ap_work_item *self);
+void import_job_run(ap_work_item *self);
+
+/* jobs.c public entry points */
+void submit_import_job(ap_app *app, const char *lib_root, const char *src_dir,
+                       const ap_import_settings *settings);
 
 /* jobs.c helper — install a successfully decoded raw as the active photo */
 struct photo_open_job;

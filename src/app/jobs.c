@@ -2,6 +2,7 @@
 
 #include "jobs.h"
 
+#include "library/import.h"
 #include "output/export.h"
 #include "output/jpeg.h"
 #include "output/png.h"
@@ -62,6 +63,20 @@ void thumb_encode_job_run(ap_work_item *self)
                                       &j->jpeg, &j->jpeg_size) == 0);
 }
 
+static void import_progress_cb(int done, int total, void *userdata)
+{
+    import_job *j = (import_job *)userdata;
+    ap_status_progress_update(j->status_id, done, total);
+}
+
+void import_job_run(ap_work_item *self)
+{
+    import_job *j = (import_job *)self;
+    j->ok = (ap_import_run_into(j->lib_root, j->src_dir, &j->settings,
+                                &j->imported,
+                                import_progress_cb, j) == 0);
+}
+
 static void handle_thumb_complete(ap_app *app, thumb_job *j)
 {
     if (app->thumb_inflight > 0) app->thumb_inflight--;
@@ -117,12 +132,15 @@ static void handle_photo_open_complete(ap_app *app, photo_open_job *j)
     bool stale = (j->gen != app->photo_load_gen);
     if (stale) {
         ap_raw_image_free(&j->raw);
+        ap_status_progress_finish(j->status_id, 0);
     } else {
         app->photo_loading = false;
         app->loading_path[0] = '\0';
         if (j->ok) {
+            ap_status_progress_finish(j->status_id, 1);
             install_loaded_photo(app, j);
         } else {
+            ap_status_progress_finish(j->status_id, 0);
             AP_ERROR("photo: failed to open %s", j->path);
             ap_raw_image_free(&j->raw);
             if (!app->photo && app->mode == AP_MODE_PHOTO) {
@@ -137,12 +155,13 @@ static void handle_photo_open_complete(ap_app *app, photo_open_job *j)
 static void handle_export_complete(ap_app *app, export_job *j)
 {
     if (app->export_inflight > 0) app->export_inflight--;
+    ap_status_progress_finish(j->status_id, j->ok);
     if (j->ok) {
         const char *slash = strrchr(j->out_path, '/');
         const char *name  = slash ? slash + 1 : j->out_path;
-        ap_toast_push(AP_TOAST_INFO, "Saved %s", name);
+        ap_status_notify(AP_STATUS_INFO, "Saved %s", name);
     } else {
-        ap_toast_push(AP_TOAST_ERROR, "Export failed — see the log.");
+        ap_status_notify(AP_STATUS_ERROR, "Export failed — see the log.");
     }
     free(j->rgba);
     free(j);
@@ -165,6 +184,25 @@ static void handle_thumb_encode_complete(ap_app *app, thumb_encode_job *j)
     free(j);
 }
 
+static void handle_import_complete(ap_app *app, import_job *j)
+{
+    app->import_inflight = false;
+    ap_status_progress_finish(j->status_id, j->ok);
+    if (j->ok) {
+        ap_app_open_library(app, j->lib_root);
+        snprintf(app->import_status, sizeof(app->import_status),
+                 "Imported %d photo%s.", j->imported,
+                 j->imported == 1 ? "" : "s");
+        ap_status_notify(AP_STATUS_INFO, "Import complete: %d photo%s.",
+                         j->imported, j->imported == 1 ? "" : "s");
+    } else {
+        snprintf(app->import_status, sizeof(app->import_status),
+                 "Import failed — see the log.");
+        ap_status_notify(AP_STATUS_ERROR, "Import failed — see the log.");
+    }
+    free(j);
+}
+
 void discard_completed_item(ap_app *app, ap_work_item *it)
 {
     if (it->run == thumb_job_run) {
@@ -176,16 +214,23 @@ void discard_completed_item(ap_app *app, ap_work_item *it)
     } else if (it->run == photo_open_job_run) {
         photo_open_job *j = (photo_open_job *)it;
         ap_raw_image_free(&j->raw);
+        ap_status_progress_finish(j->status_id, 0);
         free(j);
     } else if (it->run == export_job_run) {
         export_job *j = (export_job *)it;
         if (app->export_inflight > 0) app->export_inflight--;
+        ap_status_progress_finish(j->status_id, 0);
         free(j->rgba);
         free(j);
     } else if (it->run == thumb_encode_job_run) {
         thumb_encode_job *j = (thumb_encode_job *)it;
         free(j->rgba);
         free(j->jpeg);
+        free(j);
+    } else if (it->run == import_job_run) {
+        import_job *j = (import_job *)it;
+        app->import_inflight = false;
+        ap_status_progress_finish(j->status_id, 0);
         free(j);
     } else {
         AP_WARN("worker: unknown completed run-fn at discard, leaking item");
@@ -216,6 +261,8 @@ void drain_one_completed_job(ap_app *app)
         handle_export_complete(app, (export_job *)it);
     } else if (it->run == thumb_encode_job_run) {
         handle_thumb_encode_complete(app, (thumb_encode_job *)it);
+    } else if (it->run == import_job_run) {
+        handle_import_complete(app, (import_job *)it);
     } else {
         AP_WARN("worker: unknown completed run-fn, leaking item");
     }
@@ -295,4 +342,26 @@ void toggle_rendered_thumbnails(ap_app *app)
     for (int c = 0; c < app->grid_map_count && app->grid; c++) {
         ap_grid_set_thumbnail(app->grid, c, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
     }
+}
+
+void submit_import_job(ap_app *app, const char *lib_root, const char *src_dir,
+                       const ap_import_settings *settings)
+{
+    if (!app || !app->workers || !lib_root || !src_dir || !settings) return;
+    if (app->import_inflight) return;
+
+    import_job *j = calloc(1, sizeof(*j));
+    if (!j) {
+        AP_ERROR("import: job alloc failed");
+        return;
+    }
+    j->base.run = import_job_run;
+    snprintf(j->lib_root, sizeof(j->lib_root), "%s", lib_root);
+    snprintf(j->src_dir,  sizeof(j->src_dir),  "%s", src_dir);
+    j->settings  = *settings;
+    j->status_id = ap_status_progress_begin("Importing photos…", 0);
+
+    app->import_inflight    = true;
+    app->import_status[0]   = '\0';
+    ap_worker_pool_submit(app->workers, &j->base);
 }
