@@ -4,6 +4,7 @@
 
 #include "app/root.h"
 #include "core/log.h"
+#include "library/library.h"
 #include "ui/imgui.h"
 
 #include <dirent.h>
@@ -18,9 +19,16 @@
 #define CURRENT_FILE ".current"
 #define LAYOUT_EXT   ".ini"
 
-// Module-local state. The "active name" buffer + the rebuild flag.
+// Increment this when a new panel is added to the default dock layout
+// in ap_app_run_frame. ap_layout_init compares the persisted value; when
+// it is older, the adoption pass runs once to place any undocked panels
+// into the existing layout without nuking the user's overall arrangement.
+#define LAYOUT_SCHEMA_VERSION 1
+
+// Module-local state. The "active name" buffer + the rebuild/adoption flags.
 static char g_active_name[AP_LAYOUT_NAME_LEN] = {0};
 static bool g_rebuild_pending                 = false;
+static bool g_panel_adoption_pending          = false;
 
 static int layouts_dir_path(char *out, size_t out_len)
 {
@@ -118,6 +126,25 @@ int ap_layout_init(void)
     } else {
         g_active_name[0] = '\0';
     }
+
+    // Check whether new panels have been added since the last run. The
+    // schema version is persisted in app settings; when it is absent or
+    // older than LAYOUT_SCHEMA_VERSION, the dockspace runner schedules a
+    // one-shot adoption pass that places any undocked panels into the
+    // existing layout without disturbing the user's overall arrangement.
+    char ver_buf[16];
+    int persisted = 0;
+    if (ap_settings_get("layout.schema_version", ver_buf, sizeof(ver_buf)) == 0) {
+        persisted = atoi(ver_buf);
+    }
+    if (persisted < LAYOUT_SCHEMA_VERSION) {
+        g_panel_adoption_pending = true;
+        snprintf(ver_buf, sizeof(ver_buf), "%d", LAYOUT_SCHEMA_VERSION);
+        ap_settings_set("layout.schema_version", ver_buf);
+        AP_INFO("layout: schema v%d -> v%d, scheduling panel adoption pass",
+                persisted, LAYOUT_SCHEMA_VERSION);
+    }
+
     return 0;
 }
 
@@ -207,5 +234,12 @@ bool ap_layout_consume_rebuild_request(void)
 {
     bool r = g_rebuild_pending;
     g_rebuild_pending = false;
+    return r;
+}
+
+bool ap_layout_consume_panel_adoption_request(void)
+{
+    bool r = g_panel_adoption_pending;
+    g_panel_adoption_pending = false;
     return r;
 }
