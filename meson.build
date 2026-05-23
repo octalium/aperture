@@ -30,6 +30,7 @@ libpng_dep  = dependency('libpng')
 # would otherwise be picked ahead of it; vendoring keeps the colour
 # engine version deterministic across machines.
 lcms2_dep   = subproject('lcms2').get_variable('lcms2_dep')
+blake3_dep  = subproject('blake3').get_variable('blake3_dep')
 nfd_dep     = dependency('nativefiledialog-extended')
 threads_dep = dependency('threads')
 
@@ -50,6 +51,7 @@ aperture_deps = [
   libtiff_dep,
   libpng_dep,
   lcms2_dep,
+  blake3_dep,
   nfd_dep,
   threads_dep,
   shaders_dep,

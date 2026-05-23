@@ -61,10 +61,11 @@ typedef struct {
 typedef struct {
     ap_work_item        base;
     char                lib_root[4096];
+    char                db_path[4096];
     char                src_dir[4096];
     ap_import_settings  settings;
     ap_status_id        status_id;
-    int                 imported;
+    ap_import_report    report;
     int                 ok;
 } import_job;
 

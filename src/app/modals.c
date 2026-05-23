@@ -69,6 +69,22 @@ void draw_import_modal(ap_app *app)
         igTextDisabled("Importing\xe2\x80\xa6 (progress shown in corner)");
     } else if (app->import_status[0]) {
         igTextWrapped("%s", app->import_status);
+        const ap_import_report *r = &app->import_report;
+        if (r->dup_content > 0) {
+            igTextDisabled("%d already in library (skipped)", r->dup_content);
+        }
+        if (r->renamed_collision > 0) {
+            igTextDisabled("%d renamed to avoid a name collision",
+                           r->renamed_collision);
+        }
+        if (r->skip_collision > 0) {
+            igTextDisabled("%d skipped (name collision, different content)",
+                           r->skip_collision);
+        }
+        if (r->errored > 0) {
+            igTextDisabled("%d error%s — see the log",
+                           r->errored, r->errored == 1 ? "" : "s");
+        }
     }
 
     igEndPopup();

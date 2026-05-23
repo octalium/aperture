@@ -72,8 +72,8 @@ static void import_progress_cb(int done, int total, void *userdata)
 void import_job_run(ap_work_item *self)
 {
     import_job *j = (import_job *)self;
-    j->ok = (ap_import_run_into(j->lib_root, j->src_dir, &j->settings,
-                                &j->imported,
+    j->ok = (ap_import_run_into(j->lib_root, j->db_path, j->src_dir,
+                                &j->settings, &j->report,
                                 import_progress_cb, j) == 0);
 }
 
@@ -187,14 +187,15 @@ static void handle_thumb_encode_complete(ap_app *app, thumb_encode_job *j)
 static void handle_import_complete(ap_app *app, import_job *j)
 {
     app->import_inflight = false;
+    app->import_report   = j->report;
     ap_status_progress_finish(j->status_id, j->ok);
     if (j->ok) {
         ap_app_open_library(app, j->lib_root);
+        int n = j->report.imported;
         snprintf(app->import_status, sizeof(app->import_status),
-                 "Imported %d photo%s.", j->imported,
-                 j->imported == 1 ? "" : "s");
+                 "Imported %d photo%s.", n, n == 1 ? "" : "s");
         ap_status_notify(AP_STATUS_INFO, "Import complete: %d photo%s.",
-                         j->imported, j->imported == 1 ? "" : "s");
+                         n, n == 1 ? "" : "s");
     } else {
         snprintf(app->import_status, sizeof(app->import_status),
                  "Import failed — see the log.");
@@ -357,11 +358,14 @@ void submit_import_job(ap_app *app, const char *lib_root, const char *src_dir,
     }
     j->base.run = import_job_run;
     snprintf(j->lib_root, sizeof(j->lib_root), "%s", lib_root);
+    snprintf(j->db_path,  sizeof(j->db_path),
+             "%s/.aperture/library.db", lib_root);
     snprintf(j->src_dir,  sizeof(j->src_dir),  "%s", src_dir);
     j->settings  = *settings;
-    j->status_id = ap_status_progress_begin("Importing photos…", 0);
+    j->status_id = ap_status_progress_begin("Importing photos\xe2\x80\xa6", 0);
 
     app->import_inflight    = true;
     app->import_status[0]   = '\0';
+    memset(&app->import_report, 0, sizeof(app->import_report));
     ap_worker_pool_submit(app->workers, &j->base);
 }
