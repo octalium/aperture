@@ -40,7 +40,7 @@ struct ap_library {
     char     *root;        // absolute path to the photo directory
     char      id[37];      // RFC 4122 v4 UUID, 36 chars + NUL
     char      name[128];   // user-set display name; empty if unset
-    sqlite3  *db;          // <library_root>/.aperture/library.db
+    sqlite3  *db;          // <library_root>/library.db
 
     char    **photo_paths; // relative to root
     int       photo_count;
@@ -768,7 +768,12 @@ int ap_registry_list(ap_registry_entry *out, int max)
 
 // ----- per-library db: photos table -----
 
-static const char *LIBRARY_SCHEMA_SQL =
+// Tables are created first so backfill_culling_columns can ALTER an
+// existing photos table to add the rating / flag / color columns before
+// the indexes below try to reference them. CREATE TABLE IF NOT EXISTS
+// is a no-op for an existing photos table predating those columns; the
+// backfill's ALTER TABLE statements are what actually adds them.
+static const char *LIBRARY_TABLES_SQL =
     "CREATE TABLE IF NOT EXISTS schema ("
     "    key   TEXT PRIMARY KEY,"
     "    value TEXT NOT NULL"
@@ -787,16 +792,11 @@ static const char *LIBRARY_SCHEMA_SQL =
     "    flag         INTEGER NOT NULL DEFAULT 0,"
     "    color        INTEGER NOT NULL DEFAULT 0"
     ");"
-    "CREATE INDEX IF NOT EXISTS idx_photos_capture_time ON photos(capture_time);"
-    "CREATE INDEX IF NOT EXISTS idx_photos_hash         ON photos(hash);"
-    "CREATE INDEX IF NOT EXISTS idx_photos_rating ON photos(rating);"
-    "CREATE INDEX IF NOT EXISTS idx_photos_flag   ON photos(flag);"
-    "CREATE INDEX IF NOT EXISTS idx_photos_color  ON photos(color);"
     // Edit-render thumbnail cache. Keyed by the photo's relative path
     // (same key the in-memory photo list uses). `jpeg` is a small
     // JPEG of the photo rendered through its edit stack; `updated_at`
-    // is when it was rendered, compared against the .aperture
-    // sidecar's mtime to decide freshness.
+    // is when it was rendered, compared against the sidecar's mtime to
+    // decide freshness.
     "CREATE TABLE IF NOT EXISTS thumbnails ("
     "    path       TEXT PRIMARY KEY,"
     "    jpeg       BLOB NOT NULL,"
@@ -824,6 +824,13 @@ static const char *LIBRARY_SCHEMA_SQL =
     "    name          TEXT NOT NULL UNIQUE,"
     "    settings_blob TEXT NOT NULL"
     ")";
+
+static const char *LIBRARY_INDEXES_SQL =
+    "CREATE INDEX IF NOT EXISTS idx_photos_capture_time ON photos(capture_time);"
+    "CREATE INDEX IF NOT EXISTS idx_photos_hash         ON photos(hash);"
+    "CREATE INDEX IF NOT EXISTS idx_photos_rating       ON photos(rating);"
+    "CREATE INDEX IF NOT EXISTS idx_photos_flag         ON photos(flag);"
+    "CREATE INDEX IF NOT EXISTS idx_photos_color        ON photos(color);";
 
 // Backfill the culling columns on a photos table created before they
 // were added. Each ALTER returns SQLITE_ERROR with "duplicate column
@@ -932,7 +939,8 @@ static int scan_dir(ap_library *lib, sqlite3_stmt *insert_stmt,
 
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
-        if (ent->d_name[0] == '.') continue;
+        if (strcmp(ent->d_name, ".")  == 0 ||
+            strcmp(ent->d_name, "..") == 0) continue;
 
         char abs_child[4096];
         if (snprintf(abs_child, sizeof(abs_child), "%s/%s",
@@ -1318,6 +1326,38 @@ static void prune_missing_photos(ap_library *lib)
     free(gone);
 }
 
+// Move a file, falling back to copy + unlink across filesystems.
+// Returns 0 on success, -1 on failure (with a warning logged).
+static int move_file(const char *src_path, const char *dst_path)
+{
+    if (rename(src_path, dst_path) == 0) return 0;
+    if (errno != EXDEV) {
+        AP_WARN("library: rename(%s, %s): %s",
+                src_path, dst_path, strerror(errno));
+        return -1;
+    }
+    FILE *src = fopen(src_path, "rb");
+    FILE *dst = fopen(dst_path, "wb");
+    bool ok = src && dst;
+    if (ok) {
+        char cbuf[65536];
+        size_t nr;
+        while ((nr = fread(cbuf, 1, sizeof(cbuf), src)) > 0) {
+            if (fwrite(cbuf, 1, nr, dst) != nr) { ok = false; break; }
+        }
+        ok = ok && !ferror(src) && !ferror(dst);
+    }
+    if (src) fclose(src);
+    if (dst) fclose(dst);
+    if (!ok) {
+        AP_WARN("library: copy(%s, %s) failed", src_path, dst_path);
+        unlink(dst_path);
+        return -1;
+    }
+    unlink(src_path);
+    return 0;
+}
+
 ap_library *ap_library_open(const char *path)
 {
     if (!path) {
@@ -1368,61 +1408,50 @@ ap_library *ap_library_open(const char *path)
         }
     }
 
-    char aperture_dir[4096];
-    if (snprintf(aperture_dir, sizeof(aperture_dir), "%s/.aperture",
-                 lib->root) >= (int)sizeof(aperture_dir)) {
-        AP_ERROR("ap_library_open: library path too long");
-        goto fail;
-    }
-    if (ap_mkdir_p(aperture_dir) < 0) {
-        AP_ERROR("ap_library_open: cannot create %s", aperture_dir);
-        goto fail;
-    }
-
+    // The library's db lives in the library root: <library>/library.db.
+    // No hidden subdirectory — aperture's per-library state is one file
+    // that moves with the folder.
     char db_path[4096];
     if (snprintf(db_path, sizeof(db_path), "%s/library.db",
-                 aperture_dir) >= (int)sizeof(db_path)) {
+                 lib->root) >= (int)sizeof(db_path)) {
         AP_ERROR("ap_library_open: db path too long");
         goto fail;
     }
 
     if (access(db_path, F_OK) != 0) {
-        char legacy_filename[64];
-        snprintf(legacy_filename, sizeof(legacy_filename),
-                 "libraries/%s.db", lib->id);
-        char legacy_path[4096];
-        if (ap_app_root_join(legacy_filename, legacy_path,
-                             sizeof(legacy_path)) == 0 &&
-            access(legacy_path, F_OK) == 0) {
-            if (rename(legacy_path, db_path) == 0) {
-                AP_INFO("library: migrated db %s -> %s", legacy_path, db_path);
-            } else if (errno == EXDEV) {
-                // Cross-device: copy then remove the source.
-                FILE *src = fopen(legacy_path, "rb");
-                FILE *dst = fopen(db_path, "wb");
-                bool ok = src && dst;
-                if (ok) {
-                    char cbuf[65536];
-                    size_t nr;
-                    while ((nr = fread(cbuf, 1, sizeof(cbuf), src)) > 0) {
-                        if (fwrite(cbuf, 1, nr, dst) != nr) { ok = false; break; }
-                    }
-                    ok = ok && !ferror(src) && !ferror(dst);
-                }
-                if (src) fclose(src);
-                if (dst) fclose(dst);
-                if (ok) {
-                    unlink(legacy_path);
-                    AP_INFO("library: migrated db (cross-device) %s -> %s",
-                            legacy_path, db_path);
-                } else {
-                    AP_WARN("library: migrate db copy(%s, %s) failed",
-                            legacy_path, db_path);
-                    unlink(db_path);
-                }
-            } else {
-                AP_WARN("library: migrate db rename(%s, %s): %s",
-                        legacy_path, db_path, strerror(errno));
+        // Migrate from prior db locations, newest first:
+        //   1. <library>/.aperture/library.db  (the brief in-library
+        //      hidden-dir layout)
+        //   2. <app_root>/libraries/<uuid>.db  (the original app-root
+        //      registry-keyed layout)
+        char interim_path[4096];
+        snprintf(interim_path, sizeof(interim_path),
+                 "%s/.aperture/library.db", lib->root);
+
+        if (access(interim_path, F_OK) == 0) {
+            if (move_file(interim_path, db_path) == 0) {
+                AP_INFO("library: migrated db %s -> %s",
+                        interim_path, db_path);
+                // Best-effort cleanup of the now-orphaned hidden dir
+                // and any leftover sqlite WAL/SHM siblings inside it.
+                char wal[4096], shm[4096], ap_dir[4096];
+                snprintf(wal,    sizeof(wal),    "%s/.aperture/library.db-wal", lib->root);
+                snprintf(shm,    sizeof(shm),    "%s/.aperture/library.db-shm", lib->root);
+                snprintf(ap_dir, sizeof(ap_dir), "%s/.aperture",               lib->root);
+                unlink(wal); unlink(shm);
+                rmdir(ap_dir);
+            }
+        } else {
+            char legacy_filename[64];
+            snprintf(legacy_filename, sizeof(legacy_filename),
+                     "libraries/%s.db", lib->id);
+            char legacy_path[4096];
+            if (ap_app_root_join(legacy_filename, legacy_path,
+                                 sizeof(legacy_path)) == 0 &&
+                access(legacy_path, F_OK) == 0 &&
+                move_file(legacy_path, db_path) == 0) {
+                AP_INFO("library: migrated db %s -> %s",
+                        legacy_path, db_path);
             }
         }
     }
@@ -1435,8 +1464,9 @@ ap_library *ap_library_open(const char *path)
     sqlite3_exec(lib->db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
     sqlite3_exec(lib->db, "PRAGMA foreign_keys=ON;",  NULL, NULL, NULL);
 
-    if (exec_simple(lib->db, LIBRARY_SCHEMA_SQL)                       < 0) goto fail;
+    if (exec_simple(lib->db, LIBRARY_TABLES_SQL)                       < 0) goto fail;
     backfill_culling_columns(lib->db);
+    if (exec_simple(lib->db, LIBRARY_INDEXES_SQL)                      < 0) goto fail;
     if (set_schema_kv(lib->db, "version",          APERTURE_DB_VERSION) < 0) goto fail;
     if (set_schema_kv(lib->db, "aperture_version", APERTURE_VERSION)    < 0) goto fail;
     if (set_schema_kv(lib->db, "library_id",       lib->id)             < 0) goto fail;
