@@ -26,6 +26,10 @@ int ap_app_root_ensure(void);
 // ('/' on POSIX, '\\' on Windows). Returns 0 on success.
 int ap_app_root_join(const char *sub, char *buf, size_t buflen);
 
+// Create `path` and all intermediate directories (mkdir -p semantics).
+// Returns 0 on success; -1 if any component cannot be created.
+int ap_mkdir_p(const char *path);
+
 #ifdef __cplusplus
 }
 #endif
