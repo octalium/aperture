@@ -221,6 +221,10 @@ enum {
 
 #define THUMB_MAX_INFLIGHT 8
 
+// Multiplicative zoom factor per discrete Ctrl+wheel tick, shared by
+// drive_canvas_view and drive_grid_input so both modes feel identical.
+#define ZOOM_FACTOR 0.10f
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -1853,8 +1857,8 @@ static void drive_canvas_view(ap_app *app, ImGuiIO *io)
     if (io->MouseWheel != 0.0f || io->MouseWheelH != 0.0f) {
         if (io->KeyCtrl && io->MouseWheel != 0.0f) {
             float factor = io->MouseWheel > 0.0f
-                ? 1.0f + 0.10f * io->MouseWheel
-                : 1.0f / (1.0f - 0.10f * io->MouseWheel);
+                ? 1.0f + ZOOM_FACTOR * io->MouseWheel
+                : 1.0f / (1.0f - ZOOM_FACTOR * io->MouseWheel);
             ap_canvas_zoom_at(app->canvas, factor,
                               io->MousePos.x, io->MousePos.y,
                               win_w, win_h);
@@ -2103,9 +2107,11 @@ static void drive_grid_input(ap_app *app)
     if (!io->WantCaptureMouse) {
         if (io->MouseWheel != 0.0f) {
             if (io->KeyCtrl) {
-                int cur  = ap_grid_cell_size(app->grid);
-                int step = 16;
-                int next = cur + (int)(io->MouseWheel) * step;
+                int cur = ap_grid_cell_size(app->grid);
+                float factor = io->MouseWheel > 0.0f
+                    ? 1.0f + ZOOM_FACTOR * io->MouseWheel
+                    : 1.0f / (1.0f - ZOOM_FACTOR * io->MouseWheel);
+                int next = (int)((float)cur * factor + 0.5f);
                 ap_grid_zoom_at(app->grid, next,
                                 io->MousePos.x, io->MousePos.y,
                                 win_w, win_h);
