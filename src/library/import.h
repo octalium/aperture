@@ -45,6 +45,11 @@ void ap_import_settings_load(const ap_library *lib, ap_import_settings *out);
 // Persist the import settings on the library.
 void ap_import_settings_save(ap_library *lib, const ap_import_settings *s);
 
+// Progress callback used by ap_import_run_ex. Called after each file
+// attempt (copied or skipped) with the number completed so far and the
+// total in the collection. `userdata` is the pointer passed to run_ex.
+typedef void (*ap_import_progress_fn)(int done, int total, void *userdata);
+
 // Copy every raw file found under `src_dir` (searched recursively) into
 // <lib_root>/<s.subdir>/, applying the naming + collision rules. The
 // source files are not modified. Writes the number of files copied to
@@ -52,6 +57,19 @@ void ap_import_settings_save(ap_library *lib, const ap_import_settings *s);
 // failure (bad arguments, destination not creatable).
 int ap_import_run(ap_library *lib, const char *src_dir,
                   const ap_import_settings *s, int *out_imported);
+
+// Like ap_import_run but calls `progress` (when non-NULL) after each
+// file attempt, passing the progress callback `userdata` through.
+int ap_import_run_ex(ap_library *lib, const char *src_dir,
+                     const ap_import_settings *s, int *out_imported,
+                     ap_import_progress_fn progress, void *userdata);
+
+// Like ap_import_run_ex but takes the library root path as a string
+// instead of an ap_library pointer. Safe to call from a worker thread
+// because it does not touch library state.
+int ap_import_run_into(const char *lib_root, const char *src_dir,
+                       const ap_import_settings *s, int *out_imported,
+                       ap_import_progress_fn progress, void *userdata);
 
 #ifdef __cplusplus
 }

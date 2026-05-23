@@ -326,17 +326,14 @@ static void import_collect(const char *src_dir, raw_list *list)
     closedir(d);
 }
 
-int ap_import_run(ap_library *lib, const char *src_dir,
-                  const ap_import_settings *s, int *out_imported)
+int ap_import_run_into(const char *lib_root, const char *src_dir,
+                       const ap_import_settings *s, int *out_imported,
+                       ap_import_progress_fn progress, void *userdata)
 {
     if (out_imported) {
         *out_imported = 0;
     }
-    if (!lib || !src_dir || !s) {
-        return -1;
-    }
-    const char *root = ap_library_root(lib);
-    if (!root) {
+    if (!lib_root || !src_dir || !s) {
         return -1;
     }
 
@@ -350,7 +347,7 @@ int ap_import_run(ap_library *lib, const char *src_dir,
 
     char dest_dir[PATH_MAX];
     if (snprintf(dest_dir, sizeof(dest_dir), "%s/%s",
-                 root, subdir) >= (int)sizeof(dest_dir)) {
+                 lib_root, subdir) >= (int)sizeof(dest_dir)) {
         AP_ERROR("import: destination path too long");
         return -1;
     }
@@ -368,6 +365,9 @@ int ap_import_run(ap_library *lib, const char *src_dir,
     int copied = 0;
     for (int i = 0; i < list.count; i++) {
         copied += import_one(list.paths[i], dest_dir, s, i + 1);
+        if (progress) {
+            progress(i + 1, list.count, userdata);
+        }
     }
     int total = list.count;
     raw_list_free(&list);
@@ -378,4 +378,20 @@ int ap_import_run(ap_library *lib, const char *src_dir,
     AP_INFO("import: copied %d of %d raw file(s) from %s into %s",
             copied, total, src_dir, dest_dir);
     return 0;
+}
+
+int ap_import_run_ex(ap_library *lib, const char *src_dir,
+                     const ap_import_settings *s, int *out_imported,
+                     ap_import_progress_fn progress, void *userdata)
+{
+    if (!lib) return -1;
+    const char *root = ap_library_root(lib);
+    if (!root) return -1;
+    return ap_import_run_into(root, src_dir, s, out_imported, progress, userdata);
+}
+
+int ap_import_run(ap_library *lib, const char *src_dir,
+                  const ap_import_settings *s, int *out_imported)
+{
+    return ap_import_run_ex(lib, src_dir, s, out_imported, NULL, NULL);
 }
