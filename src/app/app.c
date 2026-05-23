@@ -2369,6 +2369,8 @@ static void draw_grid_labels(ap_app *app)
         int i = app->grid_map[c];
         const char *rel = ap_library_photo_relative_path(app->library, i);
         if (!rel) continue;
+        const char *slash = strrchr(rel, '/');
+        const char *label = slash ? slash + 1 : rel;
         float cx, cy, cw, ch;
         if (ap_grid_cell_rect(app->grid, c, win_w, win_h, &cx, &cy, &cw, &ch) != 0) {
             continue;
@@ -2424,7 +2426,7 @@ static void draw_grid_labels(ap_app *app)
         ImVec2_c clip_tl  = { fit_x,      band_top          };
         ImVec2_c clip_br  = { text_right, band_top + band_h };
         ImDrawList_PushClipRect(dl, clip_tl, clip_br, true);
-        ImDrawList_AddText_Vec2(dl, text_pos, 0xFFEEEEEE, rel, NULL);
+        ImDrawList_AddText_Vec2(dl, text_pos, 0xFFEEEEEE, label, NULL);
         ImDrawList_PopClipRect(dl);
 
         draw_cell_culling(dl, &cull, fit_x, fit_y, fit_w,
