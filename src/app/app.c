@@ -166,6 +166,13 @@ struct ap_app {
     // single int (always 1, payload is a presence signal only).
     bool             thumb_drag_active;
 
+    // Click-vs-drag disambiguation: when the user presses the mouse
+    // button over an already-selected cell with no modifier we defer
+    // the select-only until mouse-up. If a drag fires first we keep
+    // the full selection and start the thumb drag instead. -1 when
+    // no deferred select is pending.
+    int              deferred_select_cell;
+
     ap_edit_stack      edit_clipboard;       // copy/paste edits between photos
     bool               edit_clipboard_valid; // true once copy has been called
 
@@ -291,6 +298,7 @@ ap_app *ap_app_create(int width, int height, const char *title)
     app->canvas_tool = AP_CANVAS_TOOL_NONE;
     app->canvas_tool_entry = -1;
     app->crop_drag_handle = CROP_HANDLE_NONE;
+    app->deferred_select_cell = -1;
     app->crop_aspect_ratio = 1.0f;
 
     app->gpu = ap_gpu_create(width, height, title);
@@ -2142,6 +2150,9 @@ static void drive_grid_input(ap_app *app)
             // Record click origin for marquee / thumb-drag detection.
             app->marquee_x0 = io->MousePos.x;
             app->marquee_y0 = io->MousePos.y;
+            // Any new press cancels a pending deferred select from a
+            // previous down stroke.
+            app->deferred_select_cell = -1;
             int hit = ap_grid_hit_test(app->grid,
                                        io->MousePos.x, io->MousePos.y,
                                        win_w, win_h);
@@ -2151,6 +2162,12 @@ static void drive_grid_input(ap_app *app)
                     ap_grid_select_range(app->grid, anchor, hit);
                 } else if (io->KeyCtrl) {
                     ap_grid_select_toggle(app->grid, hit);
+                } else if (ap_grid_is_selected(app->grid, hit) &&
+                           ap_grid_selection_count(app->grid) > 1) {
+                    // Down on an already-selected cell in a multi-selection
+                    // with no modifier — defer select-only until mouse-up so
+                    // a drag keeps the whole selection.
+                    app->deferred_select_cell = hit;
                 } else {
                     ap_grid_select_only(app->grid, hit);
                 }
@@ -2158,6 +2175,15 @@ static void drive_grid_input(ap_app *app)
                 // Down on empty space — potential marquee start.
                 app->marquee_active = true;
             }
+        }
+
+        // Deferred select-only: if the mouse was released without dragging,
+        // apply the select-only that was held back on mouse-down.
+        if (app->deferred_select_cell >= 0 &&
+            !igIsMouseDown_Nil(ImGuiMouseButton_Left) &&
+            !igIsMouseDragging(ImGuiMouseButton_Left, -1.0f)) {
+            ap_grid_select_only(app->grid, app->deferred_select_cell);
+            app->deferred_select_cell = -1;
         }
 
         // Rubber-band marquee: drag began on empty space. Cancelled if
@@ -2174,22 +2200,32 @@ static void drive_grid_input(ap_app *app)
         }
 
         // Thumbnail drag initiation: drag began on a selected cell.
+        // When a deferred select is pending the mouse went down on an
+        // already-selected cell — keep the full selection and start the
+        // drag without collapsing it.
         if (!app->marquee_active && !app->thumb_drag_active) {
             if (igIsMouseDragging(ImGuiMouseButton_Left, -1.0f)) {
-                int hit = ap_grid_hit_test(app->grid,
-                                           app->marquee_x0, app->marquee_y0,
-                                           win_w, win_h);
-                if (hit >= 0 && ap_grid_is_selected(app->grid, hit) &&
-                    ap_grid_selection_count(app->grid) > 0) {
+                if (app->deferred_select_cell >= 0) {
+                    app->deferred_select_cell = -1;
                     app->thumb_drag_active = true;
+                } else {
+                    int hit = ap_grid_hit_test(app->grid,
+                                               app->marquee_x0, app->marquee_y0,
+                                               win_w, win_h);
+                    if (hit >= 0 && ap_grid_is_selected(app->grid, hit) &&
+                        ap_grid_selection_count(app->grid) > 0) {
+                        app->thumb_drag_active = true;
+                    }
                 }
             }
         }
     } else {
         // ImGui owns the mouse — cancel the marquee (it can't extend into
-        // panels). The thumb drag persists: it was initiated on the grid
-        // and must reach the Groups panel to deliver its payload.
+        // panels) and any pending deferred select. The thumb drag persists:
+        // it was initiated on the grid and must reach the Groups panel to
+        // deliver its payload.
         app->marquee_active = false;
+        app->deferred_select_cell = -1;
     }
 
     // Thumbnail drag-drop source: runs regardless of WantCaptureMouse so
