@@ -2059,7 +2059,7 @@ static const char *const default_layout_windows[] = {
     "Metadata##library",
     "Pipelines##library",
     "Groups##library",
-    "Sort & Search##library",
+    "Filter##library",
     "Format##export",
     "Quality##export",
     "Naming##export",
@@ -2197,7 +2197,7 @@ int ap_app_run_frame(ap_app *app)
             igDockBuilderDockWindow("Metadata##library",      right_bot);
             igDockBuilderDockWindow("Pipelines##library",     right_bot);
             igDockBuilderDockWindow("Groups##library",        right_bot);
-            igDockBuilderDockWindow("Sort & Search##library", right_bot);
+            igDockBuilderDockWindow("Filter##library", right_bot);
             igDockBuilderDockWindow("Format##export",      right_top);
             igDockBuilderDockWindow("Quality##export",     right_mid);
             igDockBuilderDockWindow("Naming##export",      right_mid);
