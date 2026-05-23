@@ -190,7 +190,7 @@ ap_mode ap_app_mode(const ap_app *app)
 void bind_mode_view(ap_app *app)
 {
     if (!app || !app->gpu) return;
-    if (app->mode == AP_MODE_PHOTO || app->mode == AP_MODE_EXPORT) {
+    if (app->mode == AP_MODE_PHOTO) {
         ap_gpu_set_grid(app->gpu, NULL);
         ap_gpu_set_canvas(app->gpu, app->canvas);
     } else {
@@ -512,12 +512,15 @@ ap_export_settings *ap_app_export_settings(ap_app *app)
     return app ? &app->export_settings : NULL;
 }
 
-void ap_app_enter_export(ap_app *app)
+void ap_app_open_export_modal(ap_app *app)
 {
-    if (!app || !app->photo) return;
+    if (!app) return;
+    bool have_photo     = (app->photo != NULL);
+    bool have_selection = (app->library && app->grid &&
+                           ap_grid_selection_count(app->grid) > 0);
+    if (!have_photo && !have_selection) return;
     ap_export_settings_load(app->library, &app->export_settings);
-    app->mode = AP_MODE_EXPORT;
-    bind_mode_view(app);
+    app->export_modal = true;
 }
 
 // Build the output path for `src` under `s` using `seq` as the {SEQ}
@@ -1616,25 +1619,6 @@ static void drive_canvas_input(ap_app *app)
     drive_canvas_view(app, io);
 }
 
-// Export-mode canvas input. The same pan / zoom feel as photo mode,
-// but Esc backs out to photo mode rather than closing the photo —
-// the photo is the export subject and stays open.
-static void drive_export_input(ap_app *app)
-{
-    if (!app->canvas || !app->photo) return;
-
-    ImGuiIO *io = igGetIO_Nil();
-    if (!io) return;
-
-    if (!io->WantTextInput && igIsKeyPressed_Bool(ImGuiKey_Escape, false)) {
-        app->mode = AP_MODE_PHOTO;
-        bind_mode_view(app);
-        return;
-    }
-
-    drive_canvas_view(app, io);
-}
-
 void open_selected_photo(ap_app *app)
 {
     if (!app->library || !app->grid) return;
@@ -2060,10 +2044,6 @@ static const char *const default_layout_windows[] = {
     "Pipelines##library",
     "Groups##library",
     "Filter##library",
-    "Format##export",
-    "Quality##export",
-    "Naming##export",
-    "Destination##export",
     NULL,
 };
 
@@ -2103,6 +2083,7 @@ int ap_app_run_frame(ap_app *app)
 
     draw_menubar(app);
     draw_import_modal(app);
+    draw_export_modal(app);
     draw_rename_library_modal(app);
     draw_save_layout_modal(app);
     draw_delete_modal(app);
@@ -2198,10 +2179,6 @@ int ap_app_run_frame(ap_app *app)
             igDockBuilderDockWindow("Pipelines##library",     right_bot);
             igDockBuilderDockWindow("Groups##library",        right_bot);
             igDockBuilderDockWindow("Filter##library", right_bot);
-            igDockBuilderDockWindow("Format##export",      right_top);
-            igDockBuilderDockWindow("Quality##export",     right_mid);
-            igDockBuilderDockWindow("Naming##export",      right_mid);
-            igDockBuilderDockWindow("Destination##export", right_bot);
             igDockBuilderFinish(dockspace_id);
         }
         if (ap_layout_consume_panel_adoption_request() &&
@@ -2279,9 +2256,6 @@ int ap_app_run_frame(ap_app *app)
         draw_crop_toolbar(app);
         draw_canvas_zoom_overlay(app);
         draw_compare_overlay(app);
-    } else if (app->mode == AP_MODE_EXPORT && !app->photo_loading) {
-        drive_export_input(app);
-        draw_canvas_zoom_overlay(app);
     } else if (app->mode == AP_MODE_LIBRARY && !app->photo_loading) {
         drive_grid_input(app);
         draw_grid_context_menu(app);

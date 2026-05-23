@@ -113,6 +113,11 @@ void draw_grid_context_menu(ap_app *app)
 
     igSeparator();
 
+    if (igMenuItem_Bool("Export...", NULL, false, sel_count > 0)) {
+        ap_app_open_export_modal(app);
+        igCloseCurrentPopup();
+    }
+
     if (igMenuItem_Bool("Delete", NULL, false, sel_count > 0)) {
         app->delete_modal = true;
         igCloseCurrentPopup();

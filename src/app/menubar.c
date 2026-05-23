@@ -97,6 +97,15 @@ void draw_menubar(ap_app *app)
             app->import_modal     = true;
         }
 
+        {
+            bool can_export = app->photo != NULL ||
+                (app->library && app->grid &&
+                 ap_app_grid_selection_count(app) > 0);
+            if (igMenuItem_Bool("Export...", "Ctrl+Shift+E", false, can_export)) {
+                ap_app_open_export_modal(app);
+            }
+        }
+
         igSeparator();
 
         if (igMenuItem_Bool("Close Library", NULL,
@@ -128,19 +137,16 @@ void draw_menubar(ap_app *app)
                             false, app->photo != NULL)) {
             trigger_quick_export(app);
         }
-        if (igMenuItem_Bool("Export...", NULL,
-                            app->mode == AP_MODE_EXPORT,
-                            app->photo != NULL)) {
-            ap_app_enter_export(app);
+        if (igMenuItem_Bool("Export...", "Ctrl+Shift+E",
+                            false, app->photo != NULL)) {
+            ap_app_open_export_modal(app);
         }
         igEndMenu();
     }
 
     if (igBeginMenu("View", true)) {
         bool show = app->show_panels;
-        const char *panels_sc =
-            (app->mode == AP_MODE_PHOTO || app->mode == AP_MODE_EXPORT)
-                ? "Space" : NULL;
+        const char *panels_sc = (app->mode == AP_MODE_PHOTO) ? "Space" : NULL;
         if (igMenuItem_BoolPtr("Show Panels", panels_sc, &show, true)) {
             app->show_panels = show;
         }
@@ -268,8 +274,7 @@ void drive_global_hotkeys(ap_app *app)
     ImGuiIO *io = igGetIO_Nil();
     if (!io) return;
 
-    if ((app->mode == AP_MODE_PHOTO || app->mode == AP_MODE_EXPORT)
-        && !io->WantTextInput
+    if (app->mode == AP_MODE_PHOTO && !io->WantTextInput
         && igIsKeyPressed_Bool(ImGuiKey_Space, false)) {
         app->show_panels = !app->show_panels;
     }
@@ -279,8 +284,13 @@ void drive_global_hotkeys(ap_app *app)
     if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_Q, false)) {
         app->quit_requested = true;
     }
-    if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_E, false) && app->photo) {
+    if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_E, false) && app->photo
+        && !io->KeyShift) {
         trigger_quick_export(app);
+    }
+    if (io->KeyCtrl && io->KeyShift
+        && igIsKeyPressed_Bool(ImGuiKey_E, false)) {
+        ap_app_open_export_modal(app);
     }
     if (io->KeyCtrl && !io->WantTextInput
         && igIsKeyPressed_Bool(ImGuiKey_C, false) && app->photo) {

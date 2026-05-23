@@ -87,6 +87,7 @@ struct ap_app {
     ap_import_report import_report;
 
     ap_export_settings export_settings;
+    bool             export_modal;
     bool             rename_library_modal;
     char             rename_library_input[128];
     bool             save_layout_modal;

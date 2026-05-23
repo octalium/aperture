@@ -17,7 +17,6 @@ extern "C" {
 typedef enum {
     AP_MODE_LIBRARY = 0,
     AP_MODE_PHOTO   = 1,
-    AP_MODE_EXPORT  = 2,
 } ap_mode;
 
 // Sentinel for panels that should appear in every mode (info / FPS / etc.).
@@ -78,17 +77,14 @@ void ap_app_rebuild_photo_graph(ap_app *app);
 int       ap_app_request_jpeg_export(ap_app *app, ap_photo *photo,
                                      const char *out_path, int quality);
 
-// Export mode. AP_MODE_EXPORT shows the open photo on the canvas with
-// the contextual Format / Quality / Naming / Destination panels. The
-// app owns one ap_export_settings struct, loaded from the library on
-// entry and saved back on a successful export; the panels mutate it
-// in place.
+// Export. The app owns one ap_export_settings struct, loaded from the
+// library when the export modal first opens and saved back on a
+// successful export; the modal mutates it in place.
 ap_export_settings *ap_app_export_settings(ap_app *app);
 
-// Enter Export mode. Requires an open photo (it is the export
-// subject). Loads the export settings from the library. No-op when no
-// photo is open.
-void ap_app_enter_export(ap_app *app);
+// Open the export modal. No-op when there is no open photo and no
+// library selection to export.
+void ap_app_open_export_modal(ap_app *app);
 
 // Resolve the export settings into a concrete output path for the
 // currently-open photo and run the encode. Performs a synchronous GPU

@@ -23,7 +23,9 @@
 // in ap_app_run_frame. ap_layout_init compares the persisted value; when
 // it is older, the adoption pass runs once to place any undocked panels
 // into the existing layout without nuking the user's overall arrangement.
-#define LAYOUT_SCHEMA_VERSION 2
+// v3: export mode removed; Format##export, Quality##export, Naming##export,
+//     Destination##export panels dropped from the dockspace default layout.
+#define LAYOUT_SCHEMA_VERSION 3
 
 // Module-local state. The "active name" buffer + the rebuild/adoption flags.
 static char g_active_name[AP_LAYOUT_NAME_LEN] = {0};
