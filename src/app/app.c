@@ -166,6 +166,13 @@ struct ap_app {
     // single int (always 1, payload is a presence signal only).
     bool             thumb_drag_active;
 
+    // Click-vs-drag disambiguation: when the user presses the mouse
+    // button over an already-selected cell with no modifier we defer
+    // the select-only until mouse-up. If a drag fires first we keep
+    // the full selection and start the thumb drag instead. -1 when
+    // no deferred select is pending.
+    int              deferred_select_cell;
+
     ap_edit_stack      edit_clipboard;       // copy/paste edits between photos
     bool               edit_clipboard_valid; // true once copy has been called
 
@@ -220,6 +227,10 @@ enum {
 };
 
 #define THUMB_MAX_INFLIGHT 8
+
+// Multiplicative zoom factor per discrete Ctrl+wheel tick, shared by
+// drive_canvas_view and drive_grid_input so both modes feel identical.
+#define ZOOM_FACTOR 0.10f
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -287,6 +298,7 @@ ap_app *ap_app_create(int width, int height, const char *title)
     app->canvas_tool = AP_CANVAS_TOOL_NONE;
     app->canvas_tool_entry = -1;
     app->crop_drag_handle = CROP_HANDLE_NONE;
+    app->deferred_select_cell = -1;
     app->crop_aspect_ratio = 1.0f;
 
     app->gpu = ap_gpu_create(width, height, title);
@@ -543,6 +555,46 @@ int ap_app_open_photo(ap_app *app, const char *path)
     return 0;
 }
 
+// Sync GPU readback of the current photo's rendered output, frame it
+// through the photo's viewport, and queue a worker job that downsamples,
+// JPEG-encodes, stores the result to the library db, and invalidates the
+// grid cell at `idx`. Must be called while `app->photo` is still live.
+// No-op when there is no photo, no library, or the readback fails.
+static void submit_thumb_refresh(ap_app *app, int idx)
+{
+    if (idx < 0 || !app->photo || !app->library) return;
+
+    uint8_t *thumb_rgba = NULL;
+    int      thumb_w = 0, thumb_h = 0;
+    if (ap_photo_readback_rgba(app->photo,
+                               &thumb_rgba, &thumb_w, &thumb_h) != 0) return;
+
+    ap_viewport vp = ap_photo_viewport(app->photo);
+    int fw = 0, fh = 0;
+    uint8_t *framed = ap_viewport_resample_rgba8(&vp, thumb_rgba,
+                                                 thumb_w, thumb_h,
+                                                 &fw, &fh);
+    if (framed) {
+        free(thumb_rgba);
+        thumb_rgba = framed;
+        thumb_w    = fw;
+        thumb_h    = fh;
+    }
+
+    thumb_encode_job *j = calloc(1, sizeof(*j));
+    if (j) {
+        j->base.run = thumb_encode_job_run;
+        j->rgba     = thumb_rgba;
+        j->width    = thumb_w;
+        j->height   = thumb_h;
+        j->idx      = idx;
+        ap_worker_pool_submit(app->workers, &j->base);
+    } else {
+        AP_ERROR("submit_thumb_refresh: thumb_encode job alloc failed");
+        free(thumb_rgba);
+    }
+}
+
 void ap_app_close_photo(ap_app *app)
 {
     if (!app) return;
@@ -561,52 +613,12 @@ void ap_app_close_photo(ap_app *app)
     // still alive. The downsample + libjpeg encode + db store happen
     // on a worker so the return to library mode is immediate; the
     // affected grid cell refreshes when the worker completes.
-    uint8_t *thumb_rgba = NULL;
-    int      thumb_w = 0, thumb_h = 0;
-    bool have_rgba = (closed_idx >= 0 && app->photo && app->library &&
-                      ap_photo_readback_rgba(app->photo,
-                                             &thumb_rgba,
-                                             &thumb_w, &thumb_h) == 0);
-
-    // Frame the grid thumbnail through the photo's viewport so a
-    // cropped / rotated / flipped photo shows its framed result in
-    // the library grid, not the full rendered frame. Done before
-    // release_photo — the viewport lives on the photo's edit stack.
-    if (have_rgba) {
-        ap_viewport vp = ap_photo_viewport(app->photo);
-        int fw = 0, fh = 0;
-        uint8_t *framed = ap_viewport_resample_rgba8(&vp, thumb_rgba,
-                                                     thumb_w, thumb_h,
-                                                     &fw, &fh);
-        if (framed) {
-            free(thumb_rgba);
-            thumb_rgba = framed;
-            thumb_w    = fw;
-            thumb_h    = fh;
-        }
-        // On OOM keep the un-framed thumb — better than no thumbnail.
-    }
+    submit_thumb_refresh(app, closed_idx);
 
     release_photo(app);
     app->photo_library_idx = -1;
     app->mode  = AP_MODE_LIBRARY;
     bind_mode_view(app);
-
-    if (have_rgba) {
-        thumb_encode_job *j = calloc(1, sizeof(*j));
-        if (j) {
-            j->base.run = thumb_encode_job_run;
-            j->rgba     = thumb_rgba;
-            j->width    = thumb_w;
-            j->height   = thumb_h;
-            j->idx      = closed_idx;
-            thumb_rgba  = NULL;
-            ap_worker_pool_submit(app->workers, &j->base);
-        } else {
-            AP_ERROR("close_photo: thumb_encode job alloc failed");
-        }
-    }
-    free(thumb_rgba); // NULL after submit; non-NULL only on alloc failure
 }
 
 ap_photo *ap_app_photo(ap_app *app)
@@ -1486,6 +1498,12 @@ static void navigate_library_relative(ap_app *app, int dir)
     char abs[4096];
     if (ap_library_photo_absolute_path(app->library, new_idx,
                                        abs, sizeof(abs)) != 0) return;
+
+    // Refresh the outgoing photo's thumbnail before the async open
+    // replaces app->photo — the readback must happen while the graph
+    // is still live.
+    submit_thumb_refresh(app, app->photo_library_idx);
+
     app->photo_library_idx = new_idx;
     ap_app_open_photo(app, abs);
 }
@@ -1853,8 +1871,8 @@ static void drive_canvas_view(ap_app *app, ImGuiIO *io)
     if (io->MouseWheel != 0.0f || io->MouseWheelH != 0.0f) {
         if (io->KeyCtrl && io->MouseWheel != 0.0f) {
             float factor = io->MouseWheel > 0.0f
-                ? 1.0f + 0.10f * io->MouseWheel
-                : 1.0f / (1.0f - 0.10f * io->MouseWheel);
+                ? 1.0f + ZOOM_FACTOR * io->MouseWheel
+                : 1.0f / (1.0f - ZOOM_FACTOR * io->MouseWheel);
             ap_canvas_zoom_at(app->canvas, factor,
                               io->MousePos.x, io->MousePos.y,
                               win_w, win_h);
@@ -2103,9 +2121,11 @@ static void drive_grid_input(ap_app *app)
     if (!io->WantCaptureMouse) {
         if (io->MouseWheel != 0.0f) {
             if (io->KeyCtrl) {
-                int cur  = ap_grid_cell_size(app->grid);
-                int step = 16;
-                int next = cur + (int)(io->MouseWheel) * step;
+                int cur = ap_grid_cell_size(app->grid);
+                float factor = io->MouseWheel > 0.0f
+                    ? 1.0f + ZOOM_FACTOR * io->MouseWheel
+                    : 1.0f / (1.0f - ZOOM_FACTOR * io->MouseWheel);
+                int next = (int)((float)cur * factor + 0.5f);
                 ap_grid_zoom_at(app->grid, next,
                                 io->MousePos.x, io->MousePos.y,
                                 win_w, win_h);
@@ -2130,6 +2150,9 @@ static void drive_grid_input(ap_app *app)
             // Record click origin for marquee / thumb-drag detection.
             app->marquee_x0 = io->MousePos.x;
             app->marquee_y0 = io->MousePos.y;
+            // Any new press cancels a pending deferred select from a
+            // previous down stroke.
+            app->deferred_select_cell = -1;
             int hit = ap_grid_hit_test(app->grid,
                                        io->MousePos.x, io->MousePos.y,
                                        win_w, win_h);
@@ -2139,6 +2162,12 @@ static void drive_grid_input(ap_app *app)
                     ap_grid_select_range(app->grid, anchor, hit);
                 } else if (io->KeyCtrl) {
                     ap_grid_select_toggle(app->grid, hit);
+                } else if (ap_grid_is_selected(app->grid, hit) &&
+                           ap_grid_selection_count(app->grid) > 1) {
+                    // Down on an already-selected cell in a multi-selection
+                    // with no modifier — defer select-only until mouse-up so
+                    // a drag keeps the whole selection.
+                    app->deferred_select_cell = hit;
                 } else {
                     ap_grid_select_only(app->grid, hit);
                 }
@@ -2146,6 +2175,15 @@ static void drive_grid_input(ap_app *app)
                 // Down on empty space — potential marquee start.
                 app->marquee_active = true;
             }
+        }
+
+        // Deferred select-only: if the mouse was released without dragging,
+        // apply the select-only that was held back on mouse-down.
+        if (app->deferred_select_cell >= 0 &&
+            !igIsMouseDown_Nil(ImGuiMouseButton_Left) &&
+            !igIsMouseDragging(ImGuiMouseButton_Left, -1.0f)) {
+            ap_grid_select_only(app->grid, app->deferred_select_cell);
+            app->deferred_select_cell = -1;
         }
 
         // Rubber-band marquee: drag began on empty space. Cancelled if
@@ -2162,22 +2200,32 @@ static void drive_grid_input(ap_app *app)
         }
 
         // Thumbnail drag initiation: drag began on a selected cell.
+        // When a deferred select is pending the mouse went down on an
+        // already-selected cell — keep the full selection and start the
+        // drag without collapsing it.
         if (!app->marquee_active && !app->thumb_drag_active) {
             if (igIsMouseDragging(ImGuiMouseButton_Left, -1.0f)) {
-                int hit = ap_grid_hit_test(app->grid,
-                                           app->marquee_x0, app->marquee_y0,
-                                           win_w, win_h);
-                if (hit >= 0 && ap_grid_is_selected(app->grid, hit) &&
-                    ap_grid_selection_count(app->grid) > 0) {
+                if (app->deferred_select_cell >= 0) {
+                    app->deferred_select_cell = -1;
                     app->thumb_drag_active = true;
+                } else {
+                    int hit = ap_grid_hit_test(app->grid,
+                                               app->marquee_x0, app->marquee_y0,
+                                               win_w, win_h);
+                    if (hit >= 0 && ap_grid_is_selected(app->grid, hit) &&
+                        ap_grid_selection_count(app->grid) > 0) {
+                        app->thumb_drag_active = true;
+                    }
                 }
             }
         }
     } else {
         // ImGui owns the mouse — cancel the marquee (it can't extend into
-        // panels). The thumb drag persists: it was initiated on the grid
-        // and must reach the Groups panel to deliver its payload.
+        // panels) and any pending deferred select. The thumb drag persists:
+        // it was initiated on the grid and must reach the Groups panel to
+        // deliver its payload.
         app->marquee_active = false;
+        app->deferred_select_cell = -1;
     }
 
     // Thumbnail drag-drop source: runs regardless of WantCaptureMouse so
@@ -2369,6 +2417,8 @@ static void draw_grid_labels(ap_app *app)
         int i = app->grid_map[c];
         const char *rel = ap_library_photo_relative_path(app->library, i);
         if (!rel) continue;
+        const char *slash = strrchr(rel, '/');
+        const char *label = slash ? slash + 1 : rel;
         float cx, cy, cw, ch;
         if (ap_grid_cell_rect(app->grid, c, win_w, win_h, &cx, &cy, &cw, &ch) != 0) {
             continue;
@@ -2424,7 +2474,7 @@ static void draw_grid_labels(ap_app *app)
         ImVec2_c clip_tl  = { fit_x,      band_top          };
         ImVec2_c clip_br  = { text_right, band_top + band_h };
         ImDrawList_PushClipRect(dl, clip_tl, clip_br, true);
-        ImDrawList_AddText_Vec2(dl, text_pos, 0xFFEEEEEE, rel, NULL);
+        ImDrawList_AddText_Vec2(dl, text_pos, 0xFFEEEEEE, label, NULL);
         ImDrawList_PopClipRect(dl);
 
         draw_cell_culling(dl, &cull, fit_x, fit_y, fit_w,
