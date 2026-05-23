@@ -104,9 +104,18 @@ int graph_create_view(VkDevice device, VkImage image, VkFormat format,
 
 static int create_buffers(ap_pipeline_graph *graph, int width, int height)
 {
+    // TRANSFER_SRC/DST in addition to STORAGE: the stage-skip path in
+    // ap_pipeline_graph_record emits a vkCmdCopyImage passthrough when
+    // a stage is skipped, which requires the source + destination
+    // images to support those layouts.
+    const VkImageUsageFlags work_usage =
+        VK_IMAGE_USAGE_STORAGE_BIT
+      | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+      | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+
     if (graph_create_image(graph->gpu->device, graph->gpu->physical, width, height,
                      VK_FORMAT_R16G16B16A16_SFLOAT,
-                     VK_IMAGE_USAGE_STORAGE_BIT,
+                     work_usage,
                      0, NULL, 0,
                      &graph->stage_a_image, &graph->stage_a_memory) < 0) return -1;
     if (graph_create_view(graph->gpu->device, graph->stage_a_image,
@@ -115,7 +124,7 @@ static int create_buffers(ap_pipeline_graph *graph, int width, int height)
 
     if (graph_create_image(graph->gpu->device, graph->gpu->physical, width, height,
                      VK_FORMAT_R16G16B16A16_SFLOAT,
-                     VK_IMAGE_USAGE_STORAGE_BIT,
+                     work_usage,
                      0, NULL, 0,
                      &graph->stage_b_image, &graph->stage_b_memory) < 0) return -1;
     if (graph_create_view(graph->gpu->device, graph->stage_b_image,
@@ -124,11 +133,12 @@ static int create_buffers(ap_pipeline_graph *graph, int width, int height)
 
     // Scratch buffers for multi-pass modules (graph->scratch_count set
     // by the caller before create_buffers). Same RGBA16F format as the
-    // ping-pong working buffers.
+    // ping-pong working buffers; same usage flags so the skip-path
+    // passthrough copy works when a scratch image is on either side.
     for (int i = 0; i < graph->scratch_count; i++) {
         if (graph_create_image(graph->gpu->device, graph->gpu->physical, width, height,
                          VK_FORMAT_R16G16B16A16_SFLOAT,
-                         VK_IMAGE_USAGE_STORAGE_BIT,
+                         work_usage,
                          0, NULL, 0,
                          &graph->scratch_image[i],
                          &graph->scratch_memory[i]) < 0) return -1;
