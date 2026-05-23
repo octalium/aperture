@@ -52,21 +52,12 @@ void draw_import_modal(ap_app *app)
 
     igSeparator();
 
-    bool can_import = app->import_source[0] != '\0';
+    bool can_import = app->import_source[0] != '\0' && !app->import_inflight;
     if (!can_import) igBeginDisabled(true);
     if (igButton("Import", (ImVec2_c){ 120.0f, 0.0f })) {
         ap_import_settings_save(app->library, s);
-        char root[4096];
-        snprintf(root, sizeof(root), "%s", ap_library_root(app->library));
-        int n = 0;
-        if (ap_import_run(app->library, app->import_source, s, &n) == 0) {
-            ap_app_open_library(app, root);
-            snprintf(app->import_status, sizeof(app->import_status),
-                     "Imported %d photo%s.", n, n == 1 ? "" : "s");
-        } else {
-            snprintf(app->import_status, sizeof(app->import_status),
-                     "Import failed - see the log.");
-        }
+        const char *root = ap_library_root(app->library);
+        submit_import_job(app, root, app->import_source, s);
     }
     if (!can_import) igEndDisabled();
     igSameLine(0.0f, -1.0f);
@@ -74,7 +65,9 @@ void draw_import_modal(ap_app *app)
         igCloseCurrentPopup();
     }
 
-    if (app->import_status[0]) {
+    if (app->import_inflight) {
+        igTextDisabled("Importing\xe2\x80\xa6 (progress shown in corner)");
+    } else if (app->import_status[0]) {
         igTextWrapped("%s", app->import_status);
     }
 

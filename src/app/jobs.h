@@ -30,6 +30,7 @@ typedef struct photo_open_job {
     char         path[4096];
     ap_raw_image raw;
     uint64_t     gen;
+    ap_status_id status_id;
     int          ok;
 } photo_open_job;
 
@@ -43,6 +44,7 @@ typedef struct {
     int          tiff_depth;
     int          tiff_compress;
     char         out_path[4096];
+    ap_status_id status_id;
     int          ok;
 } export_job;
 
@@ -55,6 +57,19 @@ typedef struct {
     size_t         jpeg_size;
     int            ok;
 } thumb_encode_job;
+
+typedef struct {
+    ap_work_item        base;
+    char                lib_root[4096];
+    char                src_dir[4096];
+    ap_import_settings  settings;
+    ap_status_id        status_id;
+    int                 imported;
+    int                 ok;
+} import_job;
+
+void submit_import_job(ap_app *app, const char *lib_root, const char *src_dir,
+                       const ap_import_settings *settings);
 
 void discard_completed_item(ap_app *app, ap_work_item *it);
 void drain_all_workers(ap_app *app);
