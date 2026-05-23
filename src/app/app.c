@@ -547,6 +547,46 @@ int ap_app_open_photo(ap_app *app, const char *path)
     return 0;
 }
 
+// Sync GPU readback of the current photo's rendered output, frame it
+// through the photo's viewport, and queue a worker job that downsamples,
+// JPEG-encodes, stores the result to the library db, and invalidates the
+// grid cell at `idx`. Must be called while `app->photo` is still live.
+// No-op when there is no photo, no library, or the readback fails.
+static void submit_thumb_refresh(ap_app *app, int idx)
+{
+    if (idx < 0 || !app->photo || !app->library) return;
+
+    uint8_t *thumb_rgba = NULL;
+    int      thumb_w = 0, thumb_h = 0;
+    if (ap_photo_readback_rgba(app->photo,
+                               &thumb_rgba, &thumb_w, &thumb_h) != 0) return;
+
+    ap_viewport vp = ap_photo_viewport(app->photo);
+    int fw = 0, fh = 0;
+    uint8_t *framed = ap_viewport_resample_rgba8(&vp, thumb_rgba,
+                                                 thumb_w, thumb_h,
+                                                 &fw, &fh);
+    if (framed) {
+        free(thumb_rgba);
+        thumb_rgba = framed;
+        thumb_w    = fw;
+        thumb_h    = fh;
+    }
+
+    thumb_encode_job *j = calloc(1, sizeof(*j));
+    if (j) {
+        j->base.run = thumb_encode_job_run;
+        j->rgba     = thumb_rgba;
+        j->width    = thumb_w;
+        j->height   = thumb_h;
+        j->idx      = idx;
+        ap_worker_pool_submit(app->workers, &j->base);
+    } else {
+        AP_ERROR("submit_thumb_refresh: thumb_encode job alloc failed");
+        free(thumb_rgba);
+    }
+}
+
 void ap_app_close_photo(ap_app *app)
 {
     if (!app) return;
@@ -565,52 +605,12 @@ void ap_app_close_photo(ap_app *app)
     // still alive. The downsample + libjpeg encode + db store happen
     // on a worker so the return to library mode is immediate; the
     // affected grid cell refreshes when the worker completes.
-    uint8_t *thumb_rgba = NULL;
-    int      thumb_w = 0, thumb_h = 0;
-    bool have_rgba = (closed_idx >= 0 && app->photo && app->library &&
-                      ap_photo_readback_rgba(app->photo,
-                                             &thumb_rgba,
-                                             &thumb_w, &thumb_h) == 0);
-
-    // Frame the grid thumbnail through the photo's viewport so a
-    // cropped / rotated / flipped photo shows its framed result in
-    // the library grid, not the full rendered frame. Done before
-    // release_photo — the viewport lives on the photo's edit stack.
-    if (have_rgba) {
-        ap_viewport vp = ap_photo_viewport(app->photo);
-        int fw = 0, fh = 0;
-        uint8_t *framed = ap_viewport_resample_rgba8(&vp, thumb_rgba,
-                                                     thumb_w, thumb_h,
-                                                     &fw, &fh);
-        if (framed) {
-            free(thumb_rgba);
-            thumb_rgba = framed;
-            thumb_w    = fw;
-            thumb_h    = fh;
-        }
-        // On OOM keep the un-framed thumb — better than no thumbnail.
-    }
+    submit_thumb_refresh(app, closed_idx);
 
     release_photo(app);
     app->photo_library_idx = -1;
     app->mode  = AP_MODE_LIBRARY;
     bind_mode_view(app);
-
-    if (have_rgba) {
-        thumb_encode_job *j = calloc(1, sizeof(*j));
-        if (j) {
-            j->base.run = thumb_encode_job_run;
-            j->rgba     = thumb_rgba;
-            j->width    = thumb_w;
-            j->height   = thumb_h;
-            j->idx      = closed_idx;
-            thumb_rgba  = NULL;
-            ap_worker_pool_submit(app->workers, &j->base);
-        } else {
-            AP_ERROR("close_photo: thumb_encode job alloc failed");
-        }
-    }
-    free(thumb_rgba); // NULL after submit; non-NULL only on alloc failure
 }
 
 ap_photo *ap_app_photo(ap_app *app)
@@ -1490,6 +1490,12 @@ static void navigate_library_relative(ap_app *app, int dir)
     char abs[4096];
     if (ap_library_photo_absolute_path(app->library, new_idx,
                                        abs, sizeof(abs)) != 0) return;
+
+    // Refresh the outgoing photo's thumbnail before the async open
+    // replaces app->photo — the readback must happen while the graph
+    // is still live.
+    submit_thumb_refresh(app, app->photo_library_idx);
+
     app->photo_library_idx = new_idx;
     ap_app_open_photo(app, abs);
 }
