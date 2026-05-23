@@ -1130,10 +1130,11 @@ static void rebuild_grid_map(ap_app *app)
                                                app->grid_map[c]);
         if (t) {
             ap_grid_set_thumbnail(app->grid, c, ap_thumbnail_view(t),
-                                  ap_thumbnail_sampler(t));
+                                  ap_thumbnail_sampler(t),
+                                  ap_thumbnail_width(t), ap_thumbnail_height(t));
         } else {
             ap_grid_set_thumbnail(app->grid, c,
-                                  VK_NULL_HANDLE, VK_NULL_HANDLE);
+                                  VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
         }
     }
 }
@@ -1397,7 +1398,7 @@ void ap_app_set_sort(ap_app *app, ap_library_sort sort)
     if (app->grid) {
         int c;
         for (c = 0; c < app->grid_map_count; c++) {
-            ap_grid_set_thumbnail(app->grid, c, VK_NULL_HANDLE, VK_NULL_HANDLE);
+            ap_grid_set_thumbnail(app->grid, c, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
         }
     }
     rebuild_grid_map(app);
@@ -2720,7 +2721,7 @@ static void toggle_rendered_thumbnails(ap_app *app)
         ap_library_invalidate_thumbnail(app->library, i);
     }
     for (int c = 0; c < app->grid_map_count && app->grid; c++) {
-        ap_grid_set_thumbnail(app->grid, c, VK_NULL_HANDLE, VK_NULL_HANDLE);
+        ap_grid_set_thumbnail(app->grid, c, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
     }
 }
 
@@ -2741,7 +2742,8 @@ static void handle_thumb_complete(ap_app *app, thumb_job *j)
                 if (cell >= 0) {
                     ap_grid_set_thumbnail(app->grid, cell,
                                           ap_thumbnail_view(t),
-                                          ap_thumbnail_sampler(t));
+                                          ap_thumbnail_sampler(t),
+                                          j->w, j->h);
                 }
             }
         } else if (!j->ok) {
@@ -2846,7 +2848,7 @@ static void handle_thumb_encode_complete(ap_app *app, thumb_encode_job *j)
         // db blob.
         if (app->grid) {
             ap_grid_set_thumbnail(app->grid, j->idx,
-                                  VK_NULL_HANDLE, VK_NULL_HANDLE);
+                                  VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
         }
         ap_library_invalidate_thumbnail(app->library, j->idx);
     }

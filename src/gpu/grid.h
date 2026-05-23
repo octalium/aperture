@@ -67,11 +67,13 @@ void ap_grid_ensure_visible(ap_grid *grid, int idx,
                             int win_width, int win_height);
 
 // Bind a thumbnail texture into the grid's descriptor array at the
-// given slot. Pass view = VK_NULL_HANDLE to revert the slot to the
-// shared placeholder. Safe to call mid-frame thanks to
-// UPDATE_AFTER_BIND.
+// given slot. Pass the pixel dimensions of the image so ap_grid_hit_test
+// can treat only the fitted image rect as the clickable area; pass
+// width = 0 (or view = VK_NULL_HANDLE) to revert the slot to the shared
+// placeholder. Safe to call mid-frame thanks to UPDATE_AFTER_BIND.
 void ap_grid_set_thumbnail(ap_grid *grid, int idx,
-                           VkImageView view, VkSampler sampler);
+                           VkImageView view, VkSampler sampler,
+                           int width, int height);
 
 // How many full rows fit vertically in the active render rect. Used
 // by PageUp / PageDown to advance exactly one viewport of rows.
