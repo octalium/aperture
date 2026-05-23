@@ -9,6 +9,7 @@
 #include "edit/stack.h"
 #include "gpu/gpu.h"
 #include "io/raw.h"
+#include "photo/metadata.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -79,6 +80,12 @@ typedef struct {
     // the live state (to draw an active/inactive toggle) and change
     // it. Never NULL.
     ap_canvas_tool *request_canvas_tool;
+
+    // EXIF metadata read from the source file. NULL when no photo is
+    // open or the source has no EXIF. Modules that need capture
+    // parameters (lens correction, etc.) read from here for display
+    // hints and auto-detection; user overrides live in str_params.
+    const ap_photo_metadata *file_meta;
 } ap_module_render_ctx;
 
 // Render an ImGui config widget for the module's per-instance
