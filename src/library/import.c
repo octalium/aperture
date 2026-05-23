@@ -5,6 +5,9 @@
 #include "core/log.h"
 #include "io/raw.h"
 
+#include <blake3.h>
+#include <sqlite3.h>
+
 #include <dirent.h>
 #include <errno.h>
 #include <limits.h>
@@ -15,6 +18,8 @@
 #include <time.h>
 #include <unistd.h>
 #include <utime.h>
+
+#define BLAKE3_HEX_LEN (BLAKE3_OUT_LEN * 2 + 1)
 
 // ----- settings -----------------------------------------------------
 
@@ -31,7 +36,7 @@ void ap_import_settings_load(const ap_library *lib, ap_import_settings *out)
     snprintf(out->subdir, sizeof(out->subdir), "raw");
     out->naming = AP_IMPORT_NAME_KEEP;
     snprintf(out->pattern, sizeof(out->pattern), "{YYYY}{MM}{DD}_{HH}{MIN}{SEC}");
-    out->collision = AP_IMPORT_COLLIDE_SKIP;
+    out->collision = AP_IMPORT_COLLIDE_SUFFIX;
     if (!lib) return;
 
     char buf[AP_IMPORT_PATTERN_LEN];
@@ -51,7 +56,7 @@ void ap_import_settings_load(const ap_library *lib, ap_import_settings *out)
         int c = atoi(buf);
         out->collision = (c >= AP_IMPORT_COLLIDE_SKIP &&
                           c <= AP_IMPORT_COLLIDE_SUFFIX)
-                             ? c : AP_IMPORT_COLLIDE_SKIP;
+                             ? c : AP_IMPORT_COLLIDE_SUFFIX;
     }
 }
 
@@ -113,9 +118,28 @@ static void format_name(const char *pattern, const char *stem,
     out[o] = '\0';
 }
 
-// ----- file copy ----------------------------------------------------
+// ----- BLAKE3 helpers -----------------------------------------------
 
-static int copy_file(const char *src, const char *dst)
+// Encode `len` bytes from `src` as lowercase hex into `dst`, which must
+// be at least 2*len+1 bytes long.
+static void hex_encode(const uint8_t *src, size_t len, char *dst)
+{
+    static const char hx[] = "0123456789abcdef";
+    for (size_t i = 0; i < len; i++) {
+        dst[2 * i]     = hx[src[i] >> 4];
+        dst[2 * i + 1] = hx[src[i] & 0xf];
+    }
+    dst[2 * len] = '\0';
+}
+
+// ----- file copy + stream hash ------------------------------------
+
+// Copy `src` to `dst`, streaming through BLAKE3 as data flows. On
+// success writes the lowercase hex digest into `out_hex` (must be at
+// least BLAKE3_HEX_LEN bytes) and returns 0. On error unlinks `dst`
+// and returns -1.
+static int copy_file_hash(const char *src, const char *dst,
+                          char out_hex[BLAKE3_HEX_LEN])
 {
     FILE *in = fopen(src, "rb");
     if (!in) {
@@ -129,10 +153,14 @@ static int copy_file(const char *src, const char *dst)
         return -1;
     }
 
+    blake3_hasher hasher;
+    blake3_hasher_init(&hasher);
+
     char   buf[1 << 16];
     size_t n;
     int    rc = 0;
     while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        blake3_hasher_update(&hasher, buf, n);
         if (fwrite(buf, 1, n, out) != n) {
             AP_ERROR("import: write %s: %s", dst, strerror(errno));
             rc = -1;
@@ -153,12 +181,41 @@ static int copy_file(const char *src, const char *dst)
         return rc;
     }
 
+    uint8_t digest[BLAKE3_OUT_LEN];
+    blake3_hasher_finalize(&hasher, digest, BLAKE3_OUT_LEN);
+    hex_encode(digest, BLAKE3_OUT_LEN, out_hex);
+
     // Carry the source's modification time onto the copy.
     struct stat ss;
     if (stat(src, &ss) == 0) {
         struct utimbuf ut = { ss.st_atime, ss.st_mtime };
         utime(dst, &ut);
     }
+    return 0;
+}
+
+// Hash `path` without copying. Returns 0 on success.
+static int hash_file(const char *path, char out_hex[BLAKE3_HEX_LEN])
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+
+    blake3_hasher hasher;
+    blake3_hasher_init(&hasher);
+
+    char   buf[1 << 16];
+    size_t n;
+    int    rc = 0;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+        blake3_hasher_update(&hasher, buf, n);
+    }
+    if (ferror(f)) rc = -1;
+    fclose(f);
+    if (rc != 0) return rc;
+
+    uint8_t digest[BLAKE3_OUT_LEN];
+    blake3_hasher_finalize(&hasher, digest, BLAKE3_OUT_LEN);
+    hex_encode(digest, BLAKE3_OUT_LEN, out_hex);
     return 0;
 }
 
@@ -170,13 +227,64 @@ static bool same_file(const char *a, const char *b)
     return realpath(a, ra) && realpath(b, rb) && strcmp(ra, rb) == 0;
 }
 
+// ----- SQLite hash helpers ------------------------------------------
+
+// Look up `hex_hash` in `db`. On a match copies the stored relative
+// path into `out_rel` and returns 1. Returns 0 when not found.
+static int db_find_hash(sqlite3 *db, const char *hex_hash,
+                        char *out_rel, size_t out_len)
+{
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(db,
+        "SELECT path FROM photos WHERE hash = ? LIMIT 1;",
+        -1, &st, NULL);
+    if (rc != SQLITE_OK) return 0;
+    sqlite3_bind_text(st, 1, hex_hash, -1, SQLITE_STATIC);
+    int found = 0;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        const char *p = (const char *)sqlite3_column_text(st, 0);
+        if (p && out_rel && out_len > 0) {
+            snprintf(out_rel, out_len, "%s", p);
+        }
+        found = 1;
+    }
+    sqlite3_finalize(st);
+    return found;
+}
+
+// Set the hash column for `rel_path` in `db`.
+static void db_store_hash(sqlite3 *db, const char *rel_path,
+                          const char *hex_hash)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "UPDATE photos SET hash = ? WHERE path = ?;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return;
+    }
+    sqlite3_bind_text(st, 1, hex_hash, -1, SQLITE_STATIC);
+    sqlite3_bind_text(st, 2, rel_path, -1, SQLITE_STATIC);
+    sqlite3_step(st);
+    sqlite3_finalize(st);
+}
+
 // ----- per-file import ----------------------------------------------
 
-// Copy one source raw into dest_dir. Returns 1 when a file was copied,
-// 0 when it was skipped (collision policy, self-copy, or a copy error
-// — errors are logged inside).
-static int import_one(const char *src, const char *dest_dir,
-                      const ap_import_settings *s, int seq)
+typedef enum {
+    IMPORT_ONE_IMPORTED,
+    IMPORT_ONE_DUP_CONTENT,
+    IMPORT_ONE_RENAMED,
+    IMPORT_ONE_SKIP_COLLISION,
+    IMPORT_ONE_ERROR,
+} import_one_result;
+
+// Import one source raw into dest_dir. `db` may be NULL (no dedupe).
+// `subdir` is the single-level destination subdir name (for relative
+// path construction when storing the hash). Returns an import_one_result.
+static import_one_result import_one(const char *src, const char *dest_dir,
+                                    const char *subdir,
+                                    const ap_import_settings *s, int seq,
+                                    sqlite3 *db)
 {
     const char *slash = strrchr(src, '/');
     const char *base  = slash ? slash + 1 : src;
@@ -213,17 +321,46 @@ static int import_one(const char *src, const char *dest_dir,
     char dst[PATH_MAX];
     if (snprintf(dst, sizeof(dst), "%s/%s", dest_dir, name) >= (int)sizeof(dst)) {
         AP_WARN("import: destination path too long, skipping %s", base);
-        return 0;
+        return IMPORT_ONE_ERROR;
+    }
+
+    // Content-dedupe via db hash lookup before touching the destination.
+    if (db) {
+        char src_hex[BLAKE3_HEX_LEN];
+        if (hash_file(src, src_hex) == 0) {
+            char existing_rel[4096];
+            if (db_find_hash(db, src_hex, existing_rel,
+                             sizeof(existing_rel)) == 1) {
+                AP_INFO("import: %s already in library at %s, skipping",
+                        base, existing_rel);
+                return IMPORT_ONE_DUP_CONTENT;
+            }
+        }
     }
 
     struct stat ds;
-    if (stat(dst, &ds) == 0) {
+    bool dst_exists = (stat(dst, &ds) == 0);
+    bool renamed    = false;
+
+    if (dst_exists) {
+        // Check byte-level equality between src and existing dst.
+        char src_hex[BLAKE3_HEX_LEN];
+        char dst_hex[BLAKE3_HEX_LEN];
+        if (hash_file(src, src_hex) == 0 && hash_file(dst, dst_hex) == 0
+                && strcmp(src_hex, dst_hex) == 0) {
+            // Identical bytes already at the destination — safe to skip.
+            return IMPORT_ONE_DUP_CONTENT;
+        }
+
+        // Different content at the same destination path.
         if (s->collision == AP_IMPORT_COLLIDE_SKIP) {
-            return 0;
+            AP_WARN("import: name collision (different content), skipping %s",
+                    base);
+            return IMPORT_ONE_SKIP_COLLISION;
         }
         if (s->collision == AP_IMPORT_COLLIDE_SUFFIX) {
-            char        nstem[AP_IMPORT_PATTERN_LEN + 64];
-            char        next[16] = "";
+            char   nstem[AP_IMPORT_PATTERN_LEN + 64];
+            char   next[16] = "";
             const char *ndot = strrchr(name, '.');
             if (ndot) {
                 snprintf(next, sizeof(next), "%s", ndot);
@@ -236,9 +373,9 @@ static int import_one(const char *src, const char *dest_dir,
             }
             bool free_slot = false;
             for (int i = 1; i < 10000; i++) {
-                if (snprintf(dst, sizeof(dst), "%s/%s_%d%s",
+                if (snprintf(dst, sizeof(dst), "%s/%s_%04d%s",
                              dest_dir, nstem, i, next) >= (int)sizeof(dst)) {
-                    return 0;
+                    return IMPORT_ONE_ERROR;
                 }
                 if (stat(dst, &ds) != 0) {
                     free_slot = true;
@@ -246,24 +383,43 @@ static int import_one(const char *src, const char *dest_dir,
                 }
             }
             if (!free_slot) {
-                return 0;
+                AP_WARN("import: no free suffix slot for %s", base);
+                return IMPORT_ONE_ERROR;
             }
-        }
-        // OVERWRITE — guard against copying a file onto itself.
-        else if (same_file(src, dst)) {
-            return 0;
+            renamed = true;
+        } else {
+            // OVERWRITE — guard against copying a file onto itself.
+            if (same_file(src, dst)) {
+                return IMPORT_ONE_DUP_CONTENT;
+            }
         }
     }
 
-    if (copy_file(src, dst) != 0) {
-        return 0;
+    char copied_hex[BLAKE3_HEX_LEN];
+    if (copy_file_hash(src, dst, copied_hex) != 0) {
+        return IMPORT_ONE_ERROR;
     }
-    return 1;
+
+    if (db) {
+        const char *final_slash = strrchr(dst, '/');
+        const char *final_name  = final_slash ? final_slash + 1 : dst;
+        char rel[PATH_MAX];
+        rel[0] = '\0';
+        strncat(rel, subdir, sizeof(rel) - 1);
+        size_t slen = strlen(rel);
+        if (slen + 1 < sizeof(rel)) {
+            rel[slen] = '/';
+            rel[slen + 1] = '\0';
+            strncat(rel, final_name, sizeof(rel) - slen - 2);
+        }
+        db_store_hash(db, rel, copied_hex);
+    }
+
+    return renamed ? IMPORT_ONE_RENAMED : IMPORT_ONE_IMPORTED;
 }
 
 // ----- recursive walk -----------------------------------------------
 
-// Dynamic list of raw-file paths collected during the directory walk.
 typedef struct {
     char  **paths;
     int     count;
@@ -326,19 +482,18 @@ static void import_collect(const char *src_dir, raw_list *list)
     closedir(d);
 }
 
-int ap_import_run_into(const char *lib_root, const char *src_dir,
-                       const ap_import_settings *s, int *out_imported,
+int ap_import_run_into(const char *lib_root, const char *db_path,
+                       const char *src_dir, const ap_import_settings *s,
+                       ap_import_report *report,
                        ap_import_progress_fn progress, void *userdata)
 {
-    if (out_imported) {
-        *out_imported = 0;
+    if (report) {
+        memset(report, 0, sizeof(*report));
     }
     if (!lib_root || !src_dir || !s) {
         return -1;
     }
 
-    // The destination subdir is a single directory level under the
-    // library root — reject anything with a separator or `..`.
     char subdir[AP_IMPORT_SUBDIR_LEN];
     snprintf(subdir, sizeof(subdir), "%s", s->subdir);
     if (!subdir[0] || strchr(subdir, '/') || strcmp(subdir, "..") == 0) {
@@ -356,15 +511,36 @@ int ap_import_run_into(const char *lib_root, const char *src_dir,
         return -1;
     }
 
-    // Collect all raw paths, sort for deterministic {SEQ} numbering,
-    // then process in order.
+    sqlite3 *db = NULL;
+    if (db_path) {
+        if (sqlite3_open(db_path, &db) != SQLITE_OK) {
+            AP_WARN("import: cannot open db %s: %s — hash dedupe disabled",
+                    db_path, sqlite3_errmsg(db));
+            if (db) { sqlite3_close(db); db = NULL; }
+        } else {
+            sqlite3_exec(db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
+            sqlite3_exec(db,
+                "CREATE INDEX IF NOT EXISTS idx_photos_hash ON photos(hash);",
+                NULL, NULL, NULL);
+        }
+    }
+
     raw_list list = {0};
     import_collect(src_dir, &list);
     qsort(list.paths, (size_t)list.count, sizeof(*list.paths), cmp_str);
 
-    int copied = 0;
+    ap_import_report r = {0};
     for (int i = 0; i < list.count; i++) {
-        copied += import_one(list.paths[i], dest_dir, s, i + 1);
+        import_one_result res = import_one(list.paths[i], dest_dir, subdir,
+                                           s, i + 1, db);
+        switch (res) {
+        case IMPORT_ONE_IMPORTED:       r.imported++;             break;
+        case IMPORT_ONE_DUP_CONTENT:    r.dup_content++;          break;
+        case IMPORT_ONE_RENAMED:        r.imported++;
+                                        r.renamed_collision++;    break;
+        case IMPORT_ONE_SKIP_COLLISION: r.skip_collision++;       break;
+        case IMPORT_ONE_ERROR:          r.errored++;              break;
+        }
         if (progress) {
             progress(i + 1, list.count, userdata);
         }
@@ -372,26 +548,37 @@ int ap_import_run_into(const char *lib_root, const char *src_dir,
     int total = list.count;
     raw_list_free(&list);
 
-    if (out_imported) {
-        *out_imported = copied;
-    }
-    AP_INFO("import: copied %d of %d raw file(s) from %s into %s",
-            copied, total, src_dir, dest_dir);
+    if (db) sqlite3_close(db);
+
+    if (report) *report = r;
+    AP_INFO("import: %d imported (%d renamed), %d dup, %d skip-collision, "
+            "%d error of %d from %s into %s",
+            r.imported, r.renamed_collision, r.dup_content,
+            r.skip_collision, r.errored, total, src_dir, dest_dir);
     return 0;
 }
 
 int ap_import_run_ex(ap_library *lib, const char *src_dir,
-                     const ap_import_settings *s, int *out_imported,
+                     const ap_import_settings *s, ap_import_report *report,
                      ap_import_progress_fn progress, void *userdata)
 {
     if (!lib) return -1;
     const char *root = ap_library_root(lib);
     if (!root) return -1;
-    return ap_import_run_into(root, src_dir, s, out_imported, progress, userdata);
+
+    char db_path[4096];
+    if (snprintf(db_path, sizeof(db_path), "%s/.aperture/library.db",
+                 root) >= (int)sizeof(db_path)) {
+        AP_WARN("import: db path too long, skipping hash dedupe");
+        return ap_import_run_into(root, NULL, src_dir, s, report,
+                                  progress, userdata);
+    }
+    return ap_import_run_into(root, db_path, src_dir, s, report,
+                              progress, userdata);
 }
 
 int ap_import_run(ap_library *lib, const char *src_dir,
-                  const ap_import_settings *s, int *out_imported)
+                  const ap_import_settings *s, ap_import_report *report)
 {
-    return ap_import_run_ex(lib, src_dir, s, out_imported, NULL, NULL);
+    return ap_import_run_ex(lib, src_dir, s, report, NULL, NULL);
 }

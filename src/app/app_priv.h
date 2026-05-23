@@ -84,6 +84,7 @@ struct ap_app {
     char             import_source[4096];
     ap_import_settings import_settings;
     char             import_status[160];
+    ap_import_report import_report;
 
     ap_export_settings export_settings;
     bool             rename_library_modal;

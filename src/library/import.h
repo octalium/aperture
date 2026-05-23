@@ -20,7 +20,7 @@ typedef enum {
 typedef enum {
     AP_IMPORT_COLLIDE_SKIP      = 0,  // leave the existing file, skip
     AP_IMPORT_COLLIDE_OVERWRITE = 1,  // replace it
-    AP_IMPORT_COLLIDE_SUFFIX    = 2,  // append _1, _2, ... to the stem
+    AP_IMPORT_COLLIDE_SUFFIX    = 2,  // append _0001, _0002, ... to the stem
 } ap_import_collision;
 
 // Per-library import preferences, persisted in the library's settings.
@@ -38,8 +38,17 @@ typedef struct {
     int  collision;                       // ap_import_collision
 } ap_import_settings;
 
+// Aggregate counts for a completed import run.
+typedef struct {
+    int imported;          // files successfully copied
+    int dup_content;       // files skipped: identical content already in library
+    int renamed_collision; // files renamed to resolve a name collision
+    int skip_collision;    // files skipped: name collision, SKIP policy
+    int errored;           // files that failed to copy
+} ap_import_report;
+
 // Load the library's import settings, filling any unset field with its
-// default (subdir "raw", keep original names, skip-on-collision).
+// default (subdir "raw", keep original names, suffix-on-collision).
 void ap_import_settings_load(const ap_library *lib, ap_import_settings *out);
 
 // Persist the import settings on the library.
@@ -52,23 +61,25 @@ typedef void (*ap_import_progress_fn)(int done, int total, void *userdata);
 
 // Copy every raw file found under `src_dir` (searched recursively) into
 // <lib_root>/<s.subdir>/, applying the naming + collision rules. The
-// source files are not modified. Writes the number of files copied to
-// *out_imported (may be NULL). Returns 0 on success, -1 on a setup
-// failure (bad arguments, destination not creatable).
+// source files are not modified. Fills `*report` (may be NULL) with
+// per-outcome counts. Returns 0 on success, -1 on a setup failure
+// (bad arguments, destination not creatable).
 int ap_import_run(ap_library *lib, const char *src_dir,
-                  const ap_import_settings *s, int *out_imported);
+                  const ap_import_settings *s, ap_import_report *report);
 
 // Like ap_import_run but calls `progress` (when non-NULL) after each
 // file attempt, passing the progress callback `userdata` through.
 int ap_import_run_ex(ap_library *lib, const char *src_dir,
-                     const ap_import_settings *s, int *out_imported,
+                     const ap_import_settings *s, ap_import_report *report,
                      ap_import_progress_fn progress, void *userdata);
 
-// Like ap_import_run_ex but takes the library root path as a string
+// Like ap_import_run_ex but takes the library root and db path as strings
 // instead of an ap_library pointer. Safe to call from a worker thread
-// because it does not touch library state.
-int ap_import_run_into(const char *lib_root, const char *src_dir,
-                       const ap_import_settings *s, int *out_imported,
+// because it does not touch shared library state. `db_path` may be NULL
+// to skip content-dedupe (hash lookup).
+int ap_import_run_into(const char *lib_root, const char *db_path,
+                       const char *src_dir, const ap_import_settings *s,
+                       ap_import_report *report,
                        ap_import_progress_fn progress, void *userdata);
 
 #ifdef __cplusplus

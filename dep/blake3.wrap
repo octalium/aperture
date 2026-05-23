@@ -1,0 +1,5 @@
+[wrap-file]
+directory = blake3
+
+[provide]
+blake3 = blake3_dep

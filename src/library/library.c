@@ -788,6 +788,7 @@ static const char *LIBRARY_SCHEMA_SQL =
     "    color        INTEGER NOT NULL DEFAULT 0"
     ");"
     "CREATE INDEX IF NOT EXISTS idx_photos_capture_time ON photos(capture_time);"
+    "CREATE INDEX IF NOT EXISTS idx_photos_hash         ON photos(hash);"
     "CREATE INDEX IF NOT EXISTS idx_photos_rating ON photos(rating);"
     "CREATE INDEX IF NOT EXISTS idx_photos_flag   ON photos(flag);"
     "CREATE INDEX IF NOT EXISTS idx_photos_color  ON photos(color);"
