@@ -59,6 +59,12 @@ struct ap_grid {
     uint8_t *selected_bitmap;     // photo_count bits, allocated in
                                   // set_photo_count; NULL when empty
 
+    // Per-slot thumbnail pixel dimensions (0 means unknown / placeholder).
+    // Used by ap_grid_hit_test to treat only the fitted image rect as the
+    // clickable area, so letterbox margins count as empty space.
+    uint16_t *thumb_w;            // [thumb_capacity] entries
+    uint16_t *thumb_h;            // [thumb_capacity] entries
+
     int   cell_size;        // integer target (clamped, canonical)
     float cell_size_f;      // fractional working value, lerped toward cell_size
     int   cell_gap_x;
@@ -390,6 +396,13 @@ static int create_descriptors(ap_grid *grid, int capacity)
     vkUpdateDescriptorSets(grid->gpu->device, 1, &write, 0, NULL);
     free(infos);
     grid->thumb_capacity = capacity;
+
+    grid->thumb_w = calloc((size_t)capacity, sizeof(*grid->thumb_w));
+    grid->thumb_h = calloc((size_t)capacity, sizeof(*grid->thumb_h));
+    if (!grid->thumb_w || !grid->thumb_h) {
+        AP_ERROR("grid: thumb dimension arrays alloc failed");
+        return -1;
+    }
     return 0;
 }
 
@@ -561,11 +574,14 @@ void ap_grid_destroy(ap_grid *grid)
     if (grid->placeholder_image)   vkDestroyImage(dev, grid->placeholder_image, NULL);
     if (grid->placeholder_memory)  vkFreeMemory(dev, grid->placeholder_memory, NULL);
     free(grid->selected_bitmap);
+    free(grid->thumb_w);
+    free(grid->thumb_h);
     free(grid);
 }
 
 void ap_grid_set_thumbnail(ap_grid *grid, int idx,
-                           VkImageView view, VkSampler sampler)
+                           VkImageView view, VkSampler sampler,
+                           int width, int height)
 {
     if (!grid || idx < 0 || idx >= grid->thumb_capacity) return;
 
@@ -584,6 +600,12 @@ void ap_grid_set_thumbnail(ap_grid *grid, int idx,
         .pImageInfo      = &info,
     };
     vkUpdateDescriptorSets(grid->gpu->device, 1, &write, 0, NULL);
+
+    if (grid->thumb_w && grid->thumb_h) {
+        bool has_image = (view && sampler && width > 0 && height > 0);
+        grid->thumb_w[idx] = has_image ? (uint16_t)width  : 0;
+        grid->thumb_h[idx] = has_image ? (uint16_t)height : 0;
+    }
 }
 
 void ap_grid_set_photo_count(ap_grid *grid, int count)
@@ -912,6 +934,29 @@ int ap_grid_hit_test(const ap_grid *grid,
 
     int idx = row * L.cells_per_row + col;
     if (idx < 0 || idx >= grid->photo_count) return -1;
+
+    // When thumbnail dimensions are known, shrink the hitbox to the
+    // fitted image rect so letterbox margins around portrait/landscape
+    // thumbnails count as marquee-startable empty space.
+    if (grid->thumb_w && grid->thumb_h) {
+        int tw = grid->thumb_w[idx];
+        int th = grid->thumb_h[idx];
+        if (tw > 0 && th > 0) {
+            float cs = (float)L.cell_size;
+            float s  = cs / (float)tw;
+            float sy = cs / (float)th;
+            if (sy < s) s = sy;
+            float fit_w = (float)tw * s;
+            float fit_h = (float)th * s;
+            float fit_x = (cs - fit_w) * 0.5f;
+            float fit_y = (cs - fit_h) * 0.5f;
+            if (in_x < fit_x || in_x >= fit_x + fit_w ||
+                in_y < fit_y || in_y >= fit_y + fit_h) {
+                return -1;
+            }
+        }
+    }
+
     return idx;
 }
 

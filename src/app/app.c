@@ -787,10 +787,11 @@ void rebuild_grid_map(ap_app *app)
                                                app->grid_map[c]);
         if (t) {
             ap_grid_set_thumbnail(app->grid, c, ap_thumbnail_view(t),
-                                  ap_thumbnail_sampler(t));
+                                  ap_thumbnail_sampler(t),
+                                  ap_thumbnail_width(t), ap_thumbnail_height(t));
         } else {
             ap_grid_set_thumbnail(app->grid, c,
-                                  VK_NULL_HANDLE, VK_NULL_HANDLE);
+                                  VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
         }
     }
 }
@@ -1054,7 +1055,7 @@ void ap_app_set_sort(ap_app *app, ap_library_sort sort)
     if (app->grid) {
         int c;
         for (c = 0; c < app->grid_map_count; c++) {
-            ap_grid_set_thumbnail(app->grid, c, VK_NULL_HANDLE, VK_NULL_HANDLE);
+            ap_grid_set_thumbnail(app->grid, c, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
         }
     }
     rebuild_grid_map(app);

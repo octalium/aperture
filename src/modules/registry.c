@@ -122,7 +122,8 @@ void ap_module_slider_reset(const ap_module *self, float *params,
     if (igIsItemActivated() && g_render_ctx && g_render_ctx->snapshot_requested) {
         *g_render_ctx->snapshot_requested = true;
     }
-    if (igIsItemHovered(0) && igIsMouseDoubleClicked_Nil(ImGuiMouseButton_Left)) {
+    if (igGetMouseClickedCount(ImGuiMouseButton_Left) == 2
+        && igIsMouseHoveringRect(igGetItemRectMin(), igGetItemRectMax(), true)) {
         if (g_render_ctx && g_render_ctx->snapshot_requested) {
             *g_render_ctx->snapshot_requested = true;
         }
