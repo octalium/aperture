@@ -93,6 +93,11 @@ ap_viewport ap_photo_viewport(const ap_photo *photo);
 const char *ap_photo_metadata_value(const ap_photo *photo, ap_meta_field f);
 const char *ap_photo_metadata_file_value(const ap_photo *photo,
                                          ap_meta_field f);
+// Bulk accessor for the file-extracted metadata — what the loader read
+// from the source EXIF. Modules that need multiple fields (e.g. lens
+// correction) use this rather than calling metadata_file_value per field.
+// Returns NULL when `photo` is NULL.
+const ap_photo_metadata *ap_photo_file_meta(const ap_photo *photo);
 bool        ap_photo_metadata_is_user(const ap_photo *photo, ap_meta_field f);
 void        ap_photo_metadata_set_user(ap_photo *photo, ap_meta_field f,
                                        const char *value);

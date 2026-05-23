@@ -21,6 +21,8 @@ vulkan_dep  = dependency('vulkan')
 glfw_dep    = dependency('glfw3')
 cimgui_dep  = dependency('cimgui')
 libraw_dep  = dependency('libraw')
+# Debian / Ubuntu: sudo apt install liblensfun-dev
+lensfun_dep = dependency('lensfun')
 sqlite3_dep = dependency('sqlite3')
 tomlc99_dep = dependency('tomlc99')
 libjpeg_dep = dependency('libjpeg')
@@ -45,6 +47,7 @@ aperture_deps = [
   glfw_dep,
   cimgui_dep,
   libraw_dep,
+  lensfun_dep,
   sqlite3_dep,
   tomlc99_dep,
   libjpeg_dep,

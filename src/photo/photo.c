@@ -299,6 +299,12 @@ const char *ap_photo_metadata_file_value(const ap_photo *photo,
     return ap_photo_metadata_get(&photo->file_meta, f);
 }
 
+const ap_photo_metadata *ap_photo_file_meta(const ap_photo *photo)
+{
+    if (!photo) return NULL;
+    return &photo->file_meta;
+}
+
 bool ap_photo_metadata_is_user(const ap_photo *photo, ap_meta_field f)
 {
     if (!photo || f < 0 || f >= AP_META_FIELD_COUNT) return false;

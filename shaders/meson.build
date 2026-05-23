@@ -25,6 +25,7 @@ shader_sources = [
   'tone.comp',
   'tone_filmic.comp',
   'vignette.comp',
+  'lens_correction.comp',
   'output_transfer.comp',
   'canvas.vert',
   'canvas.frag',

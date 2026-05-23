@@ -15,6 +15,7 @@ extern const ap_module module_saturation;
 extern const ap_module module_vignette;
 extern const ap_module module_sharpen;
 extern const ap_module module_transform;
+extern const ap_module module_lens_correction;
 extern const ap_module module_grain;
 extern const ap_module module_color_grade;
 extern const ap_module module_hsl;
@@ -36,6 +37,7 @@ const ap_module *const ap_module_registry[] = {
     &module_sharpen,
     &module_grain,
     &module_transform,
+    &module_lens_correction,
     &module_output_transfer,
     NULL,
 };
