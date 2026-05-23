@@ -101,7 +101,7 @@ void draw_menubar(ap_app *app)
             bool can_export = app->photo != NULL ||
                 (app->library && app->grid &&
                  ap_app_grid_selection_count(app) > 0);
-            if (igMenuItem_Bool("Export...", "Ctrl+Shift+E", false, can_export)) {
+            if (igMenuItem_Bool("Export...", "Ctrl+E", false, can_export)) {
                 ap_app_open_export_modal(app);
             }
         }
@@ -133,13 +133,13 @@ void draw_menubar(ap_app *app)
 
         igSeparator();
 
-        if (igMenuItem_Bool("Quick Export", "Ctrl+E",
-                            false, app->photo != NULL)) {
-            trigger_quick_export(app);
-        }
-        if (igMenuItem_Bool("Export...", "Ctrl+Shift+E",
+        if (igMenuItem_Bool("Export...", "Ctrl+E",
                             false, app->photo != NULL)) {
             ap_app_open_export_modal(app);
+        }
+        if (igMenuItem_Bool("Quick Export", "Ctrl+Shift+E",
+                            false, app->photo != NULL)) {
+            trigger_quick_export(app);
         }
         igEndMenu();
     }
@@ -284,13 +284,13 @@ void drive_global_hotkeys(ap_app *app)
     if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_Q, false)) {
         app->quit_requested = true;
     }
-    if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_E, false) && app->photo
+    if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_E, false)
         && !io->KeyShift) {
-        trigger_quick_export(app);
+        ap_app_open_export_modal(app);
     }
     if (io->KeyCtrl && io->KeyShift
-        && igIsKeyPressed_Bool(ImGuiKey_E, false)) {
-        ap_app_open_export_modal(app);
+        && igIsKeyPressed_Bool(ImGuiKey_E, false) && app->photo) {
+        trigger_quick_export(app);
     }
     if (io->KeyCtrl && !io->WantTextInput
         && igIsKeyPressed_Bool(ImGuiKey_C, false) && app->photo) {
