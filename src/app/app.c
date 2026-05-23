@@ -107,8 +107,9 @@ static void thumb_encode_job_run(ap_work_item *self);
 static void photo_open_job_run(ap_work_item *self);
 static void export_job_run(ap_work_item *self);
 
-// Forward decl - used by open/close before its definition.
+// Forward decls - used before their definitions.
 static void refresh_window_title(ap_app *app);
+static void delete_edit_photo(ap_app *app);
 
 struct ap_app {
     ap_gpu          *gpu;
@@ -186,7 +187,8 @@ struct ap_app {
     char             rename_library_input[128];
     bool             save_layout_modal;    // View -> Layout -> Save Current As
     char             save_layout_input[AP_LAYOUT_NAME_LEN];
-    bool             delete_modal;         // Delete key -> confirm prompt
+    bool             delete_modal;         // Delete key -> confirm prompt (grid)
+    bool             delete_edit_modal;    // Delete key -> confirm prompt (edit view)
     bool             quit_requested;
 
     // Interactive canvas tool — armed by a module's config window,
@@ -1910,6 +1912,15 @@ static void drive_canvas_input(ap_app *app)
             navigate_library_relative(app, -1);
             return;
         }
+        if (igIsKeyPressed_Bool(ImGuiKey_Delete, false) &&
+            app->photo && app->photo_library_idx >= 0) {
+            if (io->KeyShift) {
+                delete_edit_photo(app);
+            } else {
+                app->delete_edit_modal = true;
+            }
+            return;
+        }
     }
 
     // Interactive canvas tools take the mouse when armed. The
@@ -2020,6 +2031,66 @@ static void delete_grid_selection(ap_app *app)
         }
     }
     AP_INFO("library: deleted %d photo(s)", removed);
+}
+
+// Close the currently-open photo, de-index it, delete its files from
+// disk, then navigate to an adjacent photo (next if available, else
+// previous, else return to the library grid).
+static void delete_edit_photo(ap_app *app)
+{
+    if (!app->library || !app->photo) return;
+
+    int idx = app->photo_library_idx;
+    if (idx < 0) return;
+
+    drain_all_workers(app);
+    ap_app_wait_idle(app);
+
+    // Release the photo before removal so its files are not open.
+    release_photo(app);
+    app->photo_library_idx = -1;
+
+    if (ap_library_photo_remove(app->library, idx) != 0) {
+        // Removal failed — back to library so the user isn't stranded.
+        app->mode = AP_MODE_LIBRARY;
+        bind_mode_view(app);
+        rebuild_grid_map(app);
+        return;
+    }
+
+    int n_after = ap_library_photo_count(app->library);
+
+    if (n_after <= 0) {
+        app->mode = AP_MODE_LIBRARY;
+        bind_mode_view(app);
+        rebuild_grid_map(app);
+        AP_INFO("library: deleted photo (library now empty)");
+        return;
+    }
+
+    // Try the photo that slid into `idx` (was the next one); if `idx`
+    // is now out of range fall back to the last photo.
+    int next_idx = (idx < n_after) ? idx : (n_after - 1);
+
+    char abs[4096];
+    if (ap_library_photo_absolute_path(app->library, next_idx,
+                                       abs, sizeof(abs)) != 0) {
+        app->mode = AP_MODE_LIBRARY;
+        bind_mode_view(app);
+        rebuild_grid_map(app);
+        return;
+    }
+
+    // Update grid selection so backing out (Esc) lands on the right cell.
+    rebuild_grid_map(app);
+    {
+        int cell = cell_for_photo(app, next_idx);
+        if (cell >= 0) ap_grid_select_only(app->grid, cell);
+    }
+
+    app->photo_library_idx = next_idx;
+    ap_app_open_photo(app, abs);
+    AP_INFO("library: deleted photo (navigated to idx %d)", next_idx);
 }
 
 // Culling keyboard shortcuts, applied to the whole grid selection:
@@ -2748,6 +2819,11 @@ static void draw_menubar(ap_app *app)
                             false, app->photo != NULL)) {
             ap_app_close_photo(app);
         }
+        if (igMenuItem_Bool("Delete Photo", NULL, false,
+                            app->photo != NULL &&
+                            app->photo_library_idx >= 0)) {
+            app->delete_edit_modal = true;
+        }
         if (igMenuItem_Bool("Close Library", NULL,
                             false, app->library != NULL)) {
             ap_app_close_library(app);
@@ -3113,6 +3189,44 @@ static void draw_delete_modal(ap_app *app)
 
     if (confirm) {
         delete_grid_selection(app);
+        igCloseCurrentPopup();
+    } else if (cancel) {
+        igCloseCurrentPopup();
+    }
+    igEndPopup();
+}
+
+static void draw_delete_edit_modal(ap_app *app)
+{
+    if (app->delete_edit_modal) {
+        igOpenPopup_Str("Delete Photo", 0);
+        app->delete_edit_modal = false;
+    }
+    if (!igBeginPopupModal("Delete Photo", NULL,
+                           ImGuiWindowFlags_AlwaysAutoResize)) {
+        return;
+    }
+
+    if (!app->photo || app->photo_library_idx < 0) {
+        igCloseCurrentPopup();
+        igEndPopup();
+        return;
+    }
+
+    const char *rel = ap_library_photo_relative_path(app->library,
+                                                     app->photo_library_idx);
+    igText("Delete this photo from disk?");
+    if (rel) igTextDisabled("%s", rel);
+    igTextDisabled("The raw file and sidecar will be removed. "
+                   "This cannot be undone.");
+    igSeparator();
+
+    bool confirm = igButton("Delete", (ImVec2_c){ 120.0f, 0.0f });
+    igSameLine(0.0f, -1.0f);
+    bool cancel = igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f });
+
+    if (confirm) {
+        delete_edit_photo(app);
         igCloseCurrentPopup();
     } else if (cancel) {
         igCloseCurrentPopup();
@@ -3529,6 +3643,7 @@ int ap_app_run_frame(ap_app *app)
     draw_rename_library_modal(app);
     draw_save_layout_modal(app);
     draw_delete_modal(app);
+    draw_delete_edit_modal(app);
     drive_global_hotkeys(app);
 
     // Full-viewport invisible host window owns the dockspace that
