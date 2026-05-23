@@ -2026,6 +2026,70 @@ static void draw_loading_overlay(ap_app *app)
     ImDrawList_AddText_Vec2(dl, pos, 0xFFEEEEEE, msg, NULL);
 }
 
+// Walk the dockspace node tree (depth-first) to find the deepest leaf
+// node that is not the central passthrough node. Used by the panel
+// adoption pass so newly-introduced panels land in a real panel column
+// rather than floating loose.
+static ImGuiID find_non_central_leaf(ImGuiDockNode *node)
+{
+    if (!node) return 0;
+    if (node->ChildNodes[0] || node->ChildNodes[1]) {
+        ImGuiID id = find_non_central_leaf(node->ChildNodes[0]);
+        if (!id) id = find_non_central_leaf(node->ChildNodes[1]);
+        return id;
+    }
+    if (node->MergedFlags & (1 << 11)) return 0;
+    return node->ID;
+}
+
+// Panel window names that participate in the default dock layout. Any
+// window not found in imgui.ini (DockId == 0) is considered a new
+// panel that the user has never seen and is adopted into the layout.
+static const char *const default_layout_windows[] = {
+    "Image",
+    "Metadata",
+    "Histogram",
+    "Tools",
+    "Edits",
+    "Metadata##library",
+    "Pipelines##library",
+    "Groups##library",
+    "Sort & Search##library",
+    "Format##export",
+    "Quality##export",
+    "Naming##export",
+    "Destination##export",
+    NULL,
+};
+
+// If a panel adoption pass was requested (schema version bump), place any
+// window from `default_layout_windows` that has no saved dock assignment
+// into the first available non-central leaf node of the existing dockspace.
+// Calling igDockBuilderDockWindow on an already-docked window is a no-op,
+// so it is safe to iterate the full list unconditionally.
+static void adopt_undocked_panels(ImGuiID dockspace_id)
+{
+    ImGuiDockNode *root = igDockBuilderGetNode(dockspace_id);
+    if (!root) return;
+
+    ImGuiID target = find_non_central_leaf(root);
+    if (!target) return;
+
+    bool any_adopted = false;
+    for (const char *const *w = default_layout_windows; *w; w++) {
+        ImGuiID wid = igImHashStr(*w, 0, 0);
+        ImGuiWindowSettings *ws = igFindWindowSettingsByID(wid);
+        if (ws && ws->DockId != 0) continue;
+        igDockBuilderDockWindow(*w, target);
+        AP_INFO("layout: adopted undocked panel '%s' into node 0x%08x",
+                *w, target);
+        any_adopted = true;
+    }
+    if (any_adopted) {
+        igDockBuilderFinish(dockspace_id);
+    }
+}
+
 int ap_app_run_frame(ap_app *app)
 {
     if (!app) return -1;
@@ -2134,6 +2198,10 @@ int ap_app_run_frame(ap_app *app)
             igDockBuilderDockWindow("Naming##export",      right_mid);
             igDockBuilderDockWindow("Destination##export", right_bot);
             igDockBuilderFinish(dockspace_id);
+        }
+        if (ap_layout_consume_panel_adoption_request() &&
+            igDockBuilderGetNode(dockspace_id) != NULL) {
+            adopt_undocked_panels(dockspace_id);
         }
         igDockSpace(dockspace_id,
                     (ImVec2_c){ 0.0f, 0.0f },

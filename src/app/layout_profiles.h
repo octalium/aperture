@@ -58,6 +58,14 @@ void ap_layout_reset_to_default(void);
 // gate re-running on top of the previous frame's layout.
 bool ap_layout_consume_rebuild_request(void);
 
+// Read-and-consume the "adopt newly-introduced panels into the existing
+// dockspace" flag. Returns true at most once per schema-version bump; the
+// dockspace setup in run_frame uses it to dock any panels that have no
+// saved dock assignment yet (i.e. panels added after the user established
+// their imgui.ini) into sensible default nodes without disturbing the rest
+// of the user's layout.
+bool ap_layout_consume_panel_adoption_request(void);
+
 #ifdef __cplusplus
 }
 #endif
