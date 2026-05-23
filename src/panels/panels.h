@@ -37,6 +37,7 @@ extern const ap_panel *const ap_panel_registry[];
 // panel's .visible pointer is initialised to the corresponding bool
 // here so all show/hide state lives in one translation unit rather
 // than as per-file file-scope statics.
+extern bool ap_panel_visible_library_info;
 extern bool ap_panel_visible_library_metadata;
 extern bool ap_panel_visible_library_pipelines;
 extern bool ap_panel_visible_library_groups;
