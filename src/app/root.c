@@ -70,7 +70,7 @@ const char *ap_app_root_path(void)
     return g_root;
 }
 
-static int mkdir_p(const char *path)
+int ap_mkdir_p(const char *path)
 {
     char tmp[4096];
     if (snprintf(tmp, sizeof(tmp), "%s", path) >= (int)sizeof(tmp)) {
@@ -105,11 +105,11 @@ int ap_app_root_ensure(void)
     const char *root = ap_app_root_path();
     if (!root) return -1;
 
-    if (mkdir_p(root) < 0) return -1;
+    if (ap_mkdir_p(root) < 0) return -1;
 
     char libs[4096];
     if (ap_app_root_join("libraries", libs, sizeof(libs)) < 0) return -1;
-    if (mkdir_p(libs) < 0) return -1;
+    if (ap_mkdir_p(libs) < 0) return -1;
 
     return 0;
 }

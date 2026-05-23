@@ -40,7 +40,7 @@ struct ap_library {
     char     *root;        // absolute path to the photo directory
     char      id[37];      // RFC 4122 v4 UUID, 36 chars + NUL
     char      name[128];   // user-set display name; empty if unset
-    sqlite3  *db;          // <app_root>/libraries/<id>.db
+    sqlite3  *db;          // <library_root>/.aperture/library.db
 
     char    **photo_paths; // relative to root
     int       photo_count;
@@ -931,9 +931,7 @@ static int scan_dir(ap_library *lib, sqlite3_stmt *insert_stmt,
 
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
-        if (ent->d_name[0] == '.' &&
-            (ent->d_name[1] == '\0' ||
-             (ent->d_name[1] == '.' && ent->d_name[2] == '\0'))) continue;
+        if (ent->d_name[0] == '.') continue;
 
         char abs_child[4096];
         if (snprintf(abs_child, sizeof(abs_child), "%s/%s",
@@ -1369,12 +1367,63 @@ ap_library *ap_library_open(const char *path)
         }
     }
 
-    char db_filename[64];
-    snprintf(db_filename, sizeof(db_filename), "libraries/%s.db", lib->id);
+    char aperture_dir[4096];
+    if (snprintf(aperture_dir, sizeof(aperture_dir), "%s/.aperture",
+                 lib->root) >= (int)sizeof(aperture_dir)) {
+        AP_ERROR("ap_library_open: library path too long");
+        goto fail;
+    }
+    if (ap_mkdir_p(aperture_dir) < 0) {
+        AP_ERROR("ap_library_open: cannot create %s", aperture_dir);
+        goto fail;
+    }
+
     char db_path[4096];
-    if (ap_app_root_join(db_filename, db_path, sizeof(db_path)) < 0) {
+    if (snprintf(db_path, sizeof(db_path), "%s/library.db",
+                 aperture_dir) >= (int)sizeof(db_path)) {
         AP_ERROR("ap_library_open: db path too long");
         goto fail;
+    }
+
+    if (access(db_path, F_OK) != 0) {
+        char legacy_filename[64];
+        snprintf(legacy_filename, sizeof(legacy_filename),
+                 "libraries/%s.db", lib->id);
+        char legacy_path[4096];
+        if (ap_app_root_join(legacy_filename, legacy_path,
+                             sizeof(legacy_path)) == 0 &&
+            access(legacy_path, F_OK) == 0) {
+            if (rename(legacy_path, db_path) == 0) {
+                AP_INFO("library: migrated db %s -> %s", legacy_path, db_path);
+            } else if (errno == EXDEV) {
+                // Cross-device: copy then remove the source.
+                FILE *src = fopen(legacy_path, "rb");
+                FILE *dst = fopen(db_path, "wb");
+                bool ok = src && dst;
+                if (ok) {
+                    char cbuf[65536];
+                    size_t nr;
+                    while ((nr = fread(cbuf, 1, sizeof(cbuf), src)) > 0) {
+                        if (fwrite(cbuf, 1, nr, dst) != nr) { ok = false; break; }
+                    }
+                    ok = ok && !ferror(src) && !ferror(dst);
+                }
+                if (src) fclose(src);
+                if (dst) fclose(dst);
+                if (ok) {
+                    unlink(legacy_path);
+                    AP_INFO("library: migrated db (cross-device) %s -> %s",
+                            legacy_path, db_path);
+                } else {
+                    AP_WARN("library: migrate db copy(%s, %s) failed",
+                            legacy_path, db_path);
+                    unlink(db_path);
+                }
+            } else {
+                AP_WARN("library: migrate db rename(%s, %s): %s",
+                        legacy_path, db_path, strerror(errno));
+            }
+        }
     }
 
     if (sqlite3_open(db_path, &lib->db) != SQLITE_OK) {
