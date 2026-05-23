@@ -303,6 +303,12 @@ void drive_grid_input(ap_app *app)
         open_selected_photo(app);
     }
 
+    // Ctrl+A in library mode: select every visible cell.
+    if (io->KeyCtrl && !io->WantTextInput &&
+        igIsKeyPressed_Bool(ImGuiKey_A, false)) {
+        ap_grid_select_range(app->grid, 0, n - 1);
+    }
+
     if (!io->WantTextInput &&
         igIsKeyPressed_Bool(ImGuiKey_Delete, false) &&
         ap_grid_selection_count(app->grid) > 0) {
