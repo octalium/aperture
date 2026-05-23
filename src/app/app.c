@@ -2135,6 +2135,96 @@ static void drive_grid_culling_input(ap_app *app, ImGuiIO *io)
     }
 }
 
+static void draw_grid_context_menu(ap_app *app)
+{
+    if (!igBeginPopup("##grid_ctx", 0)) return;
+
+    if (!app->library || !app->grid || app->grid_map_count <= 0) {
+        igEndPopup();
+        return;
+    }
+
+    int sel_count   = ap_grid_selection_count(app->grid);
+    int focus_cell  = ap_grid_selected(app->grid);
+
+    if (igMenuItem_Bool("Open", NULL, false,
+                        focus_cell >= 0 && focus_cell < app->grid_map_count)) {
+        open_selected_photo(app);
+        igCloseCurrentPopup();
+    }
+
+    igSeparator();
+
+    if (igBeginMenu("Set Rating", sel_count > 0)) {
+        static const char *const rating_labels[] = {
+            "0 (None)", "1 Star", "2 Stars", "3 Stars", "4 Stars", "5 Stars"
+        };
+        for (int r = 0; r <= 5; r++) {
+            if (igMenuItem_Bool(rating_labels[r], NULL, false, true)) {
+                ap_app_set_selection_rating(app, r);
+            }
+        }
+        igEndMenu();
+    }
+
+    if (igMenuItem_Bool("Pick", "P", false, sel_count > 0)) {
+        ap_app_set_selection_flag(app, AP_FLAG_PICK);
+    }
+    if (igMenuItem_Bool("Reject", "X", false, sel_count > 0)) {
+        ap_app_set_selection_flag(app, AP_FLAG_REJECT);
+    }
+    if (igMenuItem_Bool("Clear Flag", "U", false, sel_count > 0)) {
+        ap_app_set_selection_flag(app, AP_FLAG_NONE);
+    }
+
+    igSeparator();
+
+    if (igBeginMenu("Set Color Label", sel_count > 0)) {
+        static const char *const color_labels[] = {
+            "None", "Red", "Yellow", "Green", "Blue", "Purple"
+        };
+        for (int c = 0; c <= 5; c++) {
+            if (igMenuItem_Bool(color_labels[c], NULL, false, true)) {
+                ap_app_set_selection_color(app, (ap_color_label)c);
+            }
+        }
+        igEndMenu();
+    }
+
+    igSeparator();
+
+    {
+        char gnames[256][AP_GROUP_NAME_LEN];
+        int gn = ap_library_group_list(app->library, gnames, 256);
+        bool has_groups = (gn > 0);
+        if (igBeginMenu("Add to Group", has_groups && sel_count > 0)) {
+            for (int i = 0; i < gn; i++) {
+                if (igMenuItem_Bool(gnames[i], NULL, false, true)) {
+                    ap_app_assign_selection_to_group(app, gnames[i], true);
+                }
+            }
+            igEndMenu();
+        }
+        if (igBeginMenu("Remove from Group", has_groups && sel_count > 0)) {
+            for (int i = 0; i < gn; i++) {
+                if (igMenuItem_Bool(gnames[i], NULL, false, true)) {
+                    ap_app_assign_selection_to_group(app, gnames[i], false);
+                }
+            }
+            igEndMenu();
+        }
+    }
+
+    igSeparator();
+
+    if (igMenuItem_Bool("Delete", NULL, false, sel_count > 0)) {
+        app->delete_modal = true;
+        igCloseCurrentPopup();
+    }
+
+    igEndPopup();
+}
+
 static void drive_grid_input(ap_app *app)
 {
     if (!app->library || !app->grid) return;
@@ -2172,6 +2262,17 @@ static void drive_grid_input(ap_app *app)
     }
 
     if (!io->WantCaptureMouse) {
+        if (igIsMouseClicked_Bool(ImGuiMouseButton_Right, false)) {
+            int hit = ap_grid_hit_test(app->grid,
+                                       io->MousePos.x, io->MousePos.y,
+                                       win_w, win_h);
+            if (hit >= 0) {
+                if (!ap_grid_is_selected(app->grid, hit)) {
+                    ap_grid_select_only(app->grid, hit);
+                }
+                igOpenPopup_Str("##grid_ctx", 0);
+            }
+        }
         if (io->MouseWheel != 0.0f) {
             if (io->KeyCtrl) {
                 int cur  = ap_grid_cell_size(app->grid);
@@ -3841,6 +3942,7 @@ int ap_app_run_frame(ap_app *app)
         draw_canvas_zoom_overlay(app);
     } else if (app->mode == AP_MODE_LIBRARY && !app->photo_loading) {
         drive_grid_input(app);
+        draw_grid_context_menu(app);
         draw_grid_labels(app);
         draw_selection_overlay(app);
         draw_marquee_overlay(app);
