@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.octalium.aperture</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <name>Aperture</name>
+  <summary>Cull, grade, and export raw photos</summary>
+
+  <description>
+    <p>
+      Aperture is an opinionated raw photo processor: a focused,
+      non-destructive editor for photographers who want to manage a
+      working bank of raw images, organize them into user-defined groups,
+      apply reusable edit pipelines, and export finished JPEG, TIFF, or
+      PNG files.
+    </p>
+    <p>Aperture is deliberately not a full photo editor. Its job is:</p>
+    <ul>
+      <li>Import raws into a library</li>
+      <li>Browse, rate, group, and cull</li>
+      <li>Apply non-destructive pipelines and per-photo edits</li>
+      <li>Export final files for delivery</li>
+    </ul>
+    <p>
+      Built on C, Vulkan, and Dear ImGui. Uses LibRaw for raw decode,
+      Little CMS 2 for colour management, and Lensfun for lens
+      corrections.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.octalium.aperture.desktop</launchable>
+  <provides>
+    <binary>aperture</binary>
+  </provides>
+
+  <url type="homepage">https://github.com/octalium/aperture</url>
+  <url type="bugtracker">https://github.com/octalium/aperture/issues</url>
+  <url type="vcs-browser">https://github.com/octalium/aperture</url>
+
+  <developer id="io.github.octalium">
+    <name>octalium</name>
+  </developer>
+
+  <content_rating type="oars-1.1"/>
+
+  <categories>
+    <category>Graphics</category>
+    <category>Photography</category>
+  </categories>
+
+  <keywords>
+    <keyword>raw</keyword>
+    <keyword>photo</keyword>
+    <keyword>photography</keyword>
+    <keyword>dng</keyword>
+  </keywords>
+
+  <releases>
+    <release version="@version@" date="@release_date@">
+      <description>
+        <p>Pre-v0 development release.</p>
+      </description>
+    </release>
+  </releases>
+</component>
