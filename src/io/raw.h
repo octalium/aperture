@@ -58,6 +58,14 @@ void ap_raw_image_free(ap_raw_image *img);
 // no timestamp.
 int  ap_raw_capture_time(const char *path, time_t *out);
 
+// Read the EXIF lens model from a raw file's header — same
+// header-only path as ap_raw_capture_time, so bulk operations over a
+// selection don't pay the full pixel-decode cost. Writes a
+// NUL-terminated string into `out` (truncated to fit) and returns 0
+// on success. Returns non-zero when the file can't be read or carries
+// no usable lens-model string; `out` is set to "" in that case.
+int  ap_raw_lens_model(const char *path, char *out, size_t out_len);
+
 // True when `path` (or a bare filename) ends in a supported raw-file
 // extension. The single source of truth for which formats the app
 // treats as raw photos.

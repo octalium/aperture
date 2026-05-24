@@ -53,6 +53,34 @@ static void set_gps_degree(ap_photo_metadata *m, ap_meta_field f,
     ap_photo_metadata_set(m, f, buf);
 }
 
+// Resolve LibRaw's lens-model string with the MakerNote fallback chain.
+// Some Nikon / Sony bodies (and many adapted lenses) leave the unified
+// `lens.Lens` field blank because the lens model lives only in MakerNote
+// tags. Returns 0 and writes a NUL-terminated string into `out` when a
+// usable name was assembled; returns -1 otherwise (out is left as "").
+static int compose_lens_model(const libraw_data_t *raw,
+                              char *out, size_t out_len)
+{
+    if (out_len == 0) return -1;
+    out[0] = '\0';
+    const char *m = raw->lens.Lens;
+    if (!m || !m[0]) m = raw->lens.makernotes.Lens;
+    if (m && m[0]) {
+        snprintf(out, out_len, "%s", m);
+        return 0;
+    }
+    const char *pre = raw->lens.makernotes.LensFeatures_pre;
+    const char *suf = raw->lens.makernotes.LensFeatures_suf;
+    if ((pre && pre[0]) || (suf && suf[0])) {
+        snprintf(out, out_len, "%s%s%s",
+                 pre ? pre : "",
+                 (pre && pre[0] && suf && suf[0]) ? " " : "",
+                 suf ? suf : "");
+        return 0;
+    }
+    return -1;
+}
+
 static void extract_metadata(libraw_data_t *raw, ap_photo_metadata *m)
 {
     ap_photo_metadata_clear(m);
@@ -72,30 +100,9 @@ static void extract_metadata(libraw_data_t *raw, ap_photo_metadata *m)
     ap_photo_metadata_set(m, AP_META_CAMERA_MODEL, raw->idata.model);
     ap_photo_metadata_set(m, AP_META_LENS_MAKE,    raw->lens.LensMake);
 
-    // Some Nikon / Sony bodies (and many adapted lenses) leave the
-    // unified `lens.Lens` field blank because the lens model lives only
-    // in MakerNote tags. Fall back to LibRaw's MakerNote-derived fields
-    // before giving up — Lensfun has otherwise no way to find a
-    // calibration.
-    const char *lens_model = raw->lens.Lens;
-    if (!lens_model || !lens_model[0]) {
-        lens_model = raw->lens.makernotes.Lens;
-    }
-    if (!lens_model || !lens_model[0]) {
-        const char *pre = raw->lens.makernotes.LensFeatures_pre;
-        const char *suf = raw->lens.makernotes.LensFeatures_suf;
-        if ((pre && pre[0]) || (suf && suf[0])) {
-            char buf[AP_META_VALUE_LEN];
-            snprintf(buf, sizeof(buf), "%s%s%s",
-                     pre ? pre : "",
-                     (pre && pre[0] && suf && suf[0]) ? " " : "",
-                     suf ? suf : "");
-            ap_photo_metadata_set(m, AP_META_LENS_MODEL, buf);
-            lens_model = NULL; // already wrote
-        }
-    }
-    if (lens_model) {
-        ap_photo_metadata_set(m, AP_META_LENS_MODEL, lens_model);
+    char lens_buf[AP_META_VALUE_LEN];
+    if (compose_lens_model(raw, lens_buf, sizeof(lens_buf)) == 0) {
+        ap_photo_metadata_set(m, AP_META_LENS_MODEL, lens_buf);
     }
 
     set_numeric(m, AP_META_FOCAL_LEN, raw->other.focal_len,   "mm");
@@ -172,6 +179,26 @@ int ap_raw_capture_time(const char *path, time_t *out)
     }
     *out = ts;
     return 0;
+}
+
+int ap_raw_lens_model(const char *path, char *out, size_t out_len)
+{
+    if (!path || !out || out_len == 0) {
+        return -1;
+    }
+    out[0] = '\0';
+    libraw_data_t *raw = libraw_init(0);
+    if (!raw) {
+        return -1;
+    }
+    int err = libraw_open_file(raw, path);
+    if (err != LIBRAW_SUCCESS) {
+        libraw_close(raw);
+        return -1;
+    }
+    int rc = compose_lens_model(raw, out, out_len);
+    libraw_close(raw);
+    return rc;
 }
 
 int ap_raw_load(const char *path, ap_raw_image *out)
