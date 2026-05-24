@@ -812,6 +812,7 @@ static const char *LIBRARY_TABLES_SQL =
     "    id           INTEGER PRIMARY KEY,"
     "    path         TEXT NOT NULL UNIQUE,"
     "    hash         BLOB,"
+    "    size         INTEGER,"
     "    capture_time INTEGER,"
     "    added_at     INTEGER NOT NULL,"
     "    rating       INTEGER NOT NULL DEFAULT 0,"
@@ -854,6 +855,7 @@ static const char *LIBRARY_TABLES_SQL =
 static const char *LIBRARY_INDEXES_SQL =
     "CREATE INDEX IF NOT EXISTS idx_photos_capture_time ON photos(capture_time);"
     "CREATE INDEX IF NOT EXISTS idx_photos_hash         ON photos(hash);"
+    "CREATE INDEX IF NOT EXISTS idx_photos_size         ON photos(size);"
     "CREATE INDEX IF NOT EXISTS idx_photos_rating       ON photos(rating);"
     "CREATE INDEX IF NOT EXISTS idx_photos_flag         ON photos(flag);"
     "CREATE INDEX IF NOT EXISTS idx_photos_color        ON photos(color);";
@@ -875,6 +877,73 @@ static void backfill_culling_columns(sqlite3 *db)
             AP_WARN("library: backfill culling column: %s", err);
         }
         sqlite3_free(err);
+    }
+}
+
+// Add the `size` column on a photos table predating the size pre-
+// filter. As above, "duplicate column name" means the column already
+// exists.
+static void backfill_size_column(sqlite3 *db)
+{
+    char *err = NULL;
+    int rc = sqlite3_exec(db,
+        "ALTER TABLE photos ADD COLUMN size INTEGER;",
+        NULL, NULL, &err);
+    if (rc != SQLITE_OK && err && !strstr(err, "duplicate column")) {
+        AP_WARN("library: backfill size column: %s", err);
+    }
+    sqlite3_free(err);
+}
+
+// Stat every photo with a NULL `size` and write the on-disk byte
+// count back. One-shot pass on library open; subsequent imports
+// store the size at copy time. Wrapped in a single transaction so
+// the WAL doesn't grow per-row.
+static void backfill_photo_sizes(ap_library *lib)
+{
+    if (!lib || !lib->db || !lib->root) return;
+
+    sqlite3_stmt *sel = NULL;
+    if (sqlite3_prepare_v2(lib->db,
+            "SELECT path FROM photos WHERE size IS NULL;",
+            -1, &sel, NULL) != SQLITE_OK) {
+        return;
+    }
+    sqlite3_stmt *upd = NULL;
+    if (sqlite3_prepare_v2(lib->db,
+            "UPDATE photos SET size = ? WHERE path = ?;",
+            -1, &upd, NULL) != SQLITE_OK) {
+        sqlite3_finalize(sel);
+        return;
+    }
+
+    sqlite3_exec(lib->db, "BEGIN;", NULL, NULL, NULL);
+    int filled = 0;
+    while (sqlite3_step(sel) == SQLITE_ROW) {
+        const char *rel = (const char *)sqlite3_column_text(sel, 0);
+        if (!rel) continue;
+        char abs[4096];
+        if (snprintf(abs, sizeof(abs), "%s/%s",
+                     lib->root, rel) >= (int)sizeof(abs)) {
+            continue;
+        }
+        struct stat st;
+        if (stat(abs, &st) != 0) continue;
+
+        sqlite3_reset(upd);
+        sqlite3_clear_bindings(upd);
+        sqlite3_bind_int64(upd, 1, (int64_t)st.st_size);
+        sqlite3_bind_text (upd, 2, rel, -1, SQLITE_STATIC);
+        if (sqlite3_step(upd) == SQLITE_DONE) filled++;
+    }
+    sqlite3_exec(lib->db, "COMMIT;", NULL, NULL, NULL);
+
+    sqlite3_finalize(upd);
+    sqlite3_finalize(sel);
+
+    if (filled > 0) {
+        AP_INFO("library: backfilled size for %d photo%s",
+                filled, filled == 1 ? "" : "s");
     }
 }
 
@@ -1502,6 +1571,7 @@ ap_library *ap_library_open(const char *path)
 
     if (exec_simple(lib->db, LIBRARY_TABLES_SQL)                       < 0) goto fail;
     backfill_culling_columns(lib->db);
+    backfill_size_column(lib->db);
     if (exec_simple(lib->db, LIBRARY_INDEXES_SQL)                      < 0) goto fail;
     if (set_schema_kv(lib->db, "version",          APERTURE_DB_VERSION) < 0) goto fail;
     if (set_schema_kv(lib->db, "aperture_version", APERTURE_VERSION)    < 0) goto fail;
@@ -1526,6 +1596,11 @@ ap_library *ap_library_open(const char *path)
 
     // Scan only adds; reconcile the other direction too.
     prune_missing_photos(lib);
+
+    // One-shot: stat any photos with NULL size and fill the column.
+    // Subsequent imports store size at copy time, so this only does
+    // real work the first time the library is opened after upgrade.
+    backfill_photo_sizes(lib);
 
     if (load_photo_cache(lib) < 0) goto fail;
 
