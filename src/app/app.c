@@ -1015,10 +1015,24 @@ typedef enum {
     AP_CULL_COLOR  = 2,
 } ap_cull_field;
 
+// Apply a single culling-field change to one library photo. `value` is
+// interpreted per `field`: a rating int, an ap_flag, or an ap_color_label.
+// Returns 0 on success, -1 on a missing library or out-of-range index.
+static int apply_culling_to_photo(ap_app *app, int idx, ap_cull_field field,
+                                  int value)
+{
+    if (!app || !app->library) return -1;
+    ap_photo_culling cull = ap_library_photo_culling(app->library, idx);
+    switch (field) {
+    case AP_CULL_RATING: cull.rating = value;                  break;
+    case AP_CULL_FLAG:   cull.flag   = (ap_flag)value;         break;
+    case AP_CULL_COLOR:  cull.color  = (ap_color_label)value;  break;
+    }
+    return ap_library_set_photo_culling(app->library, idx, cull);
+}
+
 // Apply a single culling-field change to every selected grid photo.
-// `value` is interpreted per `field`: a rating int, an ap_flag, or an
-// ap_color_label. Returns the number of photos written, or -1 on a
-// missing library / grid.
+// Returns the number of photos written, or -1 on a missing library / grid.
 static int apply_culling_to_selection(ap_app *app, ap_cull_field field,
                                       int value)
 {
@@ -1028,13 +1042,7 @@ static int apply_culling_to_selection(ap_app *app, ap_cull_field field,
     for (int c = 0; c < app->grid_map_count; c++) {
         if (!ap_grid_is_selected(app->grid, c)) continue;
         int i = app->grid_map[c];
-        ap_photo_culling cull = ap_library_photo_culling(app->library, i);
-        switch (field) {
-        case AP_CULL_RATING: cull.rating = value;                  break;
-        case AP_CULL_FLAG:   cull.flag   = (ap_flag)value;         break;
-        case AP_CULL_COLOR:  cull.color  = (ap_color_label)value;  break;
-        }
-        if (ap_library_set_photo_culling(app->library, i, cull) == 0) {
+        if (apply_culling_to_photo(app, i, field, value) == 0) {
             wrote++;
         }
     }
@@ -1055,6 +1063,27 @@ int ap_app_set_selection_flag(ap_app *app, ap_flag flag)
 int ap_app_set_selection_color(ap_app *app, ap_color_label color)
 {
     return apply_culling_to_selection(app, AP_CULL_COLOR, (int)color);
+}
+
+int ap_app_set_photo_rating(ap_app *app, int rating)
+{
+    if (!app || app->photo_library_idx < 0) return -1;
+    return apply_culling_to_photo(app, app->photo_library_idx,
+                                  AP_CULL_RATING, ap_rating_clamp(rating));
+}
+
+int ap_app_set_photo_flag(ap_app *app, ap_flag flag)
+{
+    if (!app || app->photo_library_idx < 0) return -1;
+    return apply_culling_to_photo(app, app->photo_library_idx,
+                                  AP_CULL_FLAG, (int)flag);
+}
+
+int ap_app_set_photo_color(ap_app *app, ap_color_label color)
+{
+    if (!app || app->photo_library_idx < 0) return -1;
+    return apply_culling_to_photo(app, app->photo_library_idx,
+                                  AP_CULL_COLOR, (int)color);
 }
 
 void ap_app_set_group_filter(ap_app *app, int kind, const char *name)
@@ -1573,6 +1602,37 @@ static void drive_canvas_view(ap_app *app, ImGuiIO *io)
     }
 }
 
+// Rate / flag / colour-label the currently open photo from the keyboard.
+// Mirrors drive_grid_culling_input (src/app/grid_view.c) but targets the
+// open photo via ap_app_set_photo_* so both modes share the underlying
+// culling write path and feel identical. Gated on `!WantTextInput &&
+// !KeyCtrl` to match the grid convention.
+static void drive_photo_culling_input(ap_app *app, ImGuiIO *io)
+{
+    if (!app->library || app->photo_library_idx < 0) return;
+    if (io->WantTextInput || io->KeyCtrl) return;
+
+    for (int d = 0; d <= 5; d++) {
+        if (!igIsKeyPressed_Bool((ImGuiKey)(ImGuiKey_0 + d), false)) continue;
+        if (io->KeyShift) {
+            ap_app_set_photo_color(app, (ap_color_label)d);
+        } else {
+            ap_app_set_photo_rating(app, d);
+        }
+        return;
+    }
+
+    if (io->KeyShift) return;
+
+    if (igIsKeyPressed_Bool(ImGuiKey_P, false)) {
+        ap_app_set_photo_flag(app, AP_FLAG_PICK);
+    } else if (igIsKeyPressed_Bool(ImGuiKey_X, false)) {
+        ap_app_set_photo_flag(app, AP_FLAG_REJECT);
+    } else if (igIsKeyPressed_Bool(ImGuiKey_U, false)) {
+        ap_app_set_photo_flag(app, AP_FLAG_NONE);
+    }
+}
+
 static void drive_canvas_input(ap_app *app)
 {
     if (!app->canvas || !app->photo) return;
@@ -1615,6 +1675,11 @@ static void drive_canvas_input(ap_app *app)
             return;
         }
     }
+
+    // Culling keys are always live in photo mode, including while a
+    // canvas tool is armed — they don't conflict with tool input and
+    // letting a crop drag block them would be surprising.
+    drive_photo_culling_input(app, io);
 
     // Interactive canvas tools take the mouse when armed. The
     // eyedropper consumes a click but otherwise leaves the view free
