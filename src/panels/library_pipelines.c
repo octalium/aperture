@@ -8,6 +8,7 @@
 
 #include "cimgui.h"
 
+#include <float.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -114,7 +115,9 @@ static void library_pipelines_draw(ap_app *app)
 
     if (!has_sel) igBeginDisabled(true);
 
-    if (igButton("Apply to selection", (ImVec2_c){ 180.0f, 0.0f })) {
+    const ImVec2_c btn_size = { -FLT_MIN, 0.0f };
+
+    if (igButton("Apply to selection", btn_size)) {
         int wrote = ap_app_apply_pipeline_to_selection(app, g_selected_id);
         if (wrote < 0) {
             set_status("Apply failed (no library / grid).");
@@ -125,11 +128,10 @@ static void library_pipelines_draw(ap_app *app)
                        wrote, wrote == 1 ? "" : "s");
         }
     }
-    igSameLine(0.0f, -1.0f);
     bool is_lib_default = (lib_default == g_selected_id);
     if (igButton(is_lib_default ? "Clear library default"
                                  : "Set as library default",
-                 (ImVec2_c){ 180.0f, 0.0f })) {
+                 btn_size)) {
         int64_t target = is_lib_default ? 0 : g_selected_id;
         if (ap_library_set_default_pipeline_id(lib, target) == 0) {
             set_status(target ? "Library default updated."
@@ -138,8 +140,7 @@ static void library_pipelines_draw(ap_app *app)
             set_status("Failed to update library default.");
         }
     }
-    igSameLine(0.0f, -1.0f);
-    if (igButton("Duplicate", (ImVec2_c){ 100.0f, 0.0f })) {
+    if (igButton("Duplicate", btn_size)) {
         ap_pipeline_def def;
         if (ap_pipeline_get(g_selected_id, &def) == 0) {
             // " copy" suffix; cap the source so the join fits. Use
@@ -161,12 +162,11 @@ static void library_pipelines_draw(ap_app *app)
             }
         }
     }
-    igSameLine(0.0f, -1.0f);
     // Delete: protected for the registry default *and* the per-library
     // default (clearing it first is the explicit gesture).
     bool deletable = !is_lib_default;
     if (!deletable) igBeginDisabled(true);
-    if (igButton("Delete", (ImVec2_c){ 80.0f, 0.0f })) {
+    if (igButton("Delete", btn_size)) {
         if (ap_pipeline_delete(g_selected_id) == 0) {
             set_status("Deleted.");
             g_selected_id = 0;
@@ -182,13 +182,12 @@ static void library_pipelines_draw(ap_app *app)
     // Inline rename: input + Save, only when a row is selected.
     if (has_sel) {
         igSpacing();
-        igSetNextItemWidth(260.0f);
+        igSetNextItemWidth(-FLT_MIN);
         igInputText("##rename", g_rename_buf, sizeof(g_rename_buf),
                     0, NULL, NULL);
-        igSameLine(0.0f, -1.0f);
         bool can_rename = g_rename_buf[0] != '\0';
         if (!can_rename) igBeginDisabled(true);
-        if (igButton("Rename", (ImVec2_c){ 80.0f, 0.0f })) {
+        if (igButton("Rename", btn_size)) {
             if (ap_pipeline_update(g_selected_id, g_rename_buf, NULL) == 0) {
                 set_status("Renamed to \"%s\".", g_rename_buf);
                 g_rename_for_id = 0;
