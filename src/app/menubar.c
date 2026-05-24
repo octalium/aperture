@@ -153,8 +153,14 @@ void draw_menubar(ap_app *app)
             toggle_and_persist_fullscreen(app);
         }
         igSeparator();
-        if (igMenuItem_Bool("Reset Cell Zoom", "Ctrl+0", false, true)) {
-            ap_grid_reset_cell_size(app->grid);
+        if (app->mode == AP_MODE_PHOTO) {
+            if (igMenuItem_Bool("Reset View", "Ctrl+0", false, true)) {
+                ap_canvas_reset_view(app->canvas);
+            }
+        } else {
+            if (igMenuItem_Bool("Reset Cell Zoom", "Ctrl+0", false, true)) {
+                ap_grid_reset_cell_size(app->grid);
+            }
         }
         if (app->photo) {
             bool view_raw = ap_photo_view_raw(app->photo);
