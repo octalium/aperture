@@ -118,7 +118,7 @@ int ap_layout_init(void)
     if (layouts_dir_ensure() < 0) return -1;
 
     // The working layout is auto-persisted by ImGui itself
-    // (io.IniFilename -> <app_root>/imgui.ini) and loads on the first
+    // (io.IniFilename -> <app_config>/imgui.ini) and loads on the first
     // frame. ap_layout_init only records which named profile was last
     // made active, for the View > Layout menu — it does not force a
     // profile load at startup.

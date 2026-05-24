@@ -22,6 +22,7 @@
 #endif
 
 static char g_root[4096] = {0};
+static char g_config[4096] = {0};
 
 static int resolve_root(char *out, size_t out_len)
 {
@@ -60,6 +61,30 @@ static int resolve_root(char *out, size_t out_len)
 #endif
 }
 
+static int resolve_config(char *out, size_t out_len)
+{
+#if defined(_WIN32) || defined(__APPLE__)
+    // platform convention collapses config onto the data root
+    const char *root = ap_app_root_path();
+    if (!root) return -1;
+    int n = snprintf(out, out_len, "%s", root);
+    return (n < 0 || (size_t)n >= out_len) ? -1 : 0;
+#else
+    const char *xdg = getenv("XDG_CONFIG_HOME");
+    if (xdg && xdg[0]) {
+        int n = snprintf(out, out_len, "%s/aperture", xdg);
+        return (n < 0 || (size_t)n >= out_len) ? -1 : 0;
+    }
+    const char *home = getenv("HOME");
+    if (!home || !home[0]) {
+        AP_ERROR("ap_app_config_path: neither XDG_CONFIG_HOME nor HOME is set");
+        return -1;
+    }
+    int n = snprintf(out, out_len, "%s/.config/aperture", home);
+    return (n < 0 || (size_t)n >= out_len) ? -1 : 0;
+#endif
+}
+
 const char *ap_app_root_path(void)
 {
     if (g_root[0]) return g_root;
@@ -68,6 +93,16 @@ const char *ap_app_root_path(void)
         return NULL;
     }
     return g_root;
+}
+
+const char *ap_app_config_path(void)
+{
+    if (g_config[0]) return g_config;
+    if (resolve_config(g_config, sizeof(g_config)) < 0) {
+        g_config[0] = '\0';
+        return NULL;
+    }
+    return g_config;
 }
 
 int ap_mkdir_p(const char *path)
@@ -119,6 +154,22 @@ int ap_app_root_join(const char *sub, char *buf, size_t buflen)
     const char *root = ap_app_root_path();
     if (!root || !buf || !sub) return -1;
     int n = snprintf(buf, buflen, "%s%s%s", root, AP_PATH_SEP_STR, sub);
+    if (n < 0 || (size_t)n >= buflen) return -1;
+    return 0;
+}
+
+int ap_app_config_ensure(void)
+{
+    const char *cfg = ap_app_config_path();
+    if (!cfg) return -1;
+    return ap_mkdir_p(cfg);
+}
+
+int ap_app_config_join(const char *sub, char *buf, size_t buflen)
+{
+    const char *cfg = ap_app_config_path();
+    if (!cfg || !buf || !sub) return -1;
+    int n = snprintf(buf, buflen, "%s%s%s", cfg, AP_PATH_SEP_STR, sub);
     if (n < 0 || (size_t)n >= buflen) return -1;
     return 0;
 }
