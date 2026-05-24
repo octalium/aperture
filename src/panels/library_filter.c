@@ -165,18 +165,30 @@ static void library_filter_draw(ap_app *app)
         igEndCombo();
     }
 
-    bool any_active = (cf.rating_min > 0 || cf.flag != AP_FLAG_NONE ||
-                       cf.color != AP_COLOR_NONE);
-    igSpacing();
-    if (!any_active) igBeginDisabled(true);
-    if (igButton("Clear filters", (ImVec2_c){ -1.0f, 0.0f })) {
-        cf = (ap_culling_filter){ 0, AP_FLAG_NONE, AP_COLOR_NONE };
-        changed = true;
-    }
-    if (!any_active) igEndDisabled();
-
     if (changed) {
         ap_app_set_culling_filter(app, cf);
+    }
+
+    bool culling_active = (cf.rating_min > 0 || cf.flag != AP_FLAG_NONE ||
+                           cf.color != AP_COLOR_NONE);
+    bool search_active  = (ap_app_search(app)[0] != '\0');
+    bool group_active   = (ap_app_group_filter_kind(app) != AP_GROUP_FILTER_ALL);
+    bool any_active     = culling_active || search_active || group_active;
+
+    igSpacing();
+    igSeparator();
+    igSpacing();
+
+    if (!any_active) igBeginDisabled(true);
+    if (igButton("Clear all filters", (ImVec2_c){ -1.0f, 0.0f })) {
+        ap_app_set_culling_filter(app,
+            (ap_culling_filter){ 0, AP_FLAG_NONE, AP_COLOR_NONE });
+        ap_app_set_search(app, "");
+        ap_app_set_group_filter(app, AP_GROUP_FILTER_ALL, NULL);
+    }
+    if (!any_active) igEndDisabled();
+    if (igIsItemHovered(0)) {
+        igSetTooltip("Resets filters, not sort order");
     }
 
     igEnd();
