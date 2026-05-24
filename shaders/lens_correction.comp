@@ -146,11 +146,18 @@ void main()
     vec4 c = sample_bilinear(src_pixel, size);
 
     if (pc.do_vignetting != 0) {
-        float r2   = dot(out_uv, out_uv);
-        float r4   = r2 * r2;
-        float r6   = r4 * r2;
-        float gain = 1.0 + pc.vig_k1 * r2 + pc.vig_k2 * r4 + pc.vig_k3 * r6;
-        c.rgb *= max(gain, 0.0);
+        // Lensfun's LF_VIGNETTING_MODEL_PA gives the *measured falloff*:
+        //   observed = unvignetted * (1 + k1 r^2 + k2 r^4 + k3 r^6)
+        // To *correct*, divide the observed pixel by the falloff. The
+        // earlier version multiplied, which doubled the vignette
+        // (corners went darker, looked like a heavy desaturation).
+        // Clamp the divisor so a degenerate term set can't blow the
+        // corners up to infinity.
+        float r2      = dot(out_uv, out_uv);
+        float r4      = r2 * r2;
+        float r6      = r4 * r2;
+        float falloff = 1.0 + pc.vig_k1 * r2 + pc.vig_k2 * r4 + pc.vig_k3 * r6;
+        c.rgb /= max(falloff, 0.05);
     }
 
     imageStore(out_image, coord, c);
