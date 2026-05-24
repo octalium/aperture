@@ -1600,6 +1600,14 @@ static void drive_canvas_view(ap_app *app, ImGuiIO *io)
     if (igIsKeyPressed_Bool(ImGuiKey_F, false)) {
         ap_canvas_reset_view(app->canvas);
     }
+    // `=` snaps to 100% (1:1) zoom. Matches the image-app convention and
+    // replaces the `1` binding freed for culling rating keys in #391.
+    // Gated like drive_photo_culling_input so Ctrl+= keeps its global
+    // zoom-in role and text fields keep the keystroke.
+    if (!io->WantTextInput && !io->KeyCtrl
+        && igIsKeyPressed_Bool(ImGuiKey_Equal, false)) {
+        ap_canvas_set_zoom(app->canvas, 1.0f, win_w, win_h);
+    }
 }
 
 // Rate / flag / colour-label the currently open photo from the keyboard.
