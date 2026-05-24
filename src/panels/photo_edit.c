@@ -658,6 +658,7 @@ static void config_window(ap_app *app, ap_photo *photo,
                 .snapshot_requested = &snapshot_req,
                 .request_canvas_tool = &tool_req,
                 .file_meta          = ap_photo_file_meta(photo),
+                .app                = app,
             };
             ap_module_render_ctx_push(&ctx);
             m->render_params(m, e->params, &ctx);

@@ -31,6 +31,7 @@ typedef enum {
 } ap_module_category;
 
 typedef struct ap_module ap_module;
+struct ap_app;
 
 // Fill a per-dispatch push-constant blob (size == module->push_size,
 // or the variant's push_size when the module declares variants).
@@ -86,6 +87,15 @@ typedef struct {
     // parameters (lens correction, etc.) read from here for display
     // hints and auto-detection; user overrides live in str_params.
     const ap_photo_metadata *file_meta;
+
+    // Owning app handle, for the rare module that needs to touch
+    // app-wide state from a UI gesture (e.g. lens correction's
+    // "apply this lens to library selection" walks the grid's current
+    // selection). Modules should treat this as an opaque escape hatch
+    // and prefer canvas tools / request_rebuild / request_canvas_tool
+    // when one of those covers the use case. Never NULL while the
+    // panel is open.
+    struct ap_app *app;
 } ap_module_render_ctx;
 
 // Render an ImGui config widget for the module's per-instance
