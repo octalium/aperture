@@ -6,11 +6,16 @@ A focused, non-destructive editor for photographers who find existing FOSS
 raw processors workflow-wrong or architecturally compromised. Narrow scope
 by design — feature parity with mature tools is explicitly not the goal.
 
+aperture's job is library management, culling, grading, and export.
+Anything that needs pixel-level retouching belongs in a dedicated editor
+afterward.
+
 See [SPEC.md](SPEC.md) for design, scope, and stack rationale.
 
 ## Status
 
-Pre-v0. Specification only.
+Pre-v0. Implementation is underway on `dev`; `main` carries the
+specification only. No tagged releases yet.
 
 ## Install (Linux)
 
@@ -29,8 +34,9 @@ nativefiledialog) are vendored as meson wraps and built from source.
 
 ```
 sudo apt install build-essential meson ninja-build pkg-config \
-    glslc libvulkan-dev libglfw3-dev libraw-dev liblensfun-dev \
-    libsqlite3-dev libjpeg-dev desktop-file-utils shared-mime-info \
+    glslc libvulkan-dev vulkan-validationlayers libglfw3-dev \
+    libraw-dev liblensfun-dev libsqlite3-dev libjpeg-dev \
+    libtiff-dev libpng-dev desktop-file-utils shared-mime-info \
     appstream
 ```
 
@@ -38,17 +44,19 @@ sudo apt install build-essential meson ninja-build pkg-config \
 
 ```
 sudo dnf install gcc gcc-c++ meson ninja-build pkgconf-pkg-config \
-    glslc vulkan-headers vulkan-loader-devel glfw-devel LibRaw-devel \
-    lensfun-devel sqlite-devel libjpeg-turbo-devel desktop-file-utils \
-    shared-mime-info appstream
+    glslc vulkan-headers vulkan-loader-devel vulkan-validation-layers \
+    glfw-devel LibRaw-devel lensfun-devel sqlite-devel \
+    libjpeg-turbo-devel libtiff-devel libpng-devel \
+    desktop-file-utils shared-mime-info appstream
 ```
 
 **Arch**
 
 ```
 sudo pacman -S base-devel meson ninja pkgconf shaderc vulkan-headers \
-    vulkan-icd-loader glfw libraw lensfun sqlite libjpeg-turbo \
-    desktop-file-utils shared-mime-info appstream
+    vulkan-icd-loader vulkan-validation-layers glfw libraw lensfun \
+    sqlite libjpeg-turbo libtiff libpng desktop-file-utils \
+    shared-mime-info appstream
 ```
 
 ### Build and install
@@ -85,6 +93,16 @@ gtk-update-icon-cache -qtf "$PREFIX/share/icons/hicolor"
 update-mime-database "$PREFIX/share/mime"
 ```
 
-User data (library registry, imgui layout) lives under
-`$XDG_DATA_HOME/aperture` (default `~/.local/share/aperture`) regardless
-of install prefix.
+User data (library registry) lives under `$XDG_DATA_HOME/aperture`
+(default `~/.local/share/aperture`) and UI configuration (imgui layout)
+under `$XDG_CONFIG_HOME/aperture` (default `~/.config/aperture`),
+regardless of install prefix.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev loop, branch policy,
+and commit convention.
+
+## License
+
+[MIT](LICENSE).
