@@ -71,7 +71,32 @@ static void extract_metadata(libraw_data_t *raw, ap_photo_metadata *m)
     ap_photo_metadata_set(m, AP_META_CAMERA_MAKE,  raw->idata.make);
     ap_photo_metadata_set(m, AP_META_CAMERA_MODEL, raw->idata.model);
     ap_photo_metadata_set(m, AP_META_LENS_MAKE,    raw->lens.LensMake);
-    ap_photo_metadata_set(m, AP_META_LENS_MODEL,   raw->lens.Lens);
+
+    // Some Nikon / Sony bodies (and many adapted lenses) leave the
+    // unified `lens.Lens` field blank because the lens model lives only
+    // in MakerNote tags. Fall back to LibRaw's MakerNote-derived fields
+    // before giving up — Lensfun has otherwise no way to find a
+    // calibration.
+    const char *lens_model = raw->lens.Lens;
+    if (!lens_model || !lens_model[0]) {
+        lens_model = raw->lens.makernotes.Lens;
+    }
+    if (!lens_model || !lens_model[0]) {
+        const char *pre = raw->lens.makernotes.LensFeatures_pre;
+        const char *suf = raw->lens.makernotes.LensFeatures_suf;
+        if ((pre && pre[0]) || (suf && suf[0])) {
+            char buf[AP_META_VALUE_LEN];
+            snprintf(buf, sizeof(buf), "%s%s%s",
+                     pre ? pre : "",
+                     (pre && pre[0] && suf && suf[0]) ? " " : "",
+                     suf ? suf : "");
+            ap_photo_metadata_set(m, AP_META_LENS_MODEL, buf);
+            lens_model = NULL; // already wrote
+        }
+    }
+    if (lens_model) {
+        ap_photo_metadata_set(m, AP_META_LENS_MODEL, lens_model);
+    }
 
     set_numeric(m, AP_META_FOCAL_LEN, raw->other.focal_len,   "mm");
     set_numeric(m, AP_META_APERTURE,  raw->other.aperture,    "");
