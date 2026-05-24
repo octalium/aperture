@@ -2,6 +2,8 @@
 
 #include "modals.h"
 
+#include "ui/modal_kbd.h"
+
 #include <string.h>
 
 // Last path component of `path`, or "" if `path` is NULL / empty.
@@ -14,20 +16,28 @@ static const char *path_leaf(const char *path)
 
 void draw_import_modal(ap_app *app)
 {
+    static bool just_opened = false;
     if (app->import_modal) {
         igOpenPopup_Str("Import Photos", 0);
         app->import_modal = false;
+        just_opened = true;
     }
     ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize
                            | ImGuiWindowFlags_NoCollapse;
-    if (!igBeginPopupModal("Import Photos", NULL, flags)) return;
+    if (!igBeginPopupModal("Import Photos", NULL, flags)) {
+        just_opened = false;
+        return;
+    }
 
     if (!app->library) {
         igText("No library open.");
-        if (igButton("Close", (ImVec2_c){ 120.0f, 0.0f })) {
+        if (igButton("Close", (ImVec2_c){ 120.0f, 0.0f })
+            || ap_modal_esc_pressed()
+            || ap_modal_enter_pressed()) {
             igCloseCurrentPopup();
         }
         igEndPopup();
+        just_opened = false;
         return;
     }
 
@@ -38,6 +48,7 @@ void draw_import_modal(ap_app *app)
     igText("Folder:");
     igSameLine(0.0f, -1.0f);
     igSetNextItemWidth(280.0f);
+    if (just_opened) igSetKeyboardFocusHere(0);
     igInputText("##source_path", app->import_source,
                 sizeof(app->import_source), 0, NULL, NULL);
     igSameLine(0.0f, 4.0f);
@@ -150,7 +161,9 @@ void draw_import_modal(ap_app *app)
     // dismiss button stays Cancel-the-dialog. Otherwise it's Import
     // + Cancel-the-dialog.
     if (app->import_inflight) {
-        if (igButton("Stop import", (ImVec2_c){ 120.0f, 0.0f })) {
+        bool stop = igButton("Stop import", (ImVec2_c){ 120.0f, 0.0f })
+                  || ap_modal_enter_pressed();
+        if (stop) {
             ap_app_cancel_import(app);
         }
         igSameLine(0.0f, -1.0f);
@@ -162,7 +175,9 @@ void draw_import_modal(ap_app *app)
     } else {
         bool can_import = app->import_source[0] != '\0';
         if (!can_import) igBeginDisabled(true);
-        if (igButton("Import", (ImVec2_c){ 120.0f, 0.0f })) {
+        bool import = igButton("Import", (ImVec2_c){ 120.0f, 0.0f })
+                   || (can_import && ap_modal_enter_pressed());
+        if (import && can_import) {
             ap_import_settings_save(app->library, s);
             const char *root = ap_library_root(app->library);
             submit_import_job(app, root, app->import_source, s);
@@ -174,31 +189,46 @@ void draw_import_modal(ap_app *app)
         }
     }
 
+    if (ap_modal_esc_pressed()) igCloseCurrentPopup();
+
+    just_opened = false;
     igEndPopup();
 }
 
 void draw_rename_library_modal(ap_app *app)
 {
+    static bool just_opened = false;
     if (app->rename_library_modal) {
         igOpenPopup_Str("Rename Library", 0);
         app->rename_library_modal = false;
+        just_opened = true;
     }
-    if (!igBeginPopupModal("Rename Library", NULL, 0)) return;
+    if (!igBeginPopupModal("Rename Library", NULL, 0)) {
+        just_opened = false;
+        return;
+    }
 
     if (!app->library) {
         igCloseCurrentPopup();
         igEndPopup();
+        just_opened = false;
         return;
     }
 
     igText("Display name for this library:");
     igText("(leave blank to clear and show the path)");
-    igInputText("##name", app->rename_library_input,
-                sizeof(app->rename_library_input), 0, NULL, NULL);
+    if (just_opened) igSetKeyboardFocusHere(0);
+    bool enter_in_input = igInputText("##name", app->rename_library_input,
+                                      sizeof(app->rename_library_input),
+                                      ImGuiInputTextFlags_EnterReturnsTrue,
+                                      NULL, NULL);
 
-    bool submit = igButton("Save", (ImVec2_c){ 120.0f, 0.0f });
+    bool submit = igButton("Save", (ImVec2_c){ 120.0f, 0.0f })
+               || enter_in_input
+               || ap_modal_enter_pressed();
     igSameLine(0.0f, -1.0f);
-    bool cancel = igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f });
+    bool cancel = igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f })
+               || ap_modal_esc_pressed();
 
     if (submit) {
         ap_library_set_name(app->library, app->rename_library_input);
@@ -207,28 +237,39 @@ void draw_rename_library_modal(ap_app *app)
     } else if (cancel) {
         igCloseCurrentPopup();
     }
+    just_opened = false;
     igEndPopup();
 }
 
 void draw_save_layout_modal(ap_app *app)
 {
+    static bool just_opened = false;
     if (app->save_layout_modal) {
         igOpenPopup_Str("Save Layout As", 0);
         app->save_layout_modal = false;
+        just_opened = true;
     }
-    if (!igBeginPopupModal("Save Layout As", NULL, 0)) return;
+    if (!igBeginPopupModal("Save Layout As", NULL, 0)) {
+        just_opened = false;
+        return;
+    }
 
     igText("Name for the layout:");
     igSetNextItemWidth(260.0f);
-    igInputText("##layout_name", app->save_layout_input,
-                sizeof(app->save_layout_input), 0, NULL, NULL);
+    if (just_opened) igSetKeyboardFocusHere(0);
+    bool enter_in_input = igInputText("##layout_name", app->save_layout_input,
+                                      sizeof(app->save_layout_input),
+                                      ImGuiInputTextFlags_EnterReturnsTrue,
+                                      NULL, NULL);
 
     bool name_ok = app->save_layout_input[0] != '\0';
     if (!name_ok) igBeginDisabled(true);
-    bool submit = igButton("Save", (ImVec2_c){ 120.0f, 0.0f });
+    bool submit = igButton("Save", (ImVec2_c){ 120.0f, 0.0f })
+               || (name_ok && (enter_in_input || ap_modal_enter_pressed()));
     if (!name_ok) igEndDisabled();
     igSameLine(0.0f, -1.0f);
-    bool cancel = igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f });
+    bool cancel = igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f })
+               || ap_modal_esc_pressed();
 
     if (submit && name_ok) {
         if (ap_layout_save_current_as(app->save_layout_input) == 0) {
@@ -237,6 +278,7 @@ void draw_save_layout_modal(ap_app *app)
     } else if (cancel) {
         igCloseCurrentPopup();
     }
+    just_opened = false;
     igEndPopup();
 }
 
@@ -265,9 +307,16 @@ void draw_delete_modal(ap_app *app)
                    "This cannot be undone.", s, s);
     igSeparator();
 
-    bool confirm = igButton("Delete", (ImVec2_c){ 120.0f, 0.0f });
+    // Destructive carve-out: Enter only fires when Delete is explicitly
+    // focused (user tabbed to it). No autofocus on the button.
+    bool delete_clicked = igButton("Delete", (ImVec2_c){ 120.0f, 0.0f });
+    bool delete_focused = igIsItemFocused();
     igSameLine(0.0f, -1.0f);
     bool cancel = igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f });
+
+    bool confirm = delete_clicked
+                || (delete_focused && ap_modal_enter_pressed());
+    if (ap_modal_esc_pressed()) cancel = true;
 
     if (confirm) {
         delete_grid_selection(app);
@@ -303,9 +352,16 @@ void draw_delete_edit_modal(ap_app *app)
                    "This cannot be undone.");
     igSeparator();
 
-    bool confirm = igButton("Delete", (ImVec2_c){ 120.0f, 0.0f });
+    // Destructive carve-out: Enter only fires when Delete is explicitly
+    // focused (user tabbed to it). No autofocus on the button.
+    bool delete_clicked = igButton("Delete", (ImVec2_c){ 120.0f, 0.0f });
+    bool delete_focused = igIsItemFocused();
     igSameLine(0.0f, -1.0f);
     bool cancel = igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f });
+
+    bool confirm = delete_clicked
+                || (delete_focused && ap_modal_enter_pressed());
+    if (ap_modal_esc_pressed()) cancel = true;
 
     if (confirm) {
         delete_edit_photo(app);

@@ -6,6 +6,7 @@
 #include "output/export.h"
 #include "photo/photo.h"
 #include "ui/file_dialog.h"
+#include "ui/modal_kbd.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -374,7 +375,9 @@ void draw_export_modal(ap_app *app)
         bool can_export = can_export_photo || can_export_selection;
 
         if (!can_export) igBeginDisabled(true);
-        if (igButton("Export", (ImVec2_c){ 120.0f, 0.0f })) {
+        bool export_pressed = igButton("Export", (ImVec2_c){ 120.0f, 0.0f })
+                           || (can_export && ap_modal_enter_pressed());
+        if (export_pressed) {
             if (g_apply_to == APPLY_TO_PHOTO && have_photo) {
                 int rc = ap_app_run_export(app);
                 if (rc < 0) {
@@ -405,7 +408,8 @@ void draw_export_modal(ap_app *app)
         if (!can_export) igEndDisabled();
 
         igSameLine(0.0f, -1.0f);
-        if (igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f })) {
+        if (igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f })
+            || ap_modal_esc_pressed()) {
             igCloseCurrentPopup();
         }
     }

@@ -7,6 +7,7 @@
 #include "modules/module.h"
 #include "photo/photo.h"
 #include "sidecar/sidecar.h"
+#include "ui/modal_kbd.h"
 
 #include "cimgui.h"
 
@@ -58,18 +59,33 @@ static void open_rename_popup(int idx, const char *current)
 
 static bool draw_rename_modal(ap_app *app, ap_edit_stack *stack)
 {
+    static bool just_opened = false;
     if (g_rename_idx < 0) return false;
     if (!igIsPopupOpen_Str("Rename Edit", 0)) {
         igOpenPopup_Str("Rename Edit", 0);
+        just_opened = true;
     }
 
     bool changed = false;
     if (igBeginPopupModal("Rename Edit", NULL,
                           ImGuiWindowFlags_AlwaysAutoResize)) {
         igText("New name:");
-        igInputText("##rn", g_rename_buf, sizeof(g_rename_buf), 0, NULL, NULL);
+        if (just_opened) igSetKeyboardFocusHere(0);
+        bool enter_in_input = igInputText("##rn", g_rename_buf,
+                                          sizeof(g_rename_buf),
+                                          ImGuiInputTextFlags_EnterReturnsTrue,
+                                          NULL, NULL);
 
-        if (igButton("Save", (ImVec2_c){ 120.0f, 0.0f })) {
+        bool save = igButton("Save", (ImVec2_c){ 120.0f, 0.0f })
+                 || enter_in_input
+                 || ap_modal_enter_pressed();
+        igSameLine(0.0f, -1.0f);
+        bool clear = igButton("Clear", (ImVec2_c){ 120.0f, 0.0f });
+        igSameLine(0.0f, -1.0f);
+        bool cancel = igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f })
+                   || ap_modal_esc_pressed();
+
+        if (save) {
             ap_edit_entry *e = ap_edit_stack_at(stack, g_rename_idx);
             if (e) {
                 ap_app_edit_snapshot(app);
@@ -79,9 +95,7 @@ static bool draw_rename_modal(ap_app *app, ap_edit_stack *stack)
             }
             g_rename_idx = -1;
             igCloseCurrentPopup();
-        }
-        igSameLine(0.0f, -1.0f);
-        if (igButton("Clear", (ImVec2_c){ 120.0f, 0.0f })) {
+        } else if (clear) {
             ap_edit_entry *e = ap_edit_stack_at(stack, g_rename_idx);
             if (e) {
                 ap_app_edit_snapshot(app);
@@ -90,15 +104,15 @@ static bool draw_rename_modal(ap_app *app, ap_edit_stack *stack)
             }
             g_rename_idx = -1;
             igCloseCurrentPopup();
-        }
-        igSameLine(0.0f, -1.0f);
-        if (igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f })) {
+        } else if (cancel) {
             g_rename_idx = -1;
             igCloseCurrentPopup();
         }
+        just_opened = false;
         igEndPopup();
     } else {
         g_rename_idx = -1;
+        just_opened = false;
     }
     return changed;
 }
@@ -696,20 +710,31 @@ static void entry_config_windows(ap_app *app, ap_photo *photo,
 static void draw_save_as_pipeline_modal(ap_app *app, ap_photo *photo,
                                         const ap_edit_stack *stack)
 {
+    static bool just_opened = false;
     if (g_save_as_open) {
         igOpenPopup_Str("Save as Pipeline", 0);
         g_save_as_open = false;
+        just_opened = true;
     }
-    if (!igBeginPopupModal("Save as Pipeline", NULL, 0)) return;
+    if (!igBeginPopupModal("Save as Pipeline", NULL, 0)) {
+        just_opened = false;
+        return;
+    }
     (void)app;
     (void)photo;
 
     igText("Name for the new pipeline:");
     igSetNextItemWidth(280.0f);
-    if (igInputText("##pipeline_name", g_save_as_name,
-                    sizeof(g_save_as_name), 0, NULL, NULL)) {
-        // Editing the name invalidates any prior overwrite prompt
-        // (the user might be typing a brand-new name).
+    if (just_opened) igSetKeyboardFocusHere(0);
+    bool enter_in_input = igInputText("##pipeline_name", g_save_as_name,
+                                      sizeof(g_save_as_name),
+                                      ImGuiInputTextFlags_EnterReturnsTrue,
+                                      NULL, NULL);
+    // Editing the name invalidates any prior overwrite prompt
+    // (the user might be typing a brand-new name). EnterReturnsTrue
+    // also signals on plain edits in older cimgui builds, so probe
+    // IsItemEdited explicitly.
+    if (igIsItemEdited()) {
         g_save_as_pending_overwrite = false;
     }
 
@@ -720,9 +745,13 @@ static void draw_save_as_pipeline_modal(ap_app *app, ap_photo *photo,
     save_clicked = igButton(g_save_as_pending_overwrite ? "Overwrite"
                                                         : "Save",
                             (ImVec2_c){ 120.0f, 0.0f });
+    if (name_ok && (enter_in_input || ap_modal_enter_pressed())) {
+        save_clicked = true;
+    }
     if (!name_ok) igEndDisabled();
     igSameLine(0.0f, -1.0f);
-    bool cancel = igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f });
+    bool cancel = igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f })
+               || ap_modal_esc_pressed();
 
     if (g_save_status[0]) {
         igSeparator();
@@ -788,6 +817,7 @@ static void draw_save_as_pipeline_modal(ap_app *app, ap_photo *photo,
         igCloseCurrentPopup();
         g_save_as_pending_overwrite = false;
     }
+    just_opened = false;
     igEndPopup();
 }
 
@@ -830,7 +860,8 @@ static void draw_apply_pipeline_modal(ap_app *app, ap_photo *photo,
         }
 
         igSeparator();
-        if (igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f })) {
+        if (igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f })
+            || ap_modal_esc_pressed()) {
             igCloseCurrentPopup();
         }
     } else {
@@ -839,7 +870,16 @@ static void draw_apply_pipeline_modal(ap_app *app, ap_photo *photo,
         igTextDisabled("This overwrites the current edits and cannot be undone.");
         igSeparator();
 
-        if (igButton("Apply", (ImVec2_c){ 120.0f, 0.0f })) {
+        // Destructive carve-out: Enter only fires when Apply is
+        // explicitly focused. Esc steps back to the selection list.
+        bool apply_clicked = igButton("Apply", (ImVec2_c){ 120.0f, 0.0f });
+        bool apply_focused = igIsItemFocused();
+        igSameLine(0.0f, -1.0f);
+        bool back = igButton("Back", (ImVec2_c){ 120.0f, 0.0f })
+                 || ap_modal_esc_pressed();
+
+        if (apply_clicked
+            || (apply_focused && ap_modal_enter_pressed())) {
             ap_app_edit_snapshot(app);
             if (ap_pipeline_apply_to_stack(g_apply_pending_id, stack) == 0) {
                 ap_app_rebuild_photo_graph(app);
@@ -851,9 +891,7 @@ static void draw_apply_pipeline_modal(ap_app *app, ap_photo *photo,
             }
             g_apply_pending_id = -1;
             igCloseCurrentPopup();
-        }
-        igSameLine(0.0f, -1.0f);
-        if (igButton("Back", (ImVec2_c){ 120.0f, 0.0f })) {
+        } else if (back) {
             g_apply_pending_id = -1;
         }
     }
