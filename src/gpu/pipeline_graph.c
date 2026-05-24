@@ -2,6 +2,8 @@
 
 #include "histogram_comp_spv.h"
 
+#include <stdio.h>
+
 #define WORKGROUP_SIZE 16
 #define MAX_MODULES    16
 
@@ -893,6 +895,132 @@ void ap_pipeline_graph_destroy(ap_pipeline_graph *graph)
     free(graph);
 }
 
+// Pass through `module_in_image` straight into `write_image` (with the
+// barriers needed to bracket a transfer copy between two compute-stage
+// reads/writes). Used by both the build-time static-skip path
+// (disabled edit entry) and the per-record dynamic-skip path (a module
+// returned non-zero from pack_push) so the next stage's input sees
+// valid data instead of either stale frame contents or — on a freshly
+// allocated graph — undefined memory. The undefined case has been
+// observed to escalate into VK_ERROR_DEVICE_LOST under wave-mode
+// access.
+//
+// No-op for stages that have no module_in_image (only the chain head)
+// or for intermediate passes of a multi-pass module — those passes
+// write only to module-private scratch buffers that nobody else reads.
+static void record_skip_passthrough(ap_pipeline_graph *graph,
+                                    VkCommandBuffer cmd, graph_stage *st)
+{
+    if (!st->is_last_pass) return;
+    if (st->module_in_image == VK_NULL_HANDLE) return;
+
+    VkImageMemoryBarrier2 pre_src = {
+        .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        .dstStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+        .oldLayout     = VK_IMAGE_LAYOUT_GENERAL,
+        .newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = st->module_in_image,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0, .levelCount = 1,
+            .baseArrayLayer = 0, .layerCount = 1,
+        },
+    };
+    VkImageMemoryBarrier2 pre_dst = {
+        .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+                       | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        .dstStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .oldLayout     = VK_IMAGE_LAYOUT_GENERAL,
+        .newLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = st->write_image,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0, .levelCount = 1,
+            .baseArrayLayer = 0, .layerCount = 1,
+        },
+    };
+    VkImageMemoryBarrier2 pre_barriers[2] = { pre_src, pre_dst };
+    VkDependencyInfo dep_pre = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 2,
+        .pImageMemoryBarriers    = pre_barriers,
+    };
+    vkCmdPipelineBarrier2(cmd, &dep_pre);
+
+    VkImageCopy region = {
+        .srcSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1,
+        },
+        .srcOffset = { 0, 0, 0 },
+        .dstSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1,
+        },
+        .dstOffset = { 0, 0, 0 },
+        .extent    = { (uint32_t)graph->width,
+                       (uint32_t)graph->height, 1 },
+    };
+    vkCmdCopyImage(cmd,
+                   st->module_in_image,
+                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   st->write_image,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   1, &region);
+
+    VkImageMemoryBarrier2 post_src = {
+        .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+        .dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+        .oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .newLayout     = VK_IMAGE_LAYOUT_GENERAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = st->module_in_image,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0, .levelCount = 1,
+            .baseArrayLayer = 0, .layerCount = 1,
+        },
+    };
+    VkImageMemoryBarrier2 post_dst = {
+        .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+        .oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout     = VK_IMAGE_LAYOUT_GENERAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = st->write_image,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0, .levelCount = 1,
+            .baseArrayLayer = 0, .layerCount = 1,
+        },
+    };
+    VkImageMemoryBarrier2 post_barriers[2] = { post_src, post_dst };
+    VkDependencyInfo dep_post = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 2,
+        .pImageMemoryBarriers    = post_barriers,
+    };
+    vkCmdPipelineBarrier2(cmd, &dep_post);
+}
+
 static void compute_to_compute_barrier(VkCommandBuffer cmd, VkImage image)
 {
     VkImageMemoryBarrier2 b = {
@@ -1006,139 +1134,36 @@ int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
     // the conservative Vulkan-spec minimum for max push constant size.
     uint8_t push_buf[256];
 
+    // Per-record diagnostic: each stage's verdict, joined into one
+    // AP_INFO line at the end of the record. Re-record is already low
+    // frequency (once per edit-stack change), so a single line per
+    // record is cheap and lets us correlate hangs with which stages
+    // dispatched vs skipped on the offending photo open.
+    char trace_buf[1024];
+    int  trace_off = 0;
+    int  dispatched_count = 0;
+
     for (int i = 0; i < graph->stage_count; i++) {
         graph_stage *st = &graph->stages[i];
         const ap_module *m = st->module;
         bool is_last = (i == graph->stage_count - 1);
+        const char *name = (m && m->name) ? m->name : "?";
 
         if (st->skip) {
-            // Skipped stage: the shader is not dispatched. For the last
-            // pass of a module, copy the module's input image straight
-            // through to the output image so the next stage's read sees
-            // valid data. Intermediate passes of a multi-pass module are
-            // silently dropped — they only write to module-private scratch
-            // buffers that nobody reads when the module is skipped.
-            if (st->is_last_pass && st->module_in_image != VK_NULL_HANDLE) {
-                VkImageMemoryBarrier2 pre = {
-                    .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                    .srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                    .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                    .dstStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT,
-                    .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
-                    .oldLayout     = VK_IMAGE_LAYOUT_GENERAL,
-                    .newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = st->module_in_image,
-                    .subresourceRange = {
-                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                        .baseMipLevel = 0, .levelCount = 1,
-                        .baseArrayLayer = 0, .layerCount = 1,
-                    },
-                };
-                VkImageMemoryBarrier2 pre_dst = {
-                    .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                    .srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                    .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT
-                                   | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                    .dstStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT,
-                    .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                    .oldLayout     = VK_IMAGE_LAYOUT_GENERAL,
-                    .newLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = st->write_image,
-                    .subresourceRange = {
-                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                        .baseMipLevel = 0, .levelCount = 1,
-                        .baseArrayLayer = 0, .layerCount = 1,
-                    },
-                };
-                VkImageMemoryBarrier2 pre_barriers[2] = { pre, pre_dst };
-                VkDependencyInfo dep_pre = {
-                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                    .imageMemoryBarrierCount = 2,
-                    .pImageMemoryBarriers    = pre_barriers,
-                };
-                vkCmdPipelineBarrier2(cmd, &dep_pre);
-
-                VkImageCopy region = {
-                    .srcSubresource = {
-                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                        .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1,
-                    },
-                    .srcOffset = { 0, 0, 0 },
-                    .dstSubresource = {
-                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                        .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1,
-                    },
-                    .dstOffset = { 0, 0, 0 },
-                    .extent    = { (uint32_t)graph->width,
-                                   (uint32_t)graph->height, 1 },
-                };
-                vkCmdCopyImage(cmd,
-                               st->module_in_image,
-                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                               st->write_image,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                               1, &region);
-
-                VkImageMemoryBarrier2 post_src = {
-                    .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                    .srcStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT,
-                    .srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
-                    .dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                    .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-                    .oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                    .newLayout     = VK_IMAGE_LAYOUT_GENERAL,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = st->module_in_image,
-                    .subresourceRange = {
-                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                        .baseMipLevel = 0, .levelCount = 1,
-                        .baseArrayLayer = 0, .layerCount = 1,
-                    },
-                };
-                VkImageMemoryBarrier2 post_dst;
-                VkDependencyInfo dep_post;
-                // Whether or not this is the last stage, transition the
-                // write image back to GENERAL for COMPUTE_SHADER read.
-                // The histogram pass (appended after the stage loop) will
-                // do the final compute→fragment barrier for the display
-                // image; the else branch below is kept for non-last stages.
-                post_dst = (VkImageMemoryBarrier2){
-                    .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                    .srcStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT,
-                    .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                    .dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                    .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-                    .oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    .newLayout     = VK_IMAGE_LAYOUT_GENERAL,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = st->write_image,
-                    .subresourceRange = {
-                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                        .baseMipLevel = 0, .levelCount = 1,
-                        .baseArrayLayer = 0, .layerCount = 1,
-                    },
-                };
-                (void)is_last;
-                VkImageMemoryBarrier2 post_barriers[2] = { post_src, post_dst };
-                dep_post = (VkDependencyInfo){
-                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                    .imageMemoryBarrierCount = 2,
-                    .pImageMemoryBarriers    = post_barriers,
-                };
-                vkCmdPipelineBarrier2(cmd, &dep_post);
-            }
+            // Build-time skip (disabled edit entry). Pass the module's
+            // input image straight through so the next stage reads
+            // valid data instead of a stale ping-pong slot.
+            record_skip_passthrough(graph, cmd, st);
+            trace_off += snprintf(trace_buf + trace_off,
+                                  sizeof trace_buf - (size_t)trace_off,
+                                  "%s%s:skip(disabled)",
+                                  trace_off ? " " : "", name);
             continue;
         }
 
         if (st->push_size > sizeof(push_buf)) {
             AP_ERROR("graph: %s push_size %zu exceeds scratch %zu",
-                     m ? m->name : "?", st->push_size, sizeof(push_buf));
+                     name, st->push_size, sizeof(push_buf));
             return -1;
         }
 
@@ -1152,8 +1177,28 @@ int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
             }
             int rc = st->pack_push(m, params, str_params, meta, push_buf);
             if (rc != 0) {
-                continue; // module signaled "skip"
+                // Dynamic skip: the module decided this frame's inputs
+                // produce no useful output (e.g. lens_correction with no
+                // Lensfun match). Must still passthrough — otherwise the
+                // ping-pong slot we'd have written to is undefined on
+                // first record after photo open, which on some drivers
+                // has been observed to escalate into VK_DEVICE_LOST when
+                // the next stage samples it.
+                record_skip_passthrough(graph, cmd, st);
+                trace_off += snprintf(trace_buf + trace_off,
+                                      sizeof trace_buf - (size_t)trace_off,
+                                      "%s%s:skip(pack)",
+                                      trace_off ? " " : "", name);
+                continue;
             }
+        }
+
+        // FNV-1a 32-bit over the push payload — gives a one-glance value
+        // for correlating dispatches with hangs / wrong output without
+        // dumping the full push constant.
+        uint32_t pc_hash = 2166136261u;
+        for (size_t k = 0; k < st->push_size; k++) {
+            pc_hash = (pc_hash ^ (uint32_t)push_buf[k]) * 16777619u;
         }
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, st->pipeline);
@@ -1164,11 +1209,19 @@ int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
                                0, (uint32_t)st->push_size, push_buf);
         }
         vkCmdDispatch(cmd, gx, gy, 1);
+        dispatched_count++;
+        trace_off += snprintf(trace_buf + trace_off,
+                              sizeof trace_buf - (size_t)trace_off,
+                              "%s%s:ok#%08x",
+                              trace_off ? " " : "", name, pc_hash);
 
         if (!is_last) {
             compute_to_compute_barrier(cmd, st->write_image);
         }
     }
+
+    AP_INFO("pipeline record: %d/%d dispatched | %s",
+            dispatched_count, graph->stage_count, trace_buf);
 
     // Histogram pass: clear the bin buffer, then dispatch the histogram
     // shader against the freshly written display image. After the histogram
