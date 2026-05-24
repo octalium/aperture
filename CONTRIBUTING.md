@@ -11,22 +11,9 @@ aperture is C + Vulkan + Dear ImGui, built with [Meson](https://mesonbuild.com/)
 
 ### System dependencies
 
-On Debian / Ubuntu:
-
-```
-sudo apt install \
-    build-essential meson ninja-build pkg-config \
-    libvulkan-dev vulkan-validationlayers \
-    libglfw3-dev libraw-dev liblensfun-dev \
-    libsqlite3-dev libjpeg-dev libtiff-dev libpng-dev \
-    glslang-tools
-```
-
-A few dependencies ship as Meson wraps and are fetched on first configure
-(`dep/*.wrap`): cimgui, lcms2, blake3, libpng, libtiff, tomlc99,
-nativefiledialog-extended. lcms2 and blake3 are built from the wrap
-unconditionally; the rest fall back to wraps only if the system package
-is missing.
+See [README.md](README.md#distro-dependencies) for per-distro package
+lists. Wrap policy (which deps are vendored, which are pulled from the
+system) is documented in [`dep/README.md`](dep/README.md).
 
 ### Build + run
 
@@ -47,8 +34,8 @@ SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct) \
 meson compile -C build-release
 ```
 
-`-ffile-prefix-map` is wired into the project unconditionally so
-embedded source paths are stable. `SOURCE_DATE_EPOCH` pins the
+`-ffile-prefix-map` is wired into the project so build-root paths are
+rewritten in embedded debug info. `SOURCE_DATE_EPOCH` pins the
 compiler's `__DATE__` / `__TIME__` macros — set it (e.g. to a commit
 timestamp) for reproducible builds.
 
