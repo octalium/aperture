@@ -70,7 +70,7 @@ For manual smoke tests, opening a small test library with a handful of RAW files
 - `SOURCE_DATE_EPOCH=<unix_ts>` — pin the AppStream `<release date>` to a specific timestamp at build configure time (per #383). Useful for reproducible packaging builds; ignore for development.
 - `VK_LOADER_DEBUG=all` — Vulkan loader verbose, set in the runtime environment. Use only when debugging GPU-init failures.
 
-Aperture's logger (`src/core/log.c`) is currently compile-time only — there is no runtime level env var. If you need quieter or noisier logs, change `ap_log_set_level` calls in the source or adjust the default in `src/core/log.h`.
+Aperture's logger (`src/core/log.h`, `src/core/log.c`) currently has no level filtering — every `AP_INFO` / `AP_WARN` / `AP_ERROR` writes unconditionally; the `ap_log_level` value only picks stdout vs stderr and triggers exit on `AP_FATAL`. To quiet a specific subsystem during debugging, comment out call sites or guard them locally. A configurable level threshold would be a separate feature.
 
 ## 5. Install (optional, for manual install-target testing)
 
