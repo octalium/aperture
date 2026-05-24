@@ -13,11 +13,18 @@ desktop_file = configure_file(
   install_dir: datadir / 'applications',
 )
 
+# release date is hardcoded per-version; SOURCE_DATE_EPOCH overrides it
+# when set, keeping the generated metainfo reproducible.
+release_date = run_command(
+  find_program('python3'),
+  files('release-date.py'),
+  '2026-05-24',
+  check: true,
+).stdout().strip()
+
 metainfo_conf = configuration_data()
 metainfo_conf.set('version', meson.project_version())
-metainfo_conf.set('release_date', run_command(
-  'date', '-u', '+%Y-%m-%d', check: true
-).stdout().strip())
+metainfo_conf.set('release_date', release_date)
 
 metainfo_file = configure_file(
   input: app_id + '.metainfo.xml.in',
