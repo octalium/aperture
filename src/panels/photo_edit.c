@@ -342,8 +342,7 @@ static void tools_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
     for (const ap_module *const *p = ap_module_registry; *p; p++) {
         const ap_module *m = *p;
         if (!m->user_visible) continue;
-        if (igSelectable_Bool(m->display_name, false,
-                              ImGuiSelectableFlags_AllowDoubleClick,
+        if (igSelectable_Bool(m->display_name, false, 0,
                               (ImVec2_c){ 0.0f, 0.0f })) {
             ap_app_edit_snapshot(app);
             if (ap_edit_stack_add(stack, m->name) >= 0) {
