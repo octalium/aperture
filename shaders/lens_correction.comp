@@ -99,21 +99,30 @@ float distorted_r(float ru)
 // Invert distorted_r via Newton iteration: find r_u such that
 // distorted_r(r_u) == rd_target.  Works because all Lensfun models are
 // strictly monotone on [0, 2].
+//
+// Pathological coefficients (a Lensfun row that doesn't match the body,
+// or our own UI sliders cranked outside their tested range) can drive
+// the Newton step toward NaN/Inf or wildly outside the image. Each step
+// is clamped to a generous but finite envelope and the final value is
+// validated; on failure we return the input rd_target so the backward
+// warp degrades to identity rather than corrupting the output. A bad
+// shader output here has been observed to escalate into VK_DEVICE_LOST.
 float undistorted_r(float rd_target)
 {
     if (rd_target < 1e-6) return rd_target;
 
+    const float R_MAX = 4.0;        // far beyond the half-diagonal
+    const float DR    = 1e-4;
+
     float ru = rd_target;  // initial guess
     for (int i = 0; i < 6; i++) {
         float f  = distorted_r(ru) - rd_target;
-        // Numerical derivative with a small step
-        float dr = 1e-4;
-        float fp = (distorted_r(ru + dr) - distorted_r(ru - dr)) / (2.0 * dr);
+        float fp = (distorted_r(ru + DR) - distorted_r(ru - DR)) / (2.0 * DR);
         if (abs(fp) < 1e-8) break;
         ru -= f / fp;
-        if (ru < 0.0) ru = 0.0;
+        ru = clamp(ru, 0.0, R_MAX);
     }
-    return ru;
+    return isnan(ru) || isinf(ru) ? rd_target : ru;
 }
 
 void main()
@@ -159,6 +168,16 @@ void main()
         float falloff = 1.0 + pc.vig_k1 * r2 + pc.vig_k2 * r4 + pc.vig_k3 * r6;
         c.rgb /= max(falloff, 0.05);
     }
+
+    // Final NaN/Inf guard. Any non-finite component would propagate
+    // through later compute stages and (on some drivers) cause a
+    // device-lost when sampled — easier to clamp here than to track
+    // back the producer.
+    bvec4 nans = isnan(c);
+    bvec4 infs = isinf(c);
+    bvec4 bad  = bvec4(nans.x || infs.x, nans.y || infs.y,
+                       nans.z || infs.z, nans.w || infs.w);
+    c = mix(c, vec4(0.0), vec4(bad));
 
     imageStore(out_image, coord, c);
 }
