@@ -729,10 +729,7 @@ static void draw_save_as_pipeline_modal(ap_app *app, ap_photo *photo,
                                       sizeof(g_save_as_name),
                                       ImGuiInputTextFlags_EnterReturnsTrue,
                                       NULL, NULL);
-    // Editing the name invalidates any prior overwrite prompt
-    // (the user might be typing a brand-new name). EnterReturnsTrue
-    // also signals on plain edits in older cimgui builds, so probe
-    // IsItemEdited explicitly.
+    // invalidate pending overwrite when the user edits the name
     if (igIsItemEdited()) {
         g_save_as_pending_overwrite = false;
     }
