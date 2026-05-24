@@ -42,6 +42,10 @@ aperture_sources = []
 subdir('shaders')
 subdir('src')
 
+if host_machine.system() == 'linux'
+  subdir('packaging/linux')
+endif
+
 aperture_deps = [
   vulkan_dep,
   glfw_dep,

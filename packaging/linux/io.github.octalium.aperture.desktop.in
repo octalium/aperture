@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Aperture
+GenericName=Raw Photo Processor
+Comment=Cull, grade, and export raw photos
+Exec=@bindir@/aperture %F
+Icon=io.github.octalium.aperture
+Terminal=false
+Categories=Graphics;Photography;RasterGraphics;
+MimeType=image/x-canon-cr2;image/x-canon-cr3;image/x-nikon-nef;image/x-sony-arw;image/x-fuji-raf;image/x-adobe-dng;image/x-olympus-orf;image/x-panasonic-rw2;image/x-pentax-pef;image/x-samsung-srw;
+Keywords=raw;photo;photography;raw photo;dng;
+StartupNotify=true
+StartupWMClass=aperture
