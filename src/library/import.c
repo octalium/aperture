@@ -259,18 +259,27 @@ static int db_find_hash(sqlite3 *db, const char *hex_hash,
     return found;
 }
 
-// Set the hash column for `rel_path` in `db`.
+// Upsert the hash column for `rel_path` in `db`. The import runs
+// before the post-import library reopen has scanned the new files
+// into the photos table, so a plain UPDATE would silently affect
+// zero rows and the hash would never persist. The INSERT branch
+// creates the row with the imported file's `added_at`; the post-
+// import scan's `INSERT OR IGNORE` will then leave this row alone
+// and the dedupe lookup on the next import will find it.
 static void db_store_hash(sqlite3 *db, const char *rel_path,
                           const char *hex_hash)
 {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
-            "UPDATE photos SET hash = ? WHERE path = ?;",
+            "INSERT INTO photos(path, added_at, hash) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(path) DO UPDATE SET hash = excluded.hash;",
             -1, &st, NULL) != SQLITE_OK) {
         return;
     }
-    sqlite3_bind_text(st, 1, hex_hash, -1, SQLITE_STATIC);
-    sqlite3_bind_text(st, 2, rel_path, -1, SQLITE_STATIC);
+    sqlite3_bind_text (st, 1, rel_path,        -1, SQLITE_STATIC);
+    sqlite3_bind_int64(st, 2, (int64_t)time(NULL));
+    sqlite3_bind_text (st, 3, hex_hash,        -1, SQLITE_STATIC);
     sqlite3_step(st);
     sqlite3_finalize(st);
 }
@@ -578,7 +587,7 @@ int ap_import_run_ex(ap_library *lib, const char *src_dir,
     if (!root) return -1;
 
     char db_path[4096];
-    if (snprintf(db_path, sizeof(db_path), "%s/.aperture/library.db",
+    if (snprintf(db_path, sizeof(db_path), "%s/library.db",
                  root) >= (int)sizeof(db_path)) {
         AP_WARN("import: db path too long, skipping hash dedupe");
         return ap_import_run_into(root, NULL, src_dir, s, report,

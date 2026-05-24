@@ -1445,40 +1445,19 @@ ap_library *ap_library_open(const char *path)
     }
 
     if (access(db_path, F_OK) != 0) {
-        // Migrate from prior db locations, newest first:
-        //   1. <library>/.aperture/library.db  (the brief in-library
-        //      hidden-dir layout)
-        //   2. <app_root>/libraries/<uuid>.db  (the original app-root
-        //      registry-keyed layout)
-        char interim_path[4096];
-        snprintf(interim_path, sizeof(interim_path),
-                 "%s/.aperture/library.db", lib->root);
-
-        if (access(interim_path, F_OK) == 0) {
-            if (move_file(interim_path, db_path) == 0) {
-                AP_INFO("library: migrated db %s -> %s",
-                        interim_path, db_path);
-                // Best-effort cleanup of the now-orphaned hidden dir
-                // and any leftover sqlite WAL/SHM siblings inside it.
-                char wal[4096], shm[4096], ap_dir[4096];
-                snprintf(wal,    sizeof(wal),    "%s/.aperture/library.db-wal", lib->root);
-                snprintf(shm,    sizeof(shm),    "%s/.aperture/library.db-shm", lib->root);
-                snprintf(ap_dir, sizeof(ap_dir), "%s/.aperture",               lib->root);
-                unlink(wal); unlink(shm);
-                rmdir(ap_dir);
-            }
-        } else {
-            char legacy_filename[64];
-            snprintf(legacy_filename, sizeof(legacy_filename),
-                     "libraries/%s.db", lib->id);
-            char legacy_path[4096];
-            if (ap_app_root_join(legacy_filename, legacy_path,
-                                 sizeof(legacy_path)) == 0 &&
-                access(legacy_path, F_OK) == 0 &&
-                move_file(legacy_path, db_path) == 0) {
-                AP_INFO("library: migrated db %s -> %s",
-                        legacy_path, db_path);
-            }
+        // Migrate from the original app-root registry-keyed layout
+        // (<app_root>/libraries/<uuid>.db) if present. The earlier
+        // <library>/.aperture/library.db layout has been retired.
+        char legacy_filename[64];
+        snprintf(legacy_filename, sizeof(legacy_filename),
+                 "libraries/%s.db", lib->id);
+        char legacy_path[4096];
+        if (ap_app_root_join(legacy_filename, legacy_path,
+                             sizeof(legacy_path)) == 0 &&
+            access(legacy_path, F_OK) == 0 &&
+            move_file(legacy_path, db_path) == 0) {
+            AP_INFO("library: migrated db %s -> %s",
+                    legacy_path, db_path);
         }
     }
 
