@@ -246,7 +246,7 @@ static bool same_file(const char *a, const char *b)
 // import scan's `INSERT OR IGNORE` then leaves this row alone and
 // the next import's dedupe lookups find it. `identity` may be NULL
 // or empty when the source carried no recoverable EXIF tags.
-static void db_store_hash(sqlite3 *db, const char *rel_path,
+static void db_store_dedupe(sqlite3 *db, const char *rel_path,
                           const char *hex_hash, const char *identity,
                           int64_t size)
 {
@@ -397,9 +397,13 @@ static import_one_result import_one(const char *src, const char *dest_dir,
     bool renamed    = false;
 
     if (dst_exists) {
-        // If the existing file's size differs from the source's, the
-        // contents can't be byte-identical -- skip the hash compare
-        // and go straight to the collision policy.
+        // Narrow byte-equality check at the destination only. Sources
+        // with an EXIF identity were already caught by the library-
+        // wide identity lookup above; this branch matters for sources
+        // that carry no recoverable EXIF (or legacy library rows that
+        // predate the identity column) but happen to land at the same
+        // dst path with identical bytes. Same-size is a cheap gate
+        // before paying for the two BLAKE3 reads.
         bool same_size = ((int64_t)ds.st_size == src_size);
         if (same_size) {
             char src_hex[BLAKE3_HEX_LEN];
@@ -407,7 +411,6 @@ static import_one_result import_one(const char *src, const char *dest_dir,
             if (hash_file(src, src_hex) == 0
                     && hash_file(dst, dst_hex) == 0
                     && strcmp(src_hex, dst_hex) == 0) {
-                // Identical bytes already at the destination -- skip.
                 return IMPORT_ONE_DUP_CONTENT;
             }
         }
@@ -472,7 +475,7 @@ static import_one_result import_one(const char *src, const char *dest_dir,
             rel[slen + 1] = '\0';
             strncat(rel, final_name, sizeof(rel) - slen - 2);
         }
-        db_store_hash(db, rel, copied_hex, identity, src_size);
+        db_store_dedupe(db, rel, copied_hex, identity, src_size);
     }
 
     return renamed ? IMPORT_ONE_RENAMED : IMPORT_ONE_IMPORTED;
@@ -574,7 +577,7 @@ int ap_import_run_into(const char *lib_root, const char *db_path,
     sqlite3 *db = NULL;
     if (db_path) {
         if (sqlite3_open(db_path, &db) != SQLITE_OK) {
-            AP_WARN("import: cannot open db %s: %s -- hash dedupe disabled",
+            AP_WARN("import: cannot open db %s: %s -- dedupe disabled",
                     db_path, sqlite3_errmsg(db));
             if (db) { sqlite3_close(db); db = NULL; }
         } else {
@@ -589,7 +592,7 @@ int ap_import_run_into(const char *lib_root, const char *db_path,
                 "ON photos(identity);",
                 NULL, NULL, NULL);
             // Single transaction for the whole run -- without this
-            // each db_store_hash is its own implicit transaction and
+            // each db_store_dedupe is its own implicit transaction and
             // pays a WAL append per file.
             sqlite3_exec(db, "BEGIN IMMEDIATE;",             NULL, NULL, NULL);
         }
@@ -651,7 +654,7 @@ int ap_import_run_ex(ap_library *lib, const char *src_dir,
     char db_path[4096];
     if (snprintf(db_path, sizeof(db_path), "%s/library.db",
                  root) >= (int)sizeof(db_path)) {
-        AP_WARN("import: db path too long, skipping hash dedupe");
+        AP_WARN("import: db path too long, skipping dedupe");
         return ap_import_run_into(root, NULL, src_dir, s, report,
                                   progress, userdata);
     }
