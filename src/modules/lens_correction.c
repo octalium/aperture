@@ -100,6 +100,107 @@ static void ensure_db(void)
     }
 }
 
+// Minimum Lensfun confidence (0..100) we require before applying lens
+// corrections. The search itself is already strict (no LF_SEARCH_LOOSE
+// on the lens query); the threshold rejects weak matches that survive
+// the default fuzzy scoring — e.g. "AF-S 50mm f/1.8" matching every
+// "50mm" prime when the user's exact lens isn't in the DB.
+#define LENS_MATCH_MIN_SCORE 50
+
+// Result of a (camera_str, lens_str) lookup. Cached across frames so
+// the panel can display match status every frame without re-running
+// the Lensfun queries. `cam`/`lens` are borrowed pointers owned by the
+// global database — valid for the lifetime of g_lf_db.
+typedef struct {
+    char            cam_in[AP_EDIT_STR_LEN];
+    char            lens_in[AP_EDIT_STR_LEN];
+    bool            valid;
+    const lfCamera *cam;
+    const lfLens   *lens;          // NULL when no acceptable match
+    int             cam_score;
+    int             lens_score;    // score of best candidate even if rejected
+    char            cam_name[AP_META_VALUE_LEN * 2];
+    char            lens_name[AP_META_VALUE_LEN * 2];   // best candidate name
+    bool            lens_rejected; // a candidate existed but scored below threshold
+} ap_lens_match;
+
+static ap_lens_match g_match_cache;
+
+static void compose_name(const char *maker, const char *model,
+                         char *out, size_t len)
+{
+    if (!maker) maker = "";
+    if (!model) model = "";
+    if (maker[0] && model[0]) {
+        snprintf(out, len, "%s %s", maker, model);
+    } else if (model[0]) {
+        snprintf(out, len, "%s", model);
+    } else {
+        snprintf(out, len, "%s", maker);
+    }
+}
+
+// Cached strict lookup of camera + lens. Returns a pointer to the
+// module-static cache entry; never NULL. Result fields are zeroed when
+// inputs are empty or the DB is unavailable.
+static const ap_lens_match *resolve_match(const char *cam_in,
+                                          const char *lens_in)
+{
+    if (!cam_in)  cam_in  = "";
+    if (!lens_in) lens_in = "";
+    if (g_match_cache.valid &&
+        strncmp(g_match_cache.cam_in,  cam_in,  AP_EDIT_STR_LEN) == 0 &&
+        strncmp(g_match_cache.lens_in, lens_in, AP_EDIT_STR_LEN) == 0) {
+        return &g_match_cache;
+    }
+
+    memset(&g_match_cache, 0, sizeof g_match_cache);
+    g_match_cache.valid = true;
+    strncpy(g_match_cache.cam_in,  cam_in,  AP_EDIT_STR_LEN - 1);
+    strncpy(g_match_cache.lens_in, lens_in, AP_EDIT_STR_LEN - 1);
+
+    ensure_db();
+    if (!g_lf_db) return &g_match_cache;
+
+    if (cam_in[0]) {
+        // Cameras are matched loosely — EXIF make/model strings vary in
+        // word order between vendors but the body identifier itself is
+        // usually unambiguous.
+        const lfCamera **cams = lf_db_find_cameras_ext(g_lf_db, NULL, cam_in,
+                                                       LF_SEARCH_LOOSE);
+        if (cams && cams[0]) {
+            g_match_cache.cam       = cams[0];
+            g_match_cache.cam_score = cams[0]->Score;
+            compose_name(cams[0]->Maker, cams[0]->Model,
+                         g_match_cache.cam_name,
+                         sizeof g_match_cache.cam_name);
+        }
+        lf_free(cams);
+    }
+
+    if (lens_in[0]) {
+        // Strict lens search: no LF_SEARCH_LOOSE so every input word must
+        // appear in the lens record, then we filter by Score so a weak
+        // partial match can't get through.
+        const lfLens **lenses = lf_db_find_lenses_hd(g_lf_db,
+                                                    g_match_cache.cam,
+                                                    NULL, lens_in, 0);
+        if (lenses && lenses[0]) {
+            g_match_cache.lens_score = lenses[0]->Score;
+            compose_name(lenses[0]->Maker, lenses[0]->Model,
+                         g_match_cache.lens_name,
+                         sizeof g_match_cache.lens_name);
+            if (lenses[0]->Score >= LENS_MATCH_MIN_SCORE) {
+                g_match_cache.lens = lenses[0];
+            } else {
+                g_match_cache.lens_rejected = true;
+            }
+        }
+        lf_free(lenses);
+    }
+    return &g_match_cache;
+}
+
 // Parse a formatted focal-length string like "24mm" or "24" into mm.
 // Returns 0.0 if the string is empty or unparseable.
 static float parse_focal(const char *s)
@@ -137,25 +238,8 @@ static int lookup_and_pack(const float *params,
     const char *cam_str  = str_params ? str_params[STR_CAMERA] : "";
     const char *lens_str = str_params ? str_params[STR_LENS]   : "";
 
-    // Parse camera "Make Model" into separate maker/model components.
-    // The override string is stored as "Make Model" (space-separated);
-    // FindCameras matches make+model separately so we pass the whole
-    // string as model with NULL maker and rely on loose search.
-    const lfCamera **cameras = NULL;
-    if (cam_str && cam_str[0]) {
-        cameras = lf_db_find_cameras_ext(g_lf_db, NULL, cam_str,
-                                         LF_SEARCH_LOOSE);
-    }
-
-    const lfCamera *cam = (cameras && cameras[0]) ? cameras[0] : NULL;
-
-    const lfLens **lenses = NULL;
-    if (lens_str && lens_str[0]) {
-        lenses = lf_db_find_lenses_hd(g_lf_db, cam, NULL, lens_str,
-                                       LF_SEARCH_LOOSE);
-    }
-
-    const lfLens *lens = (lenses && lenses[0]) ? lenses[0] : NULL;
+    const ap_lens_match *match = resolve_match(cam_str, lens_str);
+    const lfLens        *lens  = match->lens;
 
     float focal   = params ? params[SLOT_FOCAL_MM] : 0.0f;
     float aperture = params ? params[SLOT_APERTURE] : 0.0f;
@@ -216,9 +300,6 @@ static int lookup_and_pack(const float *params,
             }
         }
     }
-
-    lf_free(lenses);
-    lf_free(cameras);
 
     // Skip the stage if nothing to do and both corrections are disabled.
     if (pc->dist_model == DIST_MODEL_NONE && !pc->do_vignetting) return -1;
@@ -317,6 +398,34 @@ static void lens_render(const ap_module *self, float *params,
     if (exif_lens[0]) {
         igSameLine(0.0f, 4.0f);
         igTextDisabled("EXIF: %s", exif_lens);
+    }
+
+    // Lensfun match status. Re-uses the cache populated by pack_push
+    // (and refreshed in-place when inputs change), so the panel pays
+    // at most one Lensfun query per (camera, lens) string pair.
+    const ap_lens_match *match = resolve_match(ctx->str_params[STR_CAMERA],
+                                               ctx->str_params[STR_LENS]);
+    const ImVec4_c ok_col   = { 0.4f, 1.0f, 0.5f, 1.0f };
+    const ImVec4_c warn_col = { 1.0f, 0.8f, 0.4f, 1.0f };
+    const ImVec4_c bad_col  = { 1.0f, 0.5f, 0.5f, 1.0f };
+    if (match->cam) {
+        igTextColored(ok_col, "\xe2\x9c\x93 Camera: %s (score %d)",
+                      match->cam_name, match->cam_score);
+    } else if (ctx->str_params[STR_CAMERA][0]) {
+        igTextColored(warn_col, "\xe2\x9a\xa0 Camera not found in Lensfun DB");
+    }
+    if (match->lens) {
+        igTextColored(ok_col, "\xe2\x9c\x93 Lens: %s (score %d)",
+                      match->lens_name, match->lens_score);
+    } else if (match->lens_rejected) {
+        igTextColored(bad_col,
+                      "\xe2\x9a\xa0 Lens match too weak (best: %s, score %d/%d) "
+                      "\xe2\x80\x94 stage skipped",
+                      match->lens_name, match->lens_score,
+                      LENS_MATCH_MIN_SCORE);
+    } else if (ctx->str_params[STR_LENS][0]) {
+        igTextColored(bad_col,
+                      "\xe2\x9a\xa0 No lens match \xe2\x80\x94 stage skipped");
     }
 
     igSeparator();
