@@ -10,6 +10,7 @@
 #include "app_priv.h"
 #include "core/worker.h"
 
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -58,7 +59,7 @@ typedef struct {
     int            ok;
 } thumb_encode_job;
 
-typedef struct {
+typedef struct import_job {
     ap_work_item        base;
     char                lib_root[4096];
     char                db_path[4096];
@@ -67,10 +68,20 @@ typedef struct {
     ap_status_id        status_id;
     ap_import_report    report;
     int                 ok;
+    // Atomic so the worker thread sees a request set from the main
+    // thread without explicit locking. Polled by the progress
+    // callback after each file; the importer breaks the loop on
+    // true and reports report.cancelled.
+    _Atomic int         cancel_requested;
 } import_job;
 
 void submit_import_job(ap_app *app, const char *lib_root, const char *src_dir,
                        const ap_import_settings *settings);
+
+// Signal the in-flight import (if any) to stop. The worker thread
+// notices on its next progress tick (between files) and reports
+// partial results. No-op when no import is running.
+void request_import_cancel(ap_app *app);
 
 void discard_completed_item(ap_app *app, ap_work_item *it);
 void drain_all_workers(ap_app *app);

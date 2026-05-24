@@ -534,14 +534,23 @@ int ap_import_run_into(const char *lib_root, const char *db_path,
     sqlite3 *db = NULL;
     if (db_path) {
         if (sqlite3_open(db_path, &db) != SQLITE_OK) {
-            AP_WARN("import: cannot open db %s: %s — hash dedupe disabled",
+            AP_WARN("import: cannot open db %s: %s -- hash dedupe disabled",
                     db_path, sqlite3_errmsg(db));
             if (db) { sqlite3_close(db); db = NULL; }
         } else {
-            sqlite3_exec(db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
+            sqlite3_exec(db, "PRAGMA journal_mode=WAL;",     NULL, NULL, NULL);
+            // Cheaper fsync regime during the bulk write: with WAL,
+            // synchronous=NORMAL is safe across crashes (the WAL is
+            // checkpointed atomically) and skips per-commit fsync.
+            sqlite3_exec(db, "PRAGMA synchronous=NORMAL;",   NULL, NULL, NULL);
+            sqlite3_exec(db, "PRAGMA temp_store=MEMORY;",    NULL, NULL, NULL);
             sqlite3_exec(db,
                 "CREATE INDEX IF NOT EXISTS idx_photos_hash ON photos(hash);",
                 NULL, NULL, NULL);
+            // Single transaction for the whole run -- without this
+            // each db_store_hash is its own implicit transaction and
+            // pays a WAL append per file.
+            sqlite3_exec(db, "BEGIN IMMEDIATE;",             NULL, NULL, NULL);
         }
     }
 
@@ -550,7 +559,9 @@ int ap_import_run_into(const char *lib_root, const char *db_path,
     qsort(list.paths, (size_t)list.count, sizeof(*list.paths), cmp_str);
 
     ap_import_report r = {0};
-    for (int i = 0; i < list.count; i++) {
+    bool             cancelled = false;
+    int              i;
+    for (i = 0; i < list.count; i++) {
         import_one_result res = import_one(list.paths[i], dest_dir, subdir,
                                            s, i + 1, db);
         switch (res) {
@@ -562,19 +573,29 @@ int ap_import_run_into(const char *lib_root, const char *db_path,
         case IMPORT_ONE_ERROR:          r.errored++;              break;
         }
         if (progress) {
-            progress(i + 1, list.count, userdata);
+            // false from the caller means "stop now"; the partial
+            // results so far are kept and reported.
+            if (!progress(i + 1, list.count, userdata)) {
+                cancelled = true;
+                break;
+            }
         }
     }
     int total = list.count;
     raw_list_free(&list);
 
-    if (db) sqlite3_close(db);
+    if (db) {
+        sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL);
+        sqlite3_close(db);
+    }
 
+    r.cancelled = cancelled;
     if (report) *report = r;
     AP_INFO("import: %d imported (%d renamed), %d dup, %d skip-collision, "
-            "%d error of %d from %s into %s",
+            "%d error of %d from %s into %s%s",
             r.imported, r.renamed_collision, r.dup_content,
-            r.skip_collision, r.errored, total, src_dir, dest_dir);
+            r.skip_collision, r.errored, total, src_dir, dest_dir,
+            cancelled ? " (cancelled)" : "");
     return 0;
 }
 

@@ -63,10 +63,13 @@ void thumb_encode_job_run(ap_work_item *self)
                                       &j->jpeg, &j->jpeg_size) == 0);
 }
 
-static void import_progress_cb(int done, int total, void *userdata)
+// Returning false here breaks the importer's per-file loop; the
+// importer marks the run as cancelled and reports the partial counts.
+static bool import_progress_cb(int done, int total, void *userdata)
 {
     import_job *j = (import_job *)userdata;
     ap_status_progress_update(j->status_id, done, total);
+    return atomic_load(&j->cancel_requested) == 0;
 }
 
 void import_job_run(ap_work_item *self)
@@ -186,22 +189,50 @@ static void handle_thumb_encode_complete(ap_app *app, thumb_encode_job *j)
 
 static void handle_import_complete(ap_app *app, import_job *j)
 {
-    app->import_inflight = false;
-    app->import_report   = j->report;
-    ap_status_progress_finish(j->status_id, j->ok);
+    app->import_inflight     = false;
+    app->inflight_import_job = NULL;
+    app->import_report       = j->report;
+    ap_status_progress_finish(j->status_id, j->ok && !j->report.cancelled);
+
     if (j->ok) {
-        ap_app_open_library(app, j->lib_root);
+        // Incremental rescan instead of a full library reopen: keeps
+        // the db connection open and only walks the tree + reloads
+        // the photo cache. Drops the perceived "main thread blocks
+        // at import end" pause.
+        if (app->library) {
+            ap_library_rescan(app->library, ap_app_sort(app));
+        }
+
         int n = j->report.imported;
-        snprintf(app->import_status, sizeof(app->import_status),
-                 "Imported %d photo%s.", n, n == 1 ? "" : "s");
-        ap_status_notify(AP_STATUS_INFO, "Import complete: %d photo%s.",
-                         n, n == 1 ? "" : "s");
+        if (j->report.cancelled) {
+            snprintf(app->import_status, sizeof(app->import_status),
+                     "Cancelled. Imported %d photo%s before stop.",
+                     n, n == 1 ? "" : "s");
+            ap_status_notify(AP_STATUS_INFO,
+                             "Import cancelled: %d photo%s imported.",
+                             n, n == 1 ? "" : "s");
+        } else {
+            snprintf(app->import_status, sizeof(app->import_status),
+                     "Imported %d photo%s.", n, n == 1 ? "" : "s");
+            ap_status_notify(AP_STATUS_INFO,
+                             "Import complete: %d photo%s.",
+                             n, n == 1 ? "" : "s");
+        }
     } else {
         snprintf(app->import_status, sizeof(app->import_status),
-                 "Import failed — see the log.");
-        ap_status_notify(AP_STATUS_ERROR, "Import failed — see the log.");
+                 "Import failed -- see the log.");
+        ap_status_notify(AP_STATUS_ERROR, "Import failed -- see the log.");
     }
     free(j);
+}
+
+void request_import_cancel(ap_app *app)
+{
+    if (!app || !app->inflight_import_job) return;
+    // The worker reads this atomic via import_progress_cb after each
+    // file and breaks the loop on next tick. handle_import_complete
+    // clears the borrowed pointer.
+    atomic_store(&app->inflight_import_job->cancel_requested, 1);
 }
 
 void discard_completed_item(ap_app *app, ap_work_item *it)
@@ -230,7 +261,8 @@ void discard_completed_item(ap_app *app, ap_work_item *it)
         free(j);
     } else if (it->run == import_job_run) {
         import_job *j = (import_job *)it;
-        app->import_inflight = false;
+        app->import_inflight     = false;
+        app->inflight_import_job = NULL;
         ap_status_progress_finish(j->status_id, 0);
         free(j);
     } else {
@@ -364,8 +396,9 @@ void submit_import_job(ap_app *app, const char *lib_root, const char *src_dir,
     j->settings  = *settings;
     j->status_id = ap_status_progress_begin("Importing photos...", 0);
 
-    app->import_inflight    = true;
-    app->import_status[0]   = '\0';
+    app->import_inflight        = true;
+    app->import_status[0]       = '\0';
+    app->inflight_import_job    = j;
     memset(&app->import_report, 0, sizeof(app->import_report));
     ap_worker_pool_submit(app->workers, &j->base);
 }

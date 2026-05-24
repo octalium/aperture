@@ -107,6 +107,14 @@ ap_library *ap_app_library(ap_app *app);
 // import call-to-action, and the Ctrl+I shortcut.
 void        ap_app_open_import_modal(ap_app *app);
 
+// Request that the in-flight import stop. The worker notices on its
+// next per-file progress tick; partial results are preserved and
+// reported. No-op when no import is running.
+void        ap_app_cancel_import(ap_app *app);
+
+// True while an import job is running on a worker.
+bool        ap_app_import_inflight(const ap_app *app);
+
 // Apply a metadata-override patch to every photo currently in the
 // library grid's selection set. The bulk-edit panel + the photo-mode
 // Sync-to-selection button both route through here. Returns the

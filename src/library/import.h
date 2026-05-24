@@ -50,11 +50,12 @@ typedef struct {
 
 // Aggregate counts for a completed import run.
 typedef struct {
-    int imported;          // files successfully copied
-    int dup_content;       // files skipped: identical content already in library
-    int renamed_collision; // files renamed to resolve a name collision
-    int skip_collision;    // files skipped: name collision, SKIP policy
-    int errored;           // files that failed to copy
+    int  imported;          // files successfully copied
+    int  dup_content;       // files skipped: identical content already in library
+    int  renamed_collision; // files renamed to resolve a name collision
+    int  skip_collision;    // files skipped: name collision, SKIP policy
+    int  errored;           // files that failed to copy
+    bool cancelled;         // user requested cancel before the run finished
 } ap_import_report;
 
 // Load the library's import settings, filling any unset field with its
@@ -67,7 +68,9 @@ void ap_import_settings_save(ap_library *lib, const ap_import_settings *s);
 // Progress callback used by ap_import_run_ex. Called after each file
 // attempt (copied or skipped) with the number completed so far and the
 // total in the collection. `userdata` is the pointer passed to run_ex.
-typedef void (*ap_import_progress_fn)(int done, int total, void *userdata);
+// Return true to continue, false to cancel the run; on cancel the
+// importer stops before the next file and sets report->cancelled.
+typedef bool (*ap_import_progress_fn)(int done, int total, void *userdata);
 
 // Copy every raw file found under `src_dir` (searched recursively) into
 // <lib_root>/<s.subdir>/, applying the naming + collision rules. The

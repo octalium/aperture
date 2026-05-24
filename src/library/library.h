@@ -226,6 +226,15 @@ typedef enum {
 // the grid reflects the new order.  Returns 0 on success.
 int ap_library_reload_sorted(ap_library *lib, ap_library_sort sort);
 
+// Rescan the library root for new/removed raw files without
+// tearing the library down. Used after import + after any operation
+// that mutates the filesystem outside the library API. The library's
+// db connection stays open, no thumbnails are released except for
+// files that have been removed from disk; the in-memory photo list
+// is reloaded with `sort` afterwards so newly-added rows appear in
+// the grid. Returns 0 on success, -1 on error.
+int ap_library_rescan(ap_library *lib, ap_library_sort sort);
+
 // ----- thumbnail cache (lifetime-bound to the library) -----
 
 typedef struct ap_thumbnail ap_thumbnail;
