@@ -874,9 +874,17 @@ ap_library *ap_app_library(ap_app *app)
     return app ? app->library : NULL;
 }
 
-void ap_app_request_import(ap_app *app)
+void ap_app_open_import_modal(ap_app *app)
 {
-    if (app && app->library) app->import_modal = true;
+    if (!app || !app->library) return;
+    // Load the library's persisted import settings so the modal opens
+    // with the last-used values, and clear the per-session source path
+    // + status line so a stale message from a previous import does not
+    // confuse the user.
+    ap_import_settings_load(app->library, &app->import_settings);
+    app->import_source[0] = '\0';
+    app->import_status[0] = '\0';
+    app->import_modal     = true;
 }
 
 int ap_app_apply_pipeline_to_selection(ap_app *app, int64_t pipeline_id)
