@@ -887,6 +887,16 @@ void ap_app_open_import_modal(ap_app *app)
     app->import_modal     = true;
 }
 
+void ap_app_cancel_import(ap_app *app)
+{
+    request_import_cancel(app);
+}
+
+bool ap_app_import_inflight(const ap_app *app)
+{
+    return app && app->import_inflight;
+}
+
 int ap_app_apply_pipeline_to_selection(ap_app *app, int64_t pipeline_id)
 {
     if (!app || !app->library || !app->grid) return -1;

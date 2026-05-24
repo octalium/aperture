@@ -1061,6 +1061,37 @@ static int load_photo_cache(ap_library *lib)
     return load_photo_cache_sorted(lib, AP_SORT_PATH);
 }
 
+static void prune_missing_photos(ap_library *lib);
+
+int ap_library_rescan(ap_library *lib, ap_library_sort sort)
+{
+    if (!lib || !lib->db) return -1;
+
+    // INSERT OR IGNORE everything currently on disk -- the same
+    // statement ap_library_open uses for its initial scan. The
+    // BEGIN/COMMIT wraps all inserts in one transaction.
+    sqlite3_stmt *insert_stmt = NULL;
+    if (sqlite3_prepare_v2(lib->db,
+            "INSERT OR IGNORE INTO photos(path, added_at) VALUES (?, ?);",
+            -1, &insert_stmt, NULL) != SQLITE_OK) {
+        AP_ERROR("library: rescan prepare insert: %s",
+                 sqlite3_errmsg(lib->db));
+        return -1;
+    }
+
+    sqlite3_exec(lib->db, "BEGIN;", NULL, NULL, NULL);
+    scan_dir(lib, insert_stmt, lib->root, "", (int64_t)time(NULL));
+    sqlite3_exec(lib->db, "COMMIT;", NULL, NULL, NULL);
+    sqlite3_finalize(insert_stmt);
+
+    // Scan only adds; reconcile the other direction too. prune drops
+    // db rows whose files have been removed; the in-memory cache
+    // gets rebuilt by reload_sorted below so the indexes stay valid.
+    prune_missing_photos(lib);
+
+    return ap_library_reload_sorted(lib, sort);
+}
+
 int ap_library_reload_sorted(ap_library *lib, ap_library_sort sort)
 {
     if (!lib || !lib->db) return -1;

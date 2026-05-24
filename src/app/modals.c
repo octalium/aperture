@@ -145,17 +145,33 @@ void draw_import_modal(ap_app *app)
 
     igSeparator();
 
-    bool can_import = app->import_source[0] != '\0' && !app->import_inflight;
-    if (!can_import) igBeginDisabled(true);
-    if (igButton("Import", (ImVec2_c){ 120.0f, 0.0f })) {
-        ap_import_settings_save(app->library, s);
-        const char *root = ap_library_root(app->library);
-        submit_import_job(app, root, app->import_source, s);
-    }
-    if (!can_import) igEndDisabled();
-    igSameLine(0.0f, -1.0f);
-    if (igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f })) {
-        igCloseCurrentPopup();
+    // Button row: while an import is in flight the primary button
+    // becomes Cancel (sends the stop signal to the worker); the
+    // dismiss button stays Cancel-the-dialog. Otherwise it's Import
+    // + Cancel-the-dialog.
+    if (app->import_inflight) {
+        if (igButton("Stop import", (ImVec2_c){ 120.0f, 0.0f })) {
+            ap_app_cancel_import(app);
+        }
+        igSameLine(0.0f, -1.0f);
+        if (igButton("Hide", (ImVec2_c){ 120.0f, 0.0f })) {
+            // Hide the modal without cancelling -- the worker keeps
+            // going; the status surface shows the progress bar.
+            igCloseCurrentPopup();
+        }
+    } else {
+        bool can_import = app->import_source[0] != '\0';
+        if (!can_import) igBeginDisabled(true);
+        if (igButton("Import", (ImVec2_c){ 120.0f, 0.0f })) {
+            ap_import_settings_save(app->library, s);
+            const char *root = ap_library_root(app->library);
+            submit_import_job(app, root, app->import_source, s);
+        }
+        if (!can_import) igEndDisabled();
+        igSameLine(0.0f, -1.0f);
+        if (igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f })) {
+            igCloseCurrentPopup();
+        }
     }
 
     igEndPopup();
