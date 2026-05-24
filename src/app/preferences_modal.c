@@ -27,6 +27,7 @@ void draw_preferences_modal(ap_app *app)
     igSeparatorText("Quick Export");
 
     {
+        // order must match ap_export_format in output/export.h
         static const char *const format_items[] = { "JPEG", "TIFF", "PNG" };
         igText("Format:");
         igSameLine(0.0f, -1.0f);
