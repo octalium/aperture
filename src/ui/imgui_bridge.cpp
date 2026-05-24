@@ -30,14 +30,23 @@ extern "C" bool ap_imgui_init(GLFWwindow *window,
 {
     g_device = device;
 
+    // The Vulkan backend builds two separate descriptor-set layouts: one
+    // VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE set per registered texture (font
+    // atlas + every ImGui_ImplVulkan_AddTexture caller) and a small fixed
+    // number of VK_DESCRIPTOR_TYPE_SAMPLER sets for the shared samplers.
+    // The pool must declare both types or spec-compliant drivers will
+    // return VK_ERROR_OUT_OF_POOL_MEMORY.
+    const uint32_t sampled_image_count = 1000;
+    const uint32_t sampler_count       = IMGUI_IMPL_VULKAN_MINIMUM_SAMPLER_POOL_SIZE;
     VkDescriptorPoolSize pool_sizes[] = {
-        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
+        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sampled_image_count },
+        { VK_DESCRIPTOR_TYPE_SAMPLER,       sampler_count       },
     };
     VkDescriptorPoolCreateInfo pool_ci{};
     pool_ci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     pool_ci.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    pool_ci.maxSets       = 1000;
-    pool_ci.poolSizeCount = 1;
+    pool_ci.maxSets       = sampled_image_count + sampler_count;
+    pool_ci.poolSizeCount = sizeof(pool_sizes) / sizeof(pool_sizes[0]);
     pool_ci.pPoolSizes    = pool_sizes;
 
     if (vkCreateDescriptorPool(device, &pool_ci, nullptr, &g_descriptor_pool) != VK_SUCCESS) {
