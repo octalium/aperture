@@ -59,16 +59,16 @@ extern "C" bool ap_imgui_init(GLFWwindow *window,
     ImGuiIO &io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-    // Auto-persist the working layout to <app_root>/imgui.ini — ImGui
+    // Auto-persist the working layout to <app_config>/imgui.ini — ImGui
     // loads it on the first frame and saves changes back, so panel
     // arrangement is remembered across sessions. Named layout profiles
     // (src/app/layout_profiles.c) are explicit snapshots layered on
     // top of this always-remembered layout.
-    if (ap_app_root_ensure() == 0 &&
-        ap_app_root_join("imgui.ini", g_ini_path, sizeof(g_ini_path)) == 0) {
+    if (ap_app_config_ensure() == 0 &&
+        ap_app_config_join("imgui.ini", g_ini_path, sizeof(g_ini_path)) == 0) {
         io.IniFilename = g_ini_path;
     } else {
-        io.IniFilename = nullptr;   // no app root — run without persistence
+        io.IniFilename = nullptr;   // no config root — run without persistence
     }
 
     ImGui::StyleColorsDark();

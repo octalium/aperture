@@ -15,6 +15,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+// named layout snapshots live under the data root, not the config root.
+// the working layout (imgui.ini) is transient session state — it lives
+// in $XDG_CONFIG_HOME. these files are explicit user-named artifacts
+// (saved presets) and belong with the rest of aperture's user data.
 #define LAYOUTS_DIR  "layouts"
 #define CURRENT_FILE ".current"
 #define LAYOUT_EXT   ".ini"
@@ -118,7 +122,7 @@ int ap_layout_init(void)
     if (layouts_dir_ensure() < 0) return -1;
 
     // The working layout is auto-persisted by ImGui itself
-    // (io.IniFilename -> <app_root>/imgui.ini) and loads on the first
+    // (io.IniFilename -> <app_config>/imgui.ini) and loads on the first
     // frame. ap_layout_init only records which named profile was last
     // made active, for the View > Layout menu — it does not force a
     // profile load at startup.

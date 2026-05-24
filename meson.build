@@ -17,6 +17,23 @@ add_project_arguments(
   language: ['c', 'cpp'],
 )
 
+# cheap reproducibility: rewrite the build root in embedded debug info
+# (DW_AT_comp_dir) so identical sources yield identical binaries
+# regardless of where they were built. ninja already compiles aperture
+# and its subprojects from the build dir with relative source paths
+# (DW_AT_name like ../src/foo.c), so the remaining absolute leak is
+# DW_AT_comp_dir. SOURCE_DATE_EPOCH (honoured by the compiler's
+# __DATE__/__TIME__) pins macro-baked timestamps when callers set it.
+#
+# uses add_global_arguments so the flag reaches every wrap subproject
+# too — otherwise their .o files retain the absolute build root and
+# leak it into the final executable's debug info.
+cc = meson.get_compiler('c')
+repro_flag = '-ffile-prefix-map=' + meson.project_build_root() + '=./build'
+if cc.has_argument(repro_flag)
+  add_global_arguments(repro_flag, language: ['c', 'cpp'])
+endif
+
 vulkan_dep  = dependency('vulkan')
 glfw_dep    = dependency('glfw3')
 cimgui_dep  = dependency('cimgui')
