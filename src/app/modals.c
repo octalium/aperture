@@ -79,13 +79,30 @@ void draw_import_modal(ap_app *app)
             "tokens: {ORIG} {YYYY} {MM} {DD} {HH} {MIN} {SEC} {SEQ}");
     }
 
-    igText("Conflict:");
+    // Duplicates section. Two distinct conflict-avoidance layers,
+    // surfaced together so the difference is obvious:
+    //
+    //   - Library-wide content dedupe (BLAKE3 hash lookup against the
+    //     photos table). Catches "same bytes already imported anywhere
+    //     in the library". User-toggleable; on by default.
+    //
+    //   - Per-destination name collision. Triggers when a file with
+    //     the same target filename already exists at the destination
+    //     path. The byte-equality check (skip if identical) always
+    //     runs as a safety net; the policy combo only governs the
+    //     differing-content branch.
+    igSeparatorText("Duplicates");
+    igCheckbox("Skip files already in the library (content hash)",
+               &s->dedupe_content);
+
+    igText("On name collision:");
     igSameLine(0.0f, -1.0f);
     static const char *const collide_items[] = {
         "Skip", "Overwrite", "Auto-suffix",
     };
     igSetNextItemWidth(140.0f);
     igCombo_Str_arr("##collision", &s->collision, collide_items, 3, -1);
+    igTextDisabled("Identical files at the same path are always skipped.");
 
     igSeparator();
 

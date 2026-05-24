@@ -3,6 +3,8 @@
 
 #include "library/library.h"
 
+#include <stdbool.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -36,6 +38,14 @@ typedef struct {
     int  naming;                          // ap_import_naming
     char pattern[AP_IMPORT_PATTERN_LEN];  // rename pattern
     int  collision;                       // ap_import_collision
+    // When true (default), BLAKE3-hash every source file and look it
+    // up in the library's photos.hash column before copying; an exact
+    // content match anywhere in the library is treated as already
+    // imported and skipped (counted as dup_content). Turn off when you
+    // genuinely want to keep two copies of the same bytes in different
+    // subdirs. Independent of the byte-equality safety check at the
+    // destination path, which always runs.
+    bool dedupe_content;
 } ap_import_settings;
 
 // Aggregate counts for a completed import run.
