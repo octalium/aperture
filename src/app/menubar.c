@@ -123,7 +123,7 @@ void draw_menubar(ap_app *app)
         if (igMenuItem_Bool("Close", "Esc", false, app->photo != NULL)) {
             ap_app_close_photo(app);
         }
-        if (igMenuItem_Bool("Delete", NULL, false,
+        if (igMenuItem_Bool("Delete", "Del", false,
                             app->photo != NULL &&
                             app->photo_library_idx >= 0)) {
             app->delete_edit_modal = true;
