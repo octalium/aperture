@@ -103,8 +103,12 @@ static void backfill_name_column(sqlite3 *reg)
 // The pipeline `definition` column stores these (and any user-defined
 // pipelines) as the same `[[edit]]` TOML the sidecar uses.
 static const char *DEFAULT_PIPELINE_NAME = "default";
+// Order: demosaic decodes the sensor; wb / profile bring the data
+// into the working colour space; lens_correction undoes the optical
+// distortion + vignetting reported by Lensfun. Everything past this
+// list is creative and belongs to the user.
 static const char *DEFAULT_PIPELINE_MODULES[] = {
-    "demosaic", "wb", "profile", NULL,
+    "demosaic", "wb", "profile", "lens_correction", NULL,
 };
 
 static int gen_uuid_v4(char buf[37])
@@ -530,6 +534,28 @@ int ap_pipeline_update(int64_t id, const char *name,
 
     sqlite3 *reg = NULL;
     if (registry_open(&reg) < 0) return -1;
+
+    // Refuse to mutate the seeded default pipeline. The default
+    // reflects the current build's baseline and gets re-seeded on
+    // every library open; letting the UI overwrite or rename it would
+    // either lose the user's changes on the next open or strand the
+    // library without a sensible default. Users wanting a custom
+    // baseline duplicate the default and set the copy as the library
+    // default via the pipelines panel.
+    sqlite3_stmt *guard = NULL;
+    if (sqlite3_prepare_v2(reg,
+            "SELECT 1 FROM pipelines WHERE id = ? AND name = ?;",
+            -1, &guard, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(guard, 1, id);
+        sqlite3_bind_text(guard, 2, DEFAULT_PIPELINE_NAME, -1, SQLITE_STATIC);
+        bool is_default = (sqlite3_step(guard) == SQLITE_ROW);
+        sqlite3_finalize(guard);
+        if (is_default) {
+            AP_WARN("pipeline: refusing to modify the default pipeline");
+            sqlite3_close(reg);
+            return -1;
+        }
+    }
 
     char  *toml_buf = NULL;
     size_t toml_len = 0;

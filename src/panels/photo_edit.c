@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 // Photo-mode workspace:
 //
@@ -728,8 +729,20 @@ static void draw_save_as_pipeline_modal(ap_app *app, ap_photo *photo,
         igTextDisabled("%s", g_save_status);
     }
 
+    // The default pipeline is locked: the library re-seeds it on every
+    // open, so any overwrite would be silently undone. Steer the user
+    // to Duplicate + edit the copy.
+    bool is_default_name =
+        (strcasecmp(g_save_as_name, "default") == 0);
+
     if (save_clicked && name_ok) {
-        if (g_save_as_pending_overwrite) {
+        if (is_default_name) {
+            snprintf(g_save_status, sizeof(g_save_status),
+                     "\"default\" is the built-in baseline and can't be "
+                     "overwritten. Save under a different name and set it "
+                     "as the library default from the Pipelines panel.");
+            g_save_as_pending_overwrite = false;
+        } else if (g_save_as_pending_overwrite) {
             ap_pipeline_def existing;
             if (ap_pipeline_get_by_name(g_save_as_name, &existing) == 0) {
                 if (ap_pipeline_update(existing.id, NULL, stack) == 0) {
