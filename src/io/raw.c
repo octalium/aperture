@@ -1,6 +1,7 @@
 #include "raw.h"
 
 #include "core/log.h"
+#include "io/exif.h"
 #include "photo/metadata.h"
 
 #include <libraw/libraw.h>
@@ -154,23 +155,11 @@ int ap_raw_capture_time(const char *path, time_t *out)
     if (!path || !out) {
         return -1;
     }
-    libraw_data_t *raw = libraw_init(0);
-    if (!raw) {
+    ap_exif_fields f;
+    if (ap_exif_read(path, &f) != 0 || f.capture_time == 0) {
         return -1;
     }
-    // open_file parses the metadata (incl. other.timestamp); no
-    // libraw_unpack — the pixel data isn't needed here.
-    int err = libraw_open_file(raw, path);
-    if (err != LIBRAW_SUCCESS) {
-        libraw_close(raw);
-        return -1;
-    }
-    time_t ts = raw->other.timestamp;
-    libraw_close(raw);
-    if (ts == 0) {
-        return -1;
-    }
-    *out = ts;
+    *out = f.capture_time;
     return 0;
 }
 
