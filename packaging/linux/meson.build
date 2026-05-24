@@ -44,6 +44,19 @@ install_data(
   install_dir: datadir / 'icons' / 'hicolor' / 'scalable' / 'apps',
 )
 
+# rasterized hicolor sizes for desktops/launchers that ignore SVG entries
+# (notably KDE Plasma's task manager and several GTK launchers). vendored
+# from the scalable SVG; regenerate with packaging/linux/icons/refresh.sh
+# when the SVG changes.
+foreach size : [48, 64, 128, 256]
+  size_str = '@0@x@0@'.format(size)
+  install_data(
+    'icons' / 'hicolor' / size_str / 'apps' / app_id + '.png',
+    install_dir: datadir / 'icons' / 'hicolor' / size_str / 'apps',
+    install_tag: 'icons',
+  )
+endforeach
+
 desktop_file_validate = find_program('desktop-file-validate', required: false)
 if desktop_file_validate.found()
   test(
