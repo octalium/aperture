@@ -1,6 +1,7 @@
 [wrap-git]
 url = https://github.com/cimgui/cimgui.git
-revision = docking_inter
+# pinned to docking_inter HEAD as of 2026-05-24 (branch is rolling; no upstream tags on it)
+revision = 07fde25e7aff0b2b3eb536dd162d5ead162609d8
 depth = 1
 clone-recursive = true
 patch_directory = cimgui

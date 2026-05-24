@@ -13,7 +13,7 @@ overriding Meson's default `subprojects/` location.
 | --------------------------- | ---------------- | -------------------- | ---------------------------------------------------- |
 | lcms2                       | force-wrap       | git tag `lcms2.19`   | colour engine version must be deterministic          |
 | blake3                      | force-wrap       | wrap-file checksum   | hash-stability across machines                       |
-| cimgui                      | fallback         | rolling `docking_inter` | upstream-tracking; system pkg is rare               |
+| cimgui                      | fallback         | git SHA `07fde25e` on `docking_inter` (no upstream tags) | docking branch required; pinned for reproducibility   |
 | libpng                      | fallback         | wrapdb `1.6.58-1`    | system pkg preferred; wrap covers distros that lack it |
 | libtiff                     | fallback         | wrapdb `4.7.1-4`     | same as libpng                                       |
 | tomlc99                     | fallback         | git SHA `29076dfd` (no upstream tags) | small lib, rarely packaged; pinned for reproducibility |
