@@ -1530,7 +1530,7 @@ static void drive_crop_tool(ap_app *app, ImGuiIO *io)
     }
 }
 
-// Pan / zoom the canvas from the mouse and the F / 0 / 1 view keys.
+// Pan / zoom the canvas from the mouse and the F (fit-to-window) key.
 // Shared by photo mode and export mode — both present a single photo
 // on the canvas with the same manipulation feel. Skips entirely while
 // ImGui owns the mouse so panel drags don't pan the image.
@@ -1568,11 +1568,8 @@ static void drive_canvas_view(ap_app *app, ImGuiIO *io)
         }
     }
 
-    if (igIsKeyPressed_Bool(ImGuiKey_F, false) ||
-        igIsKeyPressed_Bool(ImGuiKey_0, false)) {
+    if (igIsKeyPressed_Bool(ImGuiKey_F, false)) {
         ap_canvas_reset_view(app->canvas);
-    } else if (igIsKeyPressed_Bool(ImGuiKey_1, false)) {
-        ap_canvas_set_zoom(app->canvas, 1.0f, win_w, win_h);
     }
 }
 
