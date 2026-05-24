@@ -39,25 +39,25 @@ void toggle_and_persist_fullscreen(ap_app *app)
 
 // Build "Quick Export -> <dir> (<format>[ q=N])" for the menu item
 // tooltip. `dir` falls back to a placeholder when neither a custom
-// destination nor an open library is available.
+// destination nor an open library is available. Reads from the cached
+// prefs on `app` — no I/O on the hover path.
 static void quick_export_tooltip(ap_app *app, char *out, size_t out_len)
 {
-    ap_quick_export_settings q;
-    ap_quick_export_load(&q);
+    const ap_quick_export_settings *q = ap_app_quick_export_settings(app);
 
     char dir[AP_EXPORT_DEST_LEN];
     const char *root = app->library ? ap_library_root(app->library) : NULL;
-    if (ap_quick_export_resolve_dir(&q, root, dir, sizeof(dir)) != 0) {
+    if (ap_quick_export_resolve_dir(q, root, dir, sizeof(dir)) != 0) {
         snprintf(dir, sizeof(dir), "<set destination in Preferences>");
     }
 
     const char *fmt = "JPEG";
-    if (q.format == AP_EXPORT_FORMAT_PNG)  fmt = "PNG";
-    if (q.format == AP_EXPORT_FORMAT_TIFF) fmt = "TIFF";
+    if (q->format == AP_EXPORT_FORMAT_PNG)  fmt = "PNG";
+    if (q->format == AP_EXPORT_FORMAT_TIFF) fmt = "TIFF";
 
-    if (q.format == AP_EXPORT_FORMAT_JPEG) {
+    if (q->format == AP_EXPORT_FORMAT_JPEG) {
         snprintf(out, out_len, "Quick Export -> %s (%s q=%d)",
-                 dir, fmt, q.jpeg_quality);
+                 dir, fmt, q->jpeg_quality);
     } else {
         snprintf(out, out_len, "Quick Export -> %s (%s)", dir, fmt);
     }

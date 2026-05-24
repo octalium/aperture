@@ -125,6 +125,11 @@ ap_app *ap_app_create(int width, int height, const char *title)
         }
     }
 
+    // Cache user-wide Quick Export prefs so the tooltip + Ctrl+Shift+E
+    // path read from memory; Preferences mutates this in place and
+    // re-loads / re-saves through it.
+    ap_quick_export_load(&app->quick_export_settings);
+
     // Restore the last-active layout profile and which optional panels
     // were open last session. ImGui auto-persists window positions
     // itself via its ini (see imgui_bridge.cpp).
@@ -531,7 +536,6 @@ ap_quick_export_settings *ap_app_quick_export_settings(ap_app *app)
 void ap_app_open_preferences_modal(ap_app *app)
 {
     if (!app) return;
-    ap_quick_export_load(&app->quick_export_settings);
     app->preferences_modal = true;
 }
 
@@ -601,63 +605,49 @@ void ap_app_run_quick_export(ap_app *app)
 {
     if (!app) return;
 
-    ap_quick_export_settings q;
-    ap_quick_export_load(&q);
+    const ap_quick_export_settings *q = &app->quick_export_settings;
 
-    bool have_photo     = (app->photo != NULL);
+    if (app->mode == AP_MODE_PHOTO) {
+        quick_export_one(app, app->photo, ap_photo_path(app->photo), q);
+        return;
+    }
+
     bool have_selection = (app->library && app->grid &&
                            ap_grid_selection_count(app->grid) > 0);
-
-    if (app->mode == AP_MODE_PHOTO && have_photo) {
-        quick_export_one(app, app->photo, ap_photo_path(app->photo), &q);
+    if (!have_selection) {
+        ap_toast_push(AP_TOAST_INFO, "Quick Export: no photos selected");
         return;
     }
+    int queued = 0;
+    for (int c = 0; c < app->grid_map_count; c++) {
+        if (!ap_grid_is_selected(app->grid, c)) continue;
+        int i = app->grid_map[c];
 
-    if (app->mode == AP_MODE_LIBRARY) {
-        if (!have_selection) {
-            ap_toast_push(AP_TOAST_INFO,
-                          "Quick Export: no photos selected.");
-            return;
-        }
-        int queued = 0;
-        for (int c = 0; c < app->grid_map_count; c++) {
-            if (!ap_grid_is_selected(app->grid, c)) continue;
-            int i = app->grid_map[c];
+        // Skip the currently-open photo for the same reason batch
+        // export does: its in-memory edits may differ from the
+        // sidecar.
+        if (app->photo && i == app->photo_library_idx) continue;
 
-            // Skip the currently-open photo for the same reason batch
-            // export does: its in-memory edits may differ from the
-            // sidecar.
-            if (app->photo && i == app->photo_library_idx) continue;
-
-            char abs[AP_EXPORT_DEST_LEN];
-            if (ap_library_photo_absolute_path(app->library, i,
-                                               abs, sizeof(abs)) != 0) {
-                continue;
-            }
-            ap_photo *tmp = ap_photo_open(app->gpu, abs);
-            if (!tmp) {
-                AP_WARN("quick export: cannot open %s — skipping", abs);
-                continue;
-            }
-            if (quick_export_one(app, tmp, abs, &q) == 0) queued++;
-            ap_photo_close(tmp);
+        char abs[AP_EXPORT_DEST_LEN];
+        if (ap_library_photo_absolute_path(app->library, i,
+                                           abs, sizeof(abs)) != 0) {
+            continue;
         }
-        if (queued == 0) {
-            ap_toast_push(AP_TOAST_ERROR,
-                          "Quick Export: nothing was queued.");
-        } else {
-            ap_toast_push(AP_TOAST_INFO,
-                          "Quick Export queued %d photo%s.",
-                          queued, queued == 1 ? "" : "s");
+        ap_photo *tmp = ap_photo_open(app->gpu, abs);
+        if (!tmp) {
+            AP_WARN("quick export: cannot open %s — skipping", abs);
+            continue;
         }
-        return;
+        if (quick_export_one(app, tmp, abs, q) == 0) queued++;
+        ap_photo_close(tmp);
     }
-
-    if (have_photo) {
-        quick_export_one(app, app->photo, ap_photo_path(app->photo), &q);
-        return;
+    if (queued == 0) {
+        ap_toast_push(AP_TOAST_ERROR, "Quick Export: nothing was queued.");
+    } else {
+        ap_toast_push(AP_TOAST_INFO,
+                      "Quick Export queued %d photo%s.",
+                      queued, queued == 1 ? "" : "s");
     }
-    ap_toast_push(AP_TOAST_INFO, "Quick Export: nothing to export.");
 }
 
 // Build the output path for `src` under `s` using `seq` as the {SEQ}
