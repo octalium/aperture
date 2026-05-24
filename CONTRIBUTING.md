@@ -34,10 +34,13 @@ SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct) \
 meson compile -C build-release
 ```
 
-`-ffile-prefix-map` is wired into the project so build-root paths are
-rewritten in embedded debug info. `SOURCE_DATE_EPOCH` pins the
-compiler's `__DATE__` / `__TIME__` macros — set it (e.g. to a commit
-timestamp) for reproducible builds.
+`-ffile-prefix-map` is wired in globally so the absolute build-root
+path is rewritten to a stable prefix in embedded debug info (covers
+DWARF `DW_AT_comp_dir` from both aperture and its wrap subprojects).
+Source paths are already relative under ninja so no source-root remap
+is needed. `SOURCE_DATE_EPOCH` pins the compiler's `__DATE__` /
+`__TIME__` macros — set it (e.g. to a commit timestamp) for
+reproducible builds.
 
 ## Branch policy
 
