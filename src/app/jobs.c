@@ -359,7 +359,7 @@ void submit_import_job(ap_app *app, const char *lib_root, const char *src_dir,
     j->base.run = import_job_run;
     snprintf(j->lib_root, sizeof(j->lib_root), "%s", lib_root);
     snprintf(j->db_path,  sizeof(j->db_path),
-             "%s/.aperture/library.db", lib_root);
+             "%s/library.db", lib_root);
     snprintf(j->src_dir,  sizeof(j->src_dir),  "%s", src_dir);
     j->settings  = *settings;
     j->status_id = ap_status_progress_begin("Importing photos...", 0);

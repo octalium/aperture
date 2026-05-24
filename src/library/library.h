@@ -97,7 +97,7 @@ int ap_settings_set(const char *key, const char *value);
 
 // Open a directory as a library:
 //   - Resolves `path` to an absolute root.
-//   - Opens or creates `<root>/library.aperture-db` (SQLite).
+//   - Opens or creates `<root>/library.db` (SQLite).
 //   - Runs schema-create-if-needed for the v1 tables.
 //   - Recursively scans the tree for raw files; inserts new ones
 //     into the photos table.
