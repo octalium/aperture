@@ -9,6 +9,7 @@
 #include <sqlite3.h>
 
 #include <dirent.h>
+#include <stdbool.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -267,21 +268,43 @@ static int db_find_hash(sqlite3 *db, const char *hex_hash,
 // import scan's `INSERT OR IGNORE` will then leave this row alone
 // and the dedupe lookup on the next import will find it.
 static void db_store_hash(sqlite3 *db, const char *rel_path,
-                          const char *hex_hash)
+                          const char *hex_hash, int64_t size)
 {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
-            "INSERT INTO photos(path, added_at, hash) "
-            "VALUES (?, ?, ?) "
-            "ON CONFLICT(path) DO UPDATE SET hash = excluded.hash;",
+            "INSERT INTO photos(path, added_at, hash, size) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(path) DO UPDATE SET "
+            "    hash = excluded.hash, "
+            "    size = excluded.size;",
             -1, &st, NULL) != SQLITE_OK) {
         return;
     }
     sqlite3_bind_text (st, 1, rel_path,        -1, SQLITE_STATIC);
     sqlite3_bind_int64(st, 2, (int64_t)time(NULL));
     sqlite3_bind_text (st, 3, hex_hash,        -1, SQLITE_STATIC);
+    sqlite3_bind_int64(st, 4, size);
     sqlite3_step(st);
     sqlite3_finalize(st);
+}
+
+// True when any photo in the library has the given byte size. Cheap
+// O(log n) index lookup -- used as a pre-filter so the importer can
+// skip the full BLAKE3 hash on a source whose size doesn't match
+// anything in the library (the common case on a first import).
+static bool db_size_exists(sqlite3 *db, int64_t size)
+{
+    if (!db) return false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT 1 FROM photos WHERE size = ? LIMIT 1;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return false;
+    }
+    sqlite3_bind_int64(st, 1, size);
+    bool found = (sqlite3_step(st) == SQLITE_ROW);
+    sqlite3_finalize(st);
+    return found;
 }
 
 // ----- per-file import ----------------------------------------------
@@ -340,12 +363,22 @@ static import_one_result import_one(const char *src, const char *dest_dir,
         return IMPORT_ONE_ERROR;
     }
 
-    // Content-dedupe via db hash lookup before touching the destination.
-    // Gated on s->dedupe_content so the user can intentionally keep
-    // two copies of the same bytes in different subdirs; the
-    // byte-equality safety check at the destination path further down
-    // is independent and always runs.
-    if (db && s->dedupe_content) {
+    // Stat source first: size feeds the dedupe pre-filter (avoids
+    // BLAKE3-hashing every source on a first import) and is what
+    // gets stored alongside the hash for the next import's filter.
+    struct stat ss;
+    if (stat(src, &ss) != 0) {
+        AP_WARN("import: stat %s: %s", src, strerror(errno));
+        return IMPORT_ONE_ERROR;
+    }
+    int64_t src_size = (int64_t)ss.st_size;
+
+    // Library-wide content-dedupe lookup. Size is a cheap O(log n)
+    // pre-filter on photos.size; only fall through to the BLAKE3
+    // hash when at least one library photo shares the source's byte
+    // count. Gated on s->dedupe_content so the user can intentionally
+    // keep two copies of the same bytes in different subdirs.
+    if (db && s->dedupe_content && db_size_exists(db, src_size)) {
         char src_hex[BLAKE3_HEX_LEN];
         if (hash_file(src, src_hex) == 0) {
             char existing_rel[4096];
@@ -363,13 +396,19 @@ static import_one_result import_one(const char *src, const char *dest_dir,
     bool renamed    = false;
 
     if (dst_exists) {
-        // Check byte-level equality between src and existing dst.
-        char src_hex[BLAKE3_HEX_LEN];
-        char dst_hex[BLAKE3_HEX_LEN];
-        if (hash_file(src, src_hex) == 0 && hash_file(dst, dst_hex) == 0
-                && strcmp(src_hex, dst_hex) == 0) {
-            // Identical bytes already at the destination — safe to skip.
-            return IMPORT_ONE_DUP_CONTENT;
+        // If the existing file's size differs from the source's, the
+        // contents can't be byte-identical -- skip the hash compare
+        // and go straight to the collision policy.
+        bool same_size = ((int64_t)ds.st_size == src_size);
+        if (same_size) {
+            char src_hex[BLAKE3_HEX_LEN];
+            char dst_hex[BLAKE3_HEX_LEN];
+            if (hash_file(src, src_hex) == 0
+                    && hash_file(dst, dst_hex) == 0
+                    && strcmp(src_hex, dst_hex) == 0) {
+                // Identical bytes already at the destination -- skip.
+                return IMPORT_ONE_DUP_CONTENT;
+            }
         }
 
         // Different content at the same destination path.
@@ -432,7 +471,7 @@ static import_one_result import_one(const char *src, const char *dest_dir,
             rel[slen + 1] = '\0';
             strncat(rel, final_name, sizeof(rel) - slen - 2);
         }
-        db_store_hash(db, rel, copied_hex);
+        db_store_hash(db, rel, copied_hex, src_size);
     }
 
     return renamed ? IMPORT_ONE_RENAMED : IMPORT_ONE_IMPORTED;
