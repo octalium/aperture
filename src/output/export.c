@@ -21,6 +21,10 @@
 #define KEY_DEST_DIR    "export.dest_dir"
 #define KEY_COLLISION   "export.collision"
 
+#define KEY_QE_FORMAT   "quick_export.format"
+#define KEY_QE_JPEG_Q   "quick_export.jpeg_quality"
+#define KEY_QE_DEST     "quick_export.destination"
+
 static int clamp_int(int v, int lo, int hi)
 {
     if (v < lo) return lo;
@@ -226,6 +230,60 @@ int ap_export_resolve_dir(const ap_export_settings *s,
 
     if (n <= 0 || (size_t)n >= out_len) {
         AP_ERROR("export: destination path too long");
+        return -1;
+    }
+    return 0;
+}
+
+void ap_quick_export_load(ap_quick_export_settings *out)
+{
+    if (!out) return;
+
+    out->format         = AP_EXPORT_FORMAT_JPEG;
+    out->jpeg_quality   = 90;
+    out->destination[0] = '\0';
+
+    char buf[AP_EXPORT_DEST_LEN];
+    if (ap_settings_get(KEY_QE_FORMAT, buf, sizeof(buf)) == 0) {
+        out->format = clamp_int(atoi(buf), AP_EXPORT_FORMAT_JPEG,
+                                AP_EXPORT_FORMAT_PNG);
+    }
+    if (ap_settings_get(KEY_QE_JPEG_Q, buf, sizeof(buf)) == 0) {
+        out->jpeg_quality = clamp_int(atoi(buf), 1, 100);
+    }
+    if (ap_settings_get(KEY_QE_DEST, buf, sizeof(buf)) == 0) {
+        snprintf(out->destination, sizeof(out->destination), "%s", buf);
+    }
+}
+
+void ap_quick_export_save(const ap_quick_export_settings *s)
+{
+    if (!s) return;
+    char num[16];
+    snprintf(num, sizeof(num), "%d", s->format);
+    ap_settings_set(KEY_QE_FORMAT, num);
+    snprintf(num, sizeof(num), "%d", s->jpeg_quality);
+    ap_settings_set(KEY_QE_JPEG_Q, num);
+    ap_settings_set(KEY_QE_DEST, s->destination);
+}
+
+int ap_quick_export_resolve_dir(const ap_quick_export_settings *s,
+                                const char *library_root,
+                                char *out, size_t out_len)
+{
+    if (!s || !out || out_len == 0) return -1;
+    if (s->destination[0]) {
+        int n = snprintf(out, out_len, "%s", s->destination);
+        if (n <= 0 || (size_t)n >= out_len) {
+            AP_ERROR("quick export: destination path too long");
+            return -1;
+        }
+        return 0;
+    }
+    if (!library_root || !library_root[0]) return -1;
+    int n = snprintf(out, out_len, "%s/export", library_root);
+    if (n <= 0 || (size_t)n >= out_len) {
+        AP_ERROR("quick export: default path too long");
         return -1;
     }
     return 0;

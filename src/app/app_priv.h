@@ -94,8 +94,10 @@ struct ap_app {
     // Cleared in handle_import_complete / discard_completed_item.
     struct import_job  *inflight_import_job;
 
-    ap_export_settings export_settings;
-    bool             export_modal;
+    ap_export_settings       export_settings;
+    bool                     export_modal;
+    ap_quick_export_settings quick_export_settings;
+    bool                     preferences_modal;
     bool             rename_library_modal;
     char             rename_library_input[128];
     bool             save_layout_modal;

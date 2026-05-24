@@ -86,6 +86,22 @@ ap_export_settings *ap_app_export_settings(ap_app *app);
 // library selection to export.
 void ap_app_open_export_modal(ap_app *app);
 
+// Quick Export. User-wide prefs (format, JPEG quality, destination)
+// drive the Ctrl+Shift+E action in both photo and library modes.
+// `ap_app_quick_export_settings` is the in-memory copy the Preferences
+// modal mutates; it is reloaded from the app-wide settings store each
+// time the modal opens and saved on commit.
+ap_quick_export_settings *ap_app_quick_export_settings(ap_app *app);
+void ap_app_open_preferences_modal(ap_app *app);
+
+// Run a Quick Export from the current context. In photo mode exports
+// the open photo; in library mode exports every selected grid photo.
+// Reads the persisted Quick Export prefs at invocation time and writes
+// to the resolved destination. Surfaces failures (no selection / no
+// destination) as a toast; never opens a modal. No-op when neither a
+// photo nor a selection is available.
+void ap_app_run_quick_export(ap_app *app);
+
 // Resolve the export settings into a concrete output path for the
 // currently-open photo and run the encode. Performs a synchronous GPU
 // readback, then queues the format-appropriate encode job on a worker.

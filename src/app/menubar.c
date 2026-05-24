@@ -2,9 +2,11 @@
 
 #include "menubar.h"
 
+#include "output/export.h"
 #include "ui/file_dialog.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -35,45 +37,30 @@ void toggle_and_persist_fullscreen(ap_app *app)
     ap_settings_set("fullscreen", ap_gpu_is_fullscreen(app->gpu) ? "1" : "0");
 }
 
-static void trigger_quick_export(ap_app *app)
+// Build "Quick Export -> <dir> (<format>[ q=N])" for the menu item
+// tooltip. `dir` falls back to a placeholder when neither a custom
+// destination nor an open library is available. Reads from the cached
+// prefs on `app` — no I/O on the hover path.
+static void quick_export_tooltip(ap_app *app, char *out, size_t out_len)
 {
-    if (!app->photo) return;
-    const char *src = ap_photo_path(app->photo);
+    const ap_quick_export_settings *q = ap_app_quick_export_settings(app);
 
-    const char *slash = strrchr(src, '/');
-    const char *base  = slash ? slash + 1 : src;
-    char stem[1024];
-    snprintf(stem, sizeof(stem), "%s", base);
-    char *dot = strrchr(stem, '.');
-    if (dot) *dot = '\0';
-
-    char out[4096];
-    if (app->library) {
-        char dir[4096];
-        int dn = snprintf(dir, sizeof(dir), "%s/export",
-                          ap_library_root(app->library));
-        if (dn <= 0 || (size_t)dn >= sizeof(dir)) {
-            AP_ERROR("export: directory path too long");
-            return;
-        }
-        if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
-            AP_ERROR("export: mkdir(%s): %s", dir, strerror(errno));
-            return;
-        }
-        int n = snprintf(out, sizeof(out), "%s/%s.jpg", dir, stem);
-        if (n <= 0 || (size_t)n >= sizeof(out)) {
-            AP_ERROR("export: path too long for %s", stem);
-            return;
-        }
-    } else {
-        int n = snprintf(out, sizeof(out), "%s.jpg", src);
-        if (n <= 0 || (size_t)n >= sizeof(out)) {
-            AP_ERROR("export: path too long for %s", src);
-            return;
-        }
+    char dir[AP_EXPORT_DEST_LEN];
+    const char *root = app->library ? ap_library_root(app->library) : NULL;
+    if (ap_quick_export_resolve_dir(q, root, dir, sizeof(dir)) != 0) {
+        snprintf(dir, sizeof(dir), "<set destination in Preferences>");
     }
 
-    ap_app_request_jpeg_export(app, app->photo, out, 90);
+    const char *fmt = "JPEG";
+    if (q->format == AP_EXPORT_FORMAT_PNG)  fmt = "PNG";
+    if (q->format == AP_EXPORT_FORMAT_TIFF) fmt = "TIFF";
+
+    if (q->format == AP_EXPORT_FORMAT_JPEG) {
+        snprintf(out, out_len, "Quick Export -> %s (%s q=%d)",
+                 dir, fmt, q->jpeg_quality);
+    } else {
+        snprintf(out, out_len, "Quick Export -> %s (%s)", dir, fmt);
+    }
 }
 
 void draw_menubar(ap_app *app)
@@ -102,6 +89,12 @@ void draw_menubar(ap_app *app)
             if (igMenuItem_Bool("Export...", "Ctrl+E", false, can_export)) {
                 ap_app_open_export_modal(app);
             }
+        }
+
+        igSeparator();
+
+        if (igMenuItem_Bool("Preferences...", NULL, false, true)) {
+            ap_app_open_preferences_modal(app);
         }
 
         igSeparator();
@@ -137,7 +130,12 @@ void draw_menubar(ap_app *app)
         }
         if (igMenuItem_Bool("Quick Export", "Ctrl+Shift+E",
                             false, app->photo != NULL)) {
-            trigger_quick_export(app);
+            ap_app_run_quick_export(app);
+        }
+        if (igIsItemHovered(0)) {
+            char tip[AP_EXPORT_DEST_LEN + 64];
+            quick_export_tooltip(app, tip, sizeof(tip));
+            igSetTooltip("%s", tip);
         }
         igEndMenu();
     }
@@ -297,8 +295,8 @@ void drive_global_hotkeys(ap_app *app)
         ap_app_open_import_modal(app);
     }
     if (io->KeyCtrl && io->KeyShift
-        && igIsKeyPressed_Bool(ImGuiKey_E, false) && app->photo) {
-        trigger_quick_export(app);
+        && igIsKeyPressed_Bool(ImGuiKey_E, false)) {
+        ap_app_run_quick_export(app);
     }
     if (io->KeyCtrl && !io->WantTextInput
         && igIsKeyPressed_Bool(ImGuiKey_C, false) && app->photo) {

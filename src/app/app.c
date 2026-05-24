@@ -125,6 +125,11 @@ ap_app *ap_app_create(int width, int height, const char *title)
         }
     }
 
+    // Cache user-wide Quick Export prefs so the tooltip + Ctrl+Shift+E
+    // path read from memory; Preferences mutates this in place and
+    // re-loads / re-saves through it.
+    ap_quick_export_load(&app->quick_export_settings);
+
     // Restore the last-active layout profile and which optional panels
     // were open last session. ImGui auto-persists window positions
     // itself via its ini (see imgui_bridge.cpp).
@@ -521,6 +526,136 @@ void ap_app_open_export_modal(ap_app *app)
     if (!have_photo && !have_selection) return;
     ap_export_settings_load(app->library, &app->export_settings);
     app->export_modal = true;
+}
+
+ap_quick_export_settings *ap_app_quick_export_settings(ap_app *app)
+{
+    return app ? &app->quick_export_settings : NULL;
+}
+
+void ap_app_open_preferences_modal(ap_app *app)
+{
+    if (!app) return;
+    app->preferences_modal = true;
+}
+
+// Build the basename-no-extension into `out` from a source path.
+// Falls back to an empty string when `src` has no leaf.
+static void quick_export_stem(const char *src, char *out, size_t out_len)
+{
+    if (!out || out_len == 0) return;
+    out[0] = '\0';
+    if (!src) return;
+    const char *slash = strrchr(src, '/');
+    const char *base  = slash ? slash + 1 : src;
+    snprintf(out, out_len, "%s", base);
+    char *dot = strrchr(out, '.');
+    if (dot) *dot = '\0';
+}
+
+// Resolve + create the destination directory, build a final filename
+// honouring the format extension, and queue an export job for `photo`.
+// Returns 0 on success, -1 on error (also pushes a toast).
+static int quick_export_one(ap_app *app, ap_photo *photo, const char *src,
+                            const ap_quick_export_settings *q)
+{
+    char dir[AP_EXPORT_DEST_LEN];
+    const char *root = app->library ? ap_library_root(app->library) : NULL;
+    if (ap_quick_export_resolve_dir(q, root, dir, sizeof(dir)) != 0) {
+        ap_toast_push(AP_TOAST_ERROR,
+                      "Quick Export: no destination — set one in Preferences.");
+        return -1;
+    }
+    if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+        ap_toast_push(AP_TOAST_ERROR,
+                      "Quick Export: cannot create %s", dir);
+        return -1;
+    }
+
+    char stem[1024];
+    quick_export_stem(src, stem, sizeof(stem));
+    if (!stem[0]) snprintf(stem, sizeof(stem), "photo");
+
+    const char *ext = ap_export_format_extension(q->format);
+
+    char out_path[AP_EXPORT_DEST_LEN];
+    int n = snprintf(out_path, sizeof(out_path),
+                     "%s/%s.%s", dir, stem, ext);
+    if (n <= 0 || (size_t)n >= sizeof(out_path)) {
+        ap_toast_push(AP_TOAST_ERROR, "Quick Export: output path too long");
+        return -1;
+    }
+
+    ap_export_settings es = {0};
+    es.format        = q->format;
+    es.jpeg_quality  = q->jpeg_quality;
+    es.png_depth     = AP_PNG_UINT8;
+    es.tiff_depth    = AP_TIFF_UINT8;
+    es.tiff_compress = AP_TIFF_COMPRESS_LZW;
+    es.collision     = AP_EXPORT_COLLIDE_OVERWRITE;
+
+    if (queue_export_job(app, photo, &es, out_path) != 0) {
+        ap_toast_push(AP_TOAST_ERROR, "Quick Export failed — see the log.");
+        return -1;
+    }
+    return 0;
+}
+
+void ap_app_run_quick_export(ap_app *app)
+{
+    if (!app) return;
+
+    const ap_quick_export_settings *q = &app->quick_export_settings;
+
+    if (app->mode == AP_MODE_PHOTO) {
+        // ap_app_open_photo flips mode synchronously and decodes async;
+        // app->photo is NULL until install_loaded_photo lands. Ctrl+Shift+E
+        // pressed mid-load reaches here without a photo.
+        if (!app->photo) {
+            ap_toast_push(AP_TOAST_INFO,
+                          "Quick Export: photo is still loading");
+            return;
+        }
+        quick_export_one(app, app->photo, ap_photo_path(app->photo), q);
+        return;
+    }
+
+    bool have_selection = (app->library && app->grid &&
+                           ap_grid_selection_count(app->grid) > 0);
+    if (!have_selection) {
+        ap_toast_push(AP_TOAST_INFO, "Quick Export: no photos selected");
+        return;
+    }
+    int queued = 0;
+    for (int c = 0; c < app->grid_map_count; c++) {
+        if (!ap_grid_is_selected(app->grid, c)) continue;
+        int i = app->grid_map[c];
+
+        // Skip the currently-open photo for the same reason batch
+        // export does: its in-memory edits may differ from the
+        // sidecar.
+        if (app->photo && i == app->photo_library_idx) continue;
+
+        char abs[AP_EXPORT_DEST_LEN];
+        if (ap_library_photo_absolute_path(app->library, i,
+                                           abs, sizeof(abs)) != 0) {
+            continue;
+        }
+        ap_photo *tmp = ap_photo_open(app->gpu, abs);
+        if (!tmp) {
+            AP_WARN("quick export: cannot open %s — skipping", abs);
+            continue;
+        }
+        if (quick_export_one(app, tmp, abs, q) == 0) queued++;
+        ap_photo_close(tmp);
+    }
+    if (queued == 0) {
+        ap_toast_push(AP_TOAST_ERROR, "Quick Export: nothing was queued.");
+    } else {
+        ap_toast_push(AP_TOAST_INFO,
+                      "Quick Export queued %d photo%s.",
+                      queued, queued == 1 ? "" : "s");
+    }
 }
 
 // Build the output path for `src` under `s` using `seq` as the {SEQ}
@@ -2172,6 +2307,7 @@ int ap_app_run_frame(ap_app *app)
     draw_menubar(app);
     draw_import_modal(app);
     draw_export_modal(app);
+    draw_preferences_modal(app);
     draw_rename_library_modal(app);
     draw_save_layout_modal(app);
     draw_delete_modal(app);
