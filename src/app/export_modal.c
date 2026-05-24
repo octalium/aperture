@@ -23,17 +23,26 @@ static int64_t         g_preset_id  = 0;
 static char            g_save_name[AP_EXPORT_PRESET_NAME_LEN] = {0};
 static char            g_status[256] = {0};
 
-// Source file stem (no extension) of the currently-open photo, or
-// "photo" as a fallback.
-static void photo_stem(const ap_photo *photo, char *out, size_t len)
+// Write the file stem (basename, no extension) of `path` into `out`.
+// Falls back to "photo" when `path` is NULL.
+static void path_stem(const char *path, char *out, size_t len)
 {
-    const char *path = photo ? ap_photo_path(photo) : NULL;
     if (!path) { snprintf(out, len, "photo"); return; }
     const char *slash = strrchr(path, '/');
     const char *base  = slash ? slash + 1 : path;
     snprintf(out, len, "%s", base);
     char *dot = strrchr(out, '.');
     if (dot) *dot = '\0';
+}
+
+// Lowest selected grid cell, or -1 if no selection.
+static int first_selected_grid_index(const ap_app *app)
+{
+    if (!app || !app->grid || !app->grid_map) return -1;
+    for (int c = 0; c < app->grid_map_count; c++) {
+        if (ap_grid_is_selected(app->grid, c)) return c;
+    }
+    return -1;
 }
 
 void draw_export_modal(ap_app *app)
@@ -304,15 +313,35 @@ void draw_export_modal(ap_app *app)
 
     // Output preview line.
     {
-        char stem[256];
-        photo_stem(photo, stem, sizeof(stem));
+        // Pick the preview source: the open photo, or — when targeting the
+        // library selection — the first selected grid photo. With no
+        // selection, fall back to a placeholder stem rather than the open
+        // photo (which would mislead about what export will actually run).
+        char        sel_abs[AP_EXPORT_DEST_LEN] = {0};
+        const char *src = NULL;
+        char        stem[256];
+        if (g_apply_to == APPLY_TO_SELECTION) {
+            int idx = first_selected_grid_index(app);
+            int mapped = (idx >= 0) ? app->grid_map[idx] : -1;
+            if (mapped >= 0 && lib &&
+                ap_library_photo_absolute_path(lib, mapped, sel_abs,
+                                               sizeof(sel_abs)) == 0) {
+                src = sel_abs;
+                path_stem(src, stem, sizeof(stem));
+            } else {
+                snprintf(stem, sizeof(stem), "<selected-photo>");
+            }
+        } else {
+            src = photo ? ap_photo_path(photo) : NULL;
+            path_stem(src, stem, sizeof(stem));
+        }
+
         char out_stem[512];
         ap_export_format_stem(s, stem, time(NULL), 1,
                               out_stem, sizeof(out_stem));
         const char *ext = ap_export_format_extension(s->format);
 
         char dir[AP_EXPORT_DEST_LEN];
-        const char *src = photo ? ap_photo_path(photo) : NULL;
         const char *root = lib ? ap_library_root(lib) : NULL;
         bool dir_ok = (ap_export_resolve_dir(s, src, root,
                                              dir, sizeof(dir)) == 0);
