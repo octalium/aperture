@@ -3,6 +3,7 @@
 #include "library/import.h"
 
 #include "core/log.h"
+#include "io/exif.h"
 #include "io/raw.h"
 
 #include <blake3.h>
@@ -237,17 +238,56 @@ static bool same_file(const char *a, const char *b)
 
 // ----- SQLite hash helpers ------------------------------------------
 
-// Look up `hex_hash` in `db`. On a match copies the stored relative
-// path into `out_rel` and returns 1. Returns 0 when not found.
-static int db_find_hash(sqlite3 *db, const char *hex_hash,
-                        char *out_rel, size_t out_len)
+// Upsert the dedupe columns for `rel_path` in `db`. The import runs
+// before the post-import library reopen has scanned the new files
+// into the photos table, so a plain UPDATE would silently affect
+// zero rows and the columns would never persist. The INSERT branch
+// creates the row with the imported file's `added_at`; the post-
+// import scan's `INSERT OR IGNORE` then leaves this row alone and
+// the next import's dedupe lookups find it. `identity` may be NULL
+// or empty when the source carried no recoverable EXIF tags.
+static void db_store_hash(sqlite3 *db, const char *rel_path,
+                          const char *hex_hash, const char *identity,
+                          int64_t size)
 {
     sqlite3_stmt *st = NULL;
-    int rc = sqlite3_prepare_v2(db,
-        "SELECT path FROM photos WHERE hash = ? LIMIT 1;",
-        -1, &st, NULL);
-    if (rc != SQLITE_OK) return 0;
-    sqlite3_bind_text(st, 1, hex_hash, -1, SQLITE_STATIC);
+    if (sqlite3_prepare_v2(db,
+            "INSERT INTO photos(path, added_at, hash, identity, size) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(path) DO UPDATE SET "
+            "    hash     = excluded.hash, "
+            "    identity = excluded.identity, "
+            "    size     = excluded.size;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return;
+    }
+    sqlite3_bind_text (st, 1, rel_path,        -1, SQLITE_STATIC);
+    sqlite3_bind_int64(st, 2, (int64_t)time(NULL));
+    sqlite3_bind_text (st, 3, hex_hash,        -1, SQLITE_STATIC);
+    if (identity && identity[0]) {
+        sqlite3_bind_text(st, 4, identity, -1, SQLITE_STATIC);
+    } else {
+        sqlite3_bind_null(st, 4);
+    }
+    sqlite3_bind_int64(st, 5, size);
+    sqlite3_step(st);
+    sqlite3_finalize(st);
+}
+
+// Look up `identity` in `db`. On a match copies the stored relative
+// path into `out_rel` and returns 1. Returns 0 when not found or when
+// `identity` is NULL/empty.
+static int db_find_identity(sqlite3 *db, const char *identity,
+                            char *out_rel, size_t out_len)
+{
+    if (!db || !identity || !identity[0]) return 0;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT path FROM photos WHERE identity = ? LIMIT 1;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return 0;
+    }
+    sqlite3_bind_text(st, 1, identity, -1, SQLITE_STATIC);
     int found = 0;
     if (sqlite3_step(st) == SQLITE_ROW) {
         const char *p = (const char *)sqlite3_column_text(st, 0);
@@ -256,53 +296,6 @@ static int db_find_hash(sqlite3 *db, const char *hex_hash,
         }
         found = 1;
     }
-    sqlite3_finalize(st);
-    return found;
-}
-
-// Upsert the hash column for `rel_path` in `db`. The import runs
-// before the post-import library reopen has scanned the new files
-// into the photos table, so a plain UPDATE would silently affect
-// zero rows and the hash would never persist. The INSERT branch
-// creates the row with the imported file's `added_at`; the post-
-// import scan's `INSERT OR IGNORE` will then leave this row alone
-// and the dedupe lookup on the next import will find it.
-static void db_store_hash(sqlite3 *db, const char *rel_path,
-                          const char *hex_hash, int64_t size)
-{
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-            "INSERT INTO photos(path, added_at, hash, size) "
-            "VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(path) DO UPDATE SET "
-            "    hash = excluded.hash, "
-            "    size = excluded.size;",
-            -1, &st, NULL) != SQLITE_OK) {
-        return;
-    }
-    sqlite3_bind_text (st, 1, rel_path,        -1, SQLITE_STATIC);
-    sqlite3_bind_int64(st, 2, (int64_t)time(NULL));
-    sqlite3_bind_text (st, 3, hex_hash,        -1, SQLITE_STATIC);
-    sqlite3_bind_int64(st, 4, size);
-    sqlite3_step(st);
-    sqlite3_finalize(st);
-}
-
-// True when any photo in the library has the given byte size. Cheap
-// O(log n) index lookup -- used as a pre-filter so the importer can
-// skip the full BLAKE3 hash on a source whose size doesn't match
-// anything in the library (the common case on a first import).
-static bool db_size_exists(sqlite3 *db, int64_t size)
-{
-    if (!db) return false;
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT 1 FROM photos WHERE size = ? LIMIT 1;",
-            -1, &st, NULL) != SQLITE_OK) {
-        return false;
-    }
-    sqlite3_bind_int64(st, 1, size);
-    bool found = (sqlite3_step(st) == SQLITE_ROW);
     sqlite3_finalize(st);
     return found;
 }
@@ -340,10 +333,22 @@ static import_one_result import_one(const char *src, const char *dest_dir,
     memcpy(stem, base, stem_len);
     stem[stem_len] = '\0';
 
+    // EXIF carries both the capture time (for pattern naming) and the
+    // identity tuple (for dedupe). Read once up front; either path
+    // tolerates a failure (naming falls back to mtime, dedupe falls
+    // back to the legacy hash lookup below).
+    ap_exif_fields exif;
+    bool have_exif = (ap_exif_read(src, &exif) == 0);
+    char identity[256];
+    identity[0] = '\0';
+    if (have_exif) {
+        ap_exif_identity(&exif, identity, sizeof(identity));
+    }
+
     char name[AP_IMPORT_PATTERN_LEN + 64];
     if (s->naming == AP_IMPORT_NAME_PATTERN) {
-        time_t when;
-        if (ap_raw_capture_time(src, &when) != 0) {
+        time_t when = have_exif ? exif.capture_time : 0;
+        if (when == 0) {
             struct stat ss;
             when = (stat(src, &ss) == 0) ? ss.st_mtime : time(NULL);
         }
@@ -363,9 +368,9 @@ static import_one_result import_one(const char *src, const char *dest_dir,
         return IMPORT_ONE_ERROR;
     }
 
-    // Stat source first: size feeds the dedupe pre-filter (avoids
-    // BLAKE3-hashing every source on a first import) and is what
-    // gets stored alongside the hash for the next import's filter.
+    // Stat source for the size we will store alongside the hash; the
+    // size pre-filter on the dedupe path is gone now that identity is
+    // an O(log n) index lookup with no file I/O.
     struct stat ss;
     if (stat(src, &ss) != 0) {
         AP_WARN("import: stat %s: %s", src, strerror(errno));
@@ -373,21 +378,17 @@ static import_one_result import_one(const char *src, const char *dest_dir,
     }
     int64_t src_size = (int64_t)ss.st_size;
 
-    // Library-wide content-dedupe lookup. Size is a cheap O(log n)
-    // pre-filter on photos.size; only fall through to the BLAKE3
-    // hash when at least one library photo shares the source's byte
-    // count. Gated on s->dedupe_content so the user can intentionally
-    // keep two copies of the same bytes in different subdirs.
-    if (db && s->dedupe_content && db_size_exists(db, src_size)) {
-        char src_hex[BLAKE3_HEX_LEN];
-        if (hash_file(src, src_hex) == 0) {
-            char existing_rel[4096];
-            if (db_find_hash(db, src_hex, existing_rel,
+    // Identity dedupe: a 10ms EXIF parse + index lookup beats the
+    // 5-10s LibRaw-open + full-source-BLAKE3 pre-pass it replaces.
+    // Gated on s->dedupe_content so the user can intentionally keep
+    // two copies of the same bytes in different subdirs.
+    if (db && s->dedupe_content && identity[0]) {
+        char existing_rel[4096];
+        if (db_find_identity(db, identity, existing_rel,
                              sizeof(existing_rel)) == 1) {
-                AP_INFO("import: %s already in library at %s, skipping",
-                        base, existing_rel);
-                return IMPORT_ONE_DUP_CONTENT;
-            }
+            AP_INFO("import: %s already in library at %s, skipping",
+                    base, existing_rel);
+            return IMPORT_ONE_DUP_CONTENT;
         }
     }
 
@@ -471,7 +472,7 @@ static import_one_result import_one(const char *src, const char *dest_dir,
             rel[slen + 1] = '\0';
             strncat(rel, final_name, sizeof(rel) - slen - 2);
         }
-        db_store_hash(db, rel, copied_hex, src_size);
+        db_store_hash(db, rel, copied_hex, identity, src_size);
     }
 
     return renamed ? IMPORT_ONE_RENAMED : IMPORT_ONE_IMPORTED;
@@ -584,7 +585,8 @@ int ap_import_run_into(const char *lib_root, const char *db_path,
             sqlite3_exec(db, "PRAGMA synchronous=NORMAL;",   NULL, NULL, NULL);
             sqlite3_exec(db, "PRAGMA temp_store=MEMORY;",    NULL, NULL, NULL);
             sqlite3_exec(db,
-                "CREATE INDEX IF NOT EXISTS idx_photos_hash ON photos(hash);",
+                "CREATE INDEX IF NOT EXISTS idx_photos_identity "
+                "ON photos(identity);",
                 NULL, NULL, NULL);
             // Single transaction for the whole run -- without this
             // each db_store_hash is its own implicit transaction and
