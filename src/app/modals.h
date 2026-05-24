@@ -5,6 +5,7 @@
 
 void draw_import_modal(ap_app *app);
 void draw_export_modal(ap_app *app);
+void draw_preferences_modal(ap_app *app);
 void draw_rename_library_modal(ap_app *app);
 void draw_save_layout_modal(ap_app *app);
 void draw_delete_modal(ap_app *app);

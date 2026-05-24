@@ -6,5 +6,6 @@ aperture_sources += files(
   'layout_profiles.c',
   'menubar.c',
   'modals.c',
+  'preferences_modal.c',
   'root.c',
 )
