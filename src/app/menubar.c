@@ -90,11 +90,9 @@ void draw_menubar(ap_app *app)
             }
         }
 
-        if (igMenuItem_Bool("Import...", NULL, false, app->library != NULL)) {
-            ap_import_settings_load(app->library, &app->import_settings);
-            app->import_source[0] = '\0';
-            app->import_status[0] = '\0';
-            app->import_modal     = true;
+        if (igMenuItem_Bool("Import...", "Ctrl+I", false,
+                            app->library != NULL)) {
+            ap_app_open_import_modal(app);
         }
 
         {
@@ -287,6 +285,10 @@ void drive_global_hotkeys(ap_app *app)
     if (io->KeyCtrl && igIsKeyPressed_Bool(ImGuiKey_E, false)
         && !io->KeyShift) {
         ap_app_open_export_modal(app);
+    }
+    if (io->KeyCtrl && !io->WantTextInput
+        && igIsKeyPressed_Bool(ImGuiKey_I, false) && app->library) {
+        ap_app_open_import_modal(app);
     }
     if (io->KeyCtrl && io->KeyShift
         && igIsKeyPressed_Bool(ImGuiKey_E, false) && app->photo) {

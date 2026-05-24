@@ -2,16 +2,26 @@
 
 #include "modals.h"
 
+#include <string.h>
+
+// Last path component of `path`, or "" if `path` is NULL / empty.
+static const char *path_leaf(const char *path)
+{
+    if (!path || !*path) return "";
+    const char *slash = strrchr(path, '/');
+    return slash ? slash + 1 : path;
+}
+
 void draw_import_modal(ap_app *app)
 {
     if (app->import_modal) {
         igOpenPopup_Str("Import Photos", 0);
         app->import_modal = false;
     }
-    if (!igBeginPopupModal("Import Photos", NULL,
-                           ImGuiWindowFlags_AlwaysAutoResize)) {
-        return;
-    }
+    ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize
+                           | ImGuiWindowFlags_NoCollapse;
+    if (!igBeginPopupModal("Import Photos", NULL, flags)) return;
+
     if (!app->library) {
         igText("No library open.");
         if (igButton("Close", (ImVec2_c){ 120.0f, 0.0f })) {
@@ -23,46 +33,75 @@ void draw_import_modal(ap_app *app)
 
     ap_import_settings *s = &app->import_settings;
 
-    igText("Source folder:");
-    igTextDisabled("%s", app->import_source[0] ? app->import_source
-                                               : "(none chosen)");
-    if (igButton("Choose Source...", (ImVec2_c){ 0.0f, 0.0f })) {
+    // Source section.
+    igSeparatorText("Source");
+    igText("Folder:");
+    igSameLine(0.0f, -1.0f);
+    igSetNextItemWidth(280.0f);
+    igInputText("##source_path", app->import_source,
+                sizeof(app->import_source), 0, NULL, NULL);
+    igSameLine(0.0f, 4.0f);
+    if (igButton("Browse...", (ImVec2_c){ 0.0f, 0.0f })) {
+        const char *seed = app->import_source[0] ? app->import_source : NULL;
         ap_file_dialog_pick_folder(app->import_source,
-                                   sizeof(app->import_source), NULL);
+                                   sizeof(app->import_source), seed);
     }
 
-    igSeparator();
+    // Destination section.
+    igSeparatorText("Destination");
+    igText("Library:");
+    igSameLine(0.0f, -1.0f);
+    igTextDisabled("%s", ap_library_root(app->library));
 
-    igInputText("Destination subdir", s->subdir, sizeof(s->subdir),
-                0, NULL, NULL);
+    igText("Subdir: ");
+    igSameLine(0.0f, -1.0f);
+    igSetNextItemWidth(280.0f);
+    igInputText("##subdir", s->subdir, sizeof(s->subdir), 0, NULL, NULL);
+    igSameLine(0.0f, 4.0f);
+    igTextDisabled("(blank = library root)");
 
+    // Naming section.
+    igSeparatorText("Naming");
     static const char *const naming_items[] = {
         "Keep original names", "Rename by pattern",
     };
-    igCombo_Str_arr("Naming", &s->naming, naming_items, 2, -1);
+    igText("Mode:   ");
+    igSameLine(0.0f, -1.0f);
+    igSetNextItemWidth(220.0f);
+    igCombo_Str_arr("##naming", &s->naming, naming_items, 2, -1);
     if (s->naming == AP_IMPORT_NAME_PATTERN) {
-        igInputText("Pattern", s->pattern, sizeof(s->pattern), 0, NULL, NULL);
-        igTextDisabled("tokens: {ORIG} {YYYY} {MM} {DD} {HH} {MIN} {SEC} {SEQ}");
+        igText("Pattern:");
+        igSameLine(0.0f, -1.0f);
+        igSetNextItemWidth(280.0f);
+        igInputText("##pattern", s->pattern, sizeof(s->pattern),
+                    0, NULL, NULL);
+        igTextDisabled(
+            "tokens: {ORIG} {YYYY} {MM} {DD} {HH} {MIN} {SEC} {SEQ}");
     }
 
+    igText("Conflict:");
+    igSameLine(0.0f, -1.0f);
     static const char *const collide_items[] = {
         "Skip", "Overwrite", "Auto-suffix",
     };
-    igCombo_Str_arr("On name collision", &s->collision, collide_items, 3, -1);
+    igSetNextItemWidth(140.0f);
+    igCombo_Str_arr("##collision", &s->collision, collide_items, 3, -1);
 
     igSeparator();
 
-    bool can_import = app->import_source[0] != '\0' && !app->import_inflight;
-    if (!can_import) igBeginDisabled(true);
-    if (igButton("Import", (ImVec2_c){ 120.0f, 0.0f })) {
-        ap_import_settings_save(app->library, s);
+    // Output preview line. Mirrors the export modal's preview row so
+    // the user can see where files will land before clicking Import.
+    {
+        const char *leaf = path_leaf(app->import_source);
         const char *root = ap_library_root(app->library);
-        submit_import_job(app, root, app->import_source, s);
-    }
-    if (!can_import) igEndDisabled();
-    igSameLine(0.0f, -1.0f);
-    if (igButton("Close", (ImVec2_c){ 120.0f, 0.0f })) {
-        igCloseCurrentPopup();
+        igTextDisabled("Preview:");
+        if (!app->import_source[0]) {
+            igTextWrapped("(choose a source folder)");
+        } else if (s->subdir[0]) {
+            igTextWrapped("%s/  \xe2\x86\x92  %s/%s/", leaf, root, s->subdir);
+        } else {
+            igTextWrapped("%s/  \xe2\x86\x92  %s/", leaf, root);
+        }
     }
 
     if (app->import_inflight) {
@@ -82,9 +121,24 @@ void draw_import_modal(ap_app *app)
                            r->skip_collision);
         }
         if (r->errored > 0) {
-            igTextDisabled("%d error%s — see the log",
+            igTextDisabled("%d error%s \xe2\x80\x94 see the log",
                            r->errored, r->errored == 1 ? "" : "s");
         }
+    }
+
+    igSeparator();
+
+    bool can_import = app->import_source[0] != '\0' && !app->import_inflight;
+    if (!can_import) igBeginDisabled(true);
+    if (igButton("Import", (ImVec2_c){ 120.0f, 0.0f })) {
+        ap_import_settings_save(app->library, s);
+        const char *root = ap_library_root(app->library);
+        submit_import_job(app, root, app->import_source, s);
+    }
+    if (!can_import) igEndDisabled();
+    igSameLine(0.0f, -1.0f);
+    if (igButton("Cancel", (ImVec2_c){ 120.0f, 0.0f })) {
+        igCloseCurrentPopup();
     }
 
     igEndPopup();

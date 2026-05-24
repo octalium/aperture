@@ -39,7 +39,7 @@ static void library_empty_state_draw(ap_app *app)
     igSpacing();
     if (igButton("Import photos\xe2\x80\xa6",
                  (ImVec2_c){ -1.0f, 0.0f })) {
-        ap_app_request_import(app);
+        ap_app_open_import_modal(app);
     }
 
     igEnd();
