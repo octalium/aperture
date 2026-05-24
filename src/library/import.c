@@ -27,6 +27,7 @@
 #define KEY_NAMING    "import.naming"
 #define KEY_PATTERN   "import.pattern"
 #define KEY_COLLISION "import.collision"
+#define KEY_DEDUPE    "import.dedupe_content"
 
 void ap_import_settings_load(const ap_library *lib, ap_import_settings *out)
 {
@@ -36,7 +37,8 @@ void ap_import_settings_load(const ap_library *lib, ap_import_settings *out)
     snprintf(out->subdir, sizeof(out->subdir), "raw");
     out->naming = AP_IMPORT_NAME_KEEP;
     snprintf(out->pattern, sizeof(out->pattern), "{YYYY}{MM}{DD}_{HH}{MIN}{SEC}");
-    out->collision = AP_IMPORT_COLLIDE_SUFFIX;
+    out->collision      = AP_IMPORT_COLLIDE_SUFFIX;
+    out->dedupe_content = true;
     if (!lib) return;
 
     char buf[AP_IMPORT_PATTERN_LEN];
@@ -58,6 +60,9 @@ void ap_import_settings_load(const ap_library *lib, ap_import_settings *out)
                           c <= AP_IMPORT_COLLIDE_SUFFIX)
                              ? c : AP_IMPORT_COLLIDE_SUFFIX;
     }
+    if (ap_library_setting_get(lib, KEY_DEDUPE, buf, sizeof(buf)) == 0) {
+        out->dedupe_content = (atoi(buf) != 0);
+    }
 }
 
 void ap_import_settings_save(ap_library *lib, const ap_import_settings *s)
@@ -70,6 +75,8 @@ void ap_import_settings_save(ap_library *lib, const ap_import_settings *s)
     ap_library_setting_set(lib, KEY_PATTERN, s->pattern);
     snprintf(num, sizeof(num), "%d", s->collision);
     ap_library_setting_set(lib, KEY_COLLISION, num);
+    snprintf(num, sizeof(num), "%d", s->dedupe_content ? 1 : 0);
+    ap_library_setting_set(lib, KEY_DEDUPE, num);
 }
 
 // ----- filename formatting ------------------------------------------
@@ -325,7 +332,11 @@ static import_one_result import_one(const char *src, const char *dest_dir,
     }
 
     // Content-dedupe via db hash lookup before touching the destination.
-    if (db) {
+    // Gated on s->dedupe_content so the user can intentionally keep
+    // two copies of the same bytes in different subdirs; the
+    // byte-equality safety check at the destination path further down
+    // is independent and always runs.
+    if (db && s->dedupe_content) {
         char src_hex[BLAKE3_HEX_LEN];
         if (hash_file(src, src_hex) == 0) {
             char existing_rel[4096];
