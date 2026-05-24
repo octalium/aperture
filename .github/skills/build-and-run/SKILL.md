@@ -67,9 +67,10 @@ For manual smoke tests, opening a small test library with a handful of RAW files
 
 ## 4. Useful env vars
 
-- `AP_LOG_LEVEL=debug` (or `info` / `warn` / `error`) — controls log verbosity. Debug surfaces import/render/io diagnostics that are silent otherwise.
-- `VK_LOADER_DEBUG=all` — Vulkan loader verbose. Use only when debugging GPU-init failures.
 - `SOURCE_DATE_EPOCH=<unix_ts>` — pin the AppStream `<release date>` to a specific timestamp at build configure time (per #383). Useful for reproducible packaging builds; ignore for development.
+- `VK_LOADER_DEBUG=all` — Vulkan loader verbose, set in the runtime environment. Use only when debugging GPU-init failures.
+
+Aperture's logger (`src/core/log.c`) is currently compile-time only — there is no runtime level env var. If you need quieter or noisier logs, change `ap_log_set_level` calls in the source or adjust the default in `src/core/log.h`.
 
 ## 5. Install (optional, for manual install-target testing)
 
@@ -92,4 +93,7 @@ meson install -C build   # no sudo
 - `Native dependency 'X' not found` — missing system dep. Reread step 1.
 - `meson version is too old` — install a newer meson per step 1.
 - `cimgui` build error involving `IMGUI_DISABLE_OBSOLETE_FUNCTIONS` — recurring quirk of the cimgui wrap. See the `roll-cimgui-wrap` skill if a roll is in scope; otherwise the existing pin should be fine.
-- Vulkan validation layer errors at runtime that don't reproduce in release — set `AP_LOG_LEVEL=info` and check whether the issue is build-config-dependent before chasing it.
+- Vulkan validation layer errors at runtime that don't reproduce in release — likely a debug-build-only assertion. Read the validation message carefully before chasing.
+
+---
+*If something in this skill looks wrong, the source code is authoritative. Verify against the current tree and update this skill in the same PR.*

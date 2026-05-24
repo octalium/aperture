@@ -27,22 +27,20 @@ The cardinal mistake (caught in PR #412 review): if your tooltip / hot-path read
 
 ### 1. Define the settings struct + persistence API
 
-Pick a home in the feature's module. Conventions:
+Pick a home in the feature's module. Conventions (mirroring Quick Export's actual surface — see `src/output/export.h`):
 
 ```c
-// src/output/<feature>.h or wherever your feature lives
 typedef struct {
     /* fields */
 } ap_<feature>_settings;
 
-void ap_<feature>_settings_defaults(ap_<feature>_settings *out);
 void ap_<feature>_load(ap_<feature>_settings *out);
-void ap_<feature>_save(const ap_<feature>_settings *in);
+void ap_<feature>_save(const ap_<feature>_settings *s);
 ```
 
 Implement load/save against `ap_settings_get` / `ap_settings_set` (the app-wide settings table, see `src/library/library.c` for the implementation). Use a stable, namespaced key prefix (e.g. `"quick_export.format"`, `"quick_export.quality"`).
 
-Defaults: fill any missing field with a sensible default rather than failing on absence. The first-run user has no settings rows; the app should not crash.
+**Defaults live inside `_load`**, not in a separate `_defaults` function. The pattern is: `_load` reads from sqlite; for any missing key it fills the field with a sensible default. First-run users have no settings rows; the load path is also the defaults path. (Quick Export does it this way — don't introduce a parallel `_defaults` entry point.)
 
 ### 2. Cache on `ap_app`
 
@@ -52,7 +50,7 @@ In `src/app/app.h`:
 ap_<feature>_settings *ap_app_<feature>_settings(ap_app *app);
 ```
 
-In `src/app/app.c`, add the field to `struct ap_app` (already declared in the .c file) and call `ap_<feature>_load(&app->cached)` once during `ap_app_init` (or whichever init function exists; grep for the existing `ap_app_quick_export_load` call site as a reference).
+The field lives on `struct ap_app`, which is declared in `src/app/app_priv.h` (not `app.c`). Add your field there, and call `ap_<feature>_load(&app->cached)` once during init — grep for the existing `ap_quick_export_load` call site as a reference.
 
 The accessor returns a pointer to the cached struct. The modal mutates it directly; readers (tooltips, action handlers) read from it directly.
 
@@ -98,9 +96,9 @@ Defaults serve two purposes: first-run UX, and a "Use default" shortcut in the m
 
 - Stored value is empty (`""`) when the user hasn't explicitly set one.
 - The UI shows a placeholder (via `igInputTextWithHint`) describing what empty resolves to.
-- The action path resolves empty -> default at use time, not at save time, so the default tracks state changes (e.g. switching libraries changes the resolved default).
+- The action path resolves empty → default at use time, not at save time, so the default tracks state changes (e.g. switching libraries changes the resolved default).
 
-See `quick_export_tooltip` + `ap_quick_export_resolve_destination` for the pattern.
+See `quick_export_tooltip` + `ap_quick_export_resolve_dir` (in `src/output/export.h`) for the pattern.
 
 ## What NOT to do
 
@@ -117,3 +115,6 @@ See `quick_export_tooltip` + `ap_quick_export_resolve_destination` for the patte
 - Change a value, click Cancel — change is discarded.
 - Action path that reads the setting reflects the saved value immediately (no restart needed).
 - Tooltip surfaces the current value correctly.
+
+---
+*If something in this skill looks wrong, the source code is authoritative. Verify against the current tree and update this skill in the same PR.*

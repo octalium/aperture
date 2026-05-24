@@ -5,6 +5,8 @@ description: Bump the pinned cimgui revision in dep/cimgui.wrap to a newer upstr
 
 `dep/cimgui.wrap` tracks the `docking_inter` branch of github.com/cimgui/cimgui — a rolling branch with no upstream tags. We pin a specific commit SHA so builds are reproducible and we can verify the new revision before adopting it. This skill is the deterministic recipe for bumping that pin.
 
+> Aperture's meson uses `subproject_dir: 'dep'` (set in `meson.build`), so fetched subproject sources land under `dep/<n>/`, not the default `subprojects/<name>/`. The recipe below assumes that layout.
+
 ## When to roll
 
 - An upstream cimgui change you want (new ImGui feature, bug fix you've hit, security release).
@@ -47,12 +49,14 @@ Preserve **every other line** verbatim. `patch_directory = cimgui` is load-beari
 ### 3. Re-fetch and build
 
 ```
-rm -rf subprojects/cimgui  # force a fresh clone
+rm -rf dep/cimgui            # force a fresh clone (the wrap re-fetches on next setup)
 meson setup build --reconfigure
 meson compile -C build
 ```
 
-A clean build is the first sanity check. If compile fails, the most likely culprits are:
+A clean build is the first sanity check — necessary but **not sufficient**. Plenty of cimgui-wrap regressions compile fine and only show up at runtime (the #407 EnterReturnsTrue bug was exactly that). Don't skip the manual smoke test in step 5.
+
+If compile fails, the most likely culprits are:
 
 - **`IMGUI_DISABLE_OBSOLETE_FUNCTIONS` regression** (recurring per the `cimgui_wrap_rolling` memory). Upstream sometimes adds calls to APIs that this define disables. Either:
   - Bump cimgui forward past the offending commit (upstream usually fixes its own breakage within a few commits), or
@@ -64,7 +68,7 @@ A clean build is the first sanity check. If compile fails, the most likely culpr
 cimgui had a bug where `igInputText` with `EnterReturnsTrue` would return true on plain edits, not just on Enter (see #407). The fix pinned at SHA `07fde25e7aff0b2b3eb536dd162d5ead162609d8` — verify the new SHA also has correct behavior:
 
 ```
-grep -A 5 'EnterReturnsTrue' subprojects/cimgui/imgui/imgui_widgets.cpp | head
+grep -A 5 'EnterReturnsTrue' dep/cimgui/imgui/imgui_widgets.cpp | head
 ```
 
 You should see `validated` only being set inside the explicit Enter / KeypadEnter / Shift+Enter / gamepad branches — not in a generic edit-completion branch. If `validated` leaks out (returns true on plain edits), the workaround we removed in #411 has to come back. Don't roll onto that SHA.
@@ -105,3 +109,6 @@ In the PR body, document:
 ## If something looks off
 
 If the new SHA introduces issues we don't immediately understand, the safest fallback is rolling back to the prior pin (preserved in git history). Don't ship a half-fixed roll — the wrap is too central. Open an issue documenting the regression and pick a different upstream SHA next pass.
+
+---
+*If something in this skill looks wrong, the source code is authoritative. Verify against the current tree and update this skill in the same PR.*
