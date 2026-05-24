@@ -7,8 +7,11 @@
 #include "menubar.h"
 #include "modals.h"
 
+#include "io/raw.h"
+#include "modules/module.h"
 #include "modules/wb.h"
 #include "output/export.h"
+#include "sidecar/sidecar.h"
 #include "output/jpeg.h"
 #include "output/png.h"
 #include "output/tiff.h"
@@ -1121,6 +1124,108 @@ int ap_app_sync_edits_to_selection(ap_app *app)
         }
     }
     return wrote;
+}
+
+// Find the index of `name` in a NUL-terminated array. Returns -1
+// when the name is missing.
+static int str_slot_by_name(const char *const *names, int count,
+                            const char *name)
+{
+    if (!names || !name) return -1;
+    for (int i = 0; i < count; i++) {
+        if (names[i] && strcmp(names[i], name) == 0) return i;
+    }
+    return -1;
+}
+
+int ap_app_apply_lens_override_to_selection(ap_app *app,
+                                            const char *match_exif_lens,
+                                            const char *override_lens,
+                                            int *out_applied,
+                                            int *out_skipped)
+{
+    if (out_applied) *out_applied = 0;
+    if (out_skipped) *out_skipped = 0;
+    if (!app || !app->library || !app->grid) return -1;
+    if (!match_exif_lens || !override_lens) return -1;
+
+    const ap_module *lens_mod = ap_module_find("lens_correction");
+    if (!lens_mod) return -1;
+    int slot = str_slot_by_name(lens_mod->str_params_names,
+                                lens_mod->str_params_count, "lens_override");
+    if (slot < 0) return -1;
+
+    int applied = 0;
+    int skipped = 0;
+
+    for (int c = 0; c < app->grid_map_count; c++) {
+        if (!ap_grid_is_selected(app->grid, c)) continue;
+        int i = app->grid_map[c];
+        if (app->photo && i == app->photo_library_idx) continue;
+
+        char abs[4096];
+        if (ap_library_photo_absolute_path(app->library, i,
+                                           abs, sizeof(abs)) != 0) {
+            skipped++;
+            continue;
+        }
+
+        char peer_lens[AP_META_VALUE_LEN];
+        if (ap_raw_lens_model(abs, peer_lens, sizeof(peer_lens)) != 0) {
+            skipped++;
+            continue;
+        }
+        if (strcmp(peer_lens, match_exif_lens) != 0) {
+            skipped++;
+            continue;
+        }
+
+        ap_edit_stack stack;
+        ap_edit_stack_init(&stack);
+        bool respect_orientation = true;
+        ap_photo_metadata user_meta;
+        ap_photo_metadata_clear(&user_meta);
+        bool user_set[AP_META_FIELD_COUNT] = {0};
+        ap_photo_culling culling;
+        ap_photo_culling_clear(&culling);
+        ap_photo_groups groups;
+        groups.count = 0;
+        ap_photo_keywords keywords;
+        ap_photo_keywords_clear(&keywords);
+        if (ap_sidecar_load(abs, &stack, &respect_orientation,
+                            &user_meta, user_set, &culling, &groups,
+                            &keywords) != 0) {
+            // No sidecar / unreadable: nothing to attach an override to.
+            skipped++;
+            continue;
+        }
+
+        int hit = -1;
+        for (int e = 0; e < stack.count; e++) {
+            if (strcmp(stack.entries[e].module_name, "lens_correction") == 0) {
+                hit = e;
+                break;
+            }
+        }
+        if (hit < 0) {
+            skipped++;
+            continue;
+        }
+
+        snprintf(stack.entries[hit].str_params[slot], AP_EDIT_STR_LEN,
+                 "%s", override_lens);
+
+        if (ap_library_apply_stack_to_photo(app->library, i, &stack) == 0) {
+            applied++;
+            ap_library_invalidate_thumbnail(app->library, i);
+        } else {
+            skipped++;
+        }
+    }
+
+    if (out_applied) *out_applied = applied;
+    if (out_skipped) *out_skipped = skipped;
+    return 0;
 }
 
 int ap_app_apply_metadata_to_selection(ap_app *app,

@@ -2,7 +2,9 @@
 
 #include "lens_correction_comp_spv.h"
 
+#include "app/app.h"
 #include "photo/metadata.h"
+#include "ui/toast.h"
 
 #include "cimgui.h"
 
@@ -107,6 +109,18 @@ static void ensure_db(void)
 // "50mm" prime when the user's exact lens isn't in the DB.
 #define LENS_MATCH_MIN_SCORE 50
 
+// Maximum candidate lenses surfaced to the chooser. Lensfun's strict
+// match for an ambiguous string ("AF G", "AF-S") rarely returns more
+// than a handful that clear the score threshold; cap the array so the
+// dropdown stays usable and the cache footprint is bounded.
+#define LENS_MAX_CANDIDATES 16
+
+typedef struct {
+    const lfLens *lens;                       // borrowed from g_lf_db
+    int           score;
+    char          name[AP_META_VALUE_LEN * 2]; // "Maker Model"
+} ap_lens_candidate;
+
 // Result of a (camera_str, lens_str) lookup. Cached across frames so
 // the panel can display match status every frame without re-running
 // the Lensfun queries. `cam`/`lens` are borrowed pointers owned by the
@@ -122,9 +136,23 @@ typedef struct {
     char            cam_name[AP_META_VALUE_LEN * 2];
     char            lens_name[AP_META_VALUE_LEN * 2];   // best candidate name
     bool            lens_rejected; // a candidate existed but scored below threshold
+
+    // Full candidate list (top-scoring first). `candidate_count` is 0
+    // when the lookup returned nothing or the DB is unavailable;
+    // entries past it are unset. Only candidates clearing
+    // LENS_MATCH_MIN_SCORE are kept — weaker hits are noise, not real
+    // override choices.
+    ap_lens_candidate candidates[LENS_MAX_CANDIDATES];
+    int               candidate_count;
 } ap_lens_match;
 
-static ap_lens_match g_match_cache;
+// Two-slot cache so render_params can resolve both the current lens
+// string (for actual rendering) and the EXIF baseline (for the
+// "candidates for the original EXIF string" dropdown) without paying
+// two Lensfun queries every frame. Lookups round-robin into whichever
+// slot doesn't match; size 2 is the only number that matters here.
+static ap_lens_match g_match_cache[2];
+static int           g_match_cache_next;
 
 static void compose_name(const char *maker, const char *model,
                          char *out, size_t len)
@@ -140,27 +168,39 @@ static void compose_name(const char *maker, const char *model,
     }
 }
 
-// Cached strict lookup of camera + lens. Returns a pointer to the
+// Cached strict lookup of camera + lens. Returns a pointer to a
 // module-static cache entry; never NULL. Result fields are zeroed when
-// inputs are empty or the DB is unavailable.
+// inputs are empty or the DB is unavailable. The lens query is strict
+// (no LF_SEARCH_LOOSE) and weak hits are filtered by LENS_MATCH_MIN_SCORE
+// — Lensfun's ranking is the only disambiguator. When more than one
+// candidate clears the threshold, `lens` points at the top-scoring one
+// and `candidates[0..candidate_count)` lists them all so the chooser
+// can offer a manual override.
 static const ap_lens_match *resolve_match(const char *cam_in,
                                           const char *lens_in)
 {
     if (!cam_in)  cam_in  = "";
     if (!lens_in) lens_in = "";
-    if (g_match_cache.valid &&
-        strncmp(g_match_cache.cam_in,  cam_in,  AP_EDIT_STR_LEN) == 0 &&
-        strncmp(g_match_cache.lens_in, lens_in, AP_EDIT_STR_LEN) == 0) {
-        return &g_match_cache;
+
+    for (int i = 0; i < (int)(sizeof g_match_cache / sizeof g_match_cache[0]); i++) {
+        const ap_lens_match *e = &g_match_cache[i];
+        if (e->valid &&
+            strncmp(e->cam_in,  cam_in,  AP_EDIT_STR_LEN) == 0 &&
+            strncmp(e->lens_in, lens_in, AP_EDIT_STR_LEN) == 0) {
+            return e;
+        }
     }
 
-    memset(&g_match_cache, 0, sizeof g_match_cache);
-    g_match_cache.valid = true;
-    strncpy(g_match_cache.cam_in,  cam_in,  AP_EDIT_STR_LEN - 1);
-    strncpy(g_match_cache.lens_in, lens_in, AP_EDIT_STR_LEN - 1);
+    ap_lens_match *m = &g_match_cache[g_match_cache_next];
+    g_match_cache_next = (g_match_cache_next + 1) %
+        (int)(sizeof g_match_cache / sizeof g_match_cache[0]);
+    memset(m, 0, sizeof *m);
+    m->valid = true;
+    strncpy(m->cam_in,  cam_in,  AP_EDIT_STR_LEN - 1);
+    strncpy(m->lens_in, lens_in, AP_EDIT_STR_LEN - 1);
 
     ensure_db();
-    if (!g_lf_db) return &g_match_cache;
+    if (!g_lf_db) return m;
 
     if (cam_in[0]) {
         // Cameras are matched loosely — EXIF make/model strings vary in
@@ -169,36 +209,42 @@ static const ap_lens_match *resolve_match(const char *cam_in,
         const lfCamera **cams = lf_db_find_cameras_ext(g_lf_db, NULL, cam_in,
                                                        LF_SEARCH_LOOSE);
         if (cams && cams[0]) {
-            g_match_cache.cam       = cams[0];
-            g_match_cache.cam_score = cams[0]->Score;
+            m->cam       = cams[0];
+            m->cam_score = cams[0]->Score;
             compose_name(cams[0]->Maker, cams[0]->Model,
-                         g_match_cache.cam_name,
-                         sizeof g_match_cache.cam_name);
+                         m->cam_name, sizeof m->cam_name);
         }
         lf_free(cams);
     }
 
     if (lens_in[0]) {
-        // Strict lens search: no LF_SEARCH_LOOSE so every input word must
-        // appear in the lens record, then we filter by Score so a weak
-        // partial match can't get through.
-        const lfLens **lenses = lf_db_find_lenses_hd(g_lf_db,
-                                                    g_match_cache.cam,
-                                                    NULL, lens_in, 0);
+        const lfLens **lenses = lf_db_find_lenses_hd(g_lf_db, m->cam,
+                                                     NULL, lens_in, 0);
         if (lenses && lenses[0]) {
-            g_match_cache.lens_score = lenses[0]->Score;
+            m->lens_score = lenses[0]->Score;
             compose_name(lenses[0]->Maker, lenses[0]->Model,
-                         g_match_cache.lens_name,
-                         sizeof g_match_cache.lens_name);
+                         m->lens_name, sizeof m->lens_name);
             if (lenses[0]->Score >= LENS_MATCH_MIN_SCORE) {
-                g_match_cache.lens = lenses[0];
+                m->lens = lenses[0];
+                for (int i = 0;
+                     lenses[i] &&
+                     i < LENS_MAX_CANDIDATES &&
+                     lenses[i]->Score >= LENS_MATCH_MIN_SCORE;
+                     i++) {
+                    m->candidates[m->candidate_count].lens  = lenses[i];
+                    m->candidates[m->candidate_count].score = lenses[i]->Score;
+                    compose_name(lenses[i]->Maker, lenses[i]->Model,
+                                 m->candidates[m->candidate_count].name,
+                                 sizeof m->candidates[m->candidate_count].name);
+                    m->candidate_count++;
+                }
             } else {
-                g_match_cache.lens_rejected = true;
+                m->lens_rejected = true;
             }
         }
         lf_free(lenses);
     }
-    return &g_match_cache;
+    return m;
 }
 
 // Parse a formatted focal-length string like "24mm" or "24" into mm.
@@ -405,6 +451,19 @@ static void lens_render(const ap_module *self, float *params,
     // at most one Lensfun query per (camera, lens) string pair.
     const ap_lens_match *match = resolve_match(ctx->str_params[STR_CAMERA],
                                                ctx->str_params[STR_LENS]);
+
+    // Candidate set keyed on the *EXIF* lens string, not the current
+    // (possibly-overridden) STR_LENS. The chooser always offers the
+    // alternatives the original EXIF string yields, so an override can
+    // be undone or swapped without round-tripping through "Clear Lens".
+    // Falls back to STR_LENS when no EXIF lens model is available.
+    const char *baseline_lens =
+        (exif_lens[0]) ? exif_lens : ctx->str_params[STR_LENS];
+    const ap_lens_match *baseline =
+        resolve_match(ctx->str_params[STR_CAMERA], baseline_lens);
+
+    bool is_override = (exif_lens[0] &&
+                        strcmp(ctx->str_params[STR_LENS], exif_lens) != 0);
     const ImVec4_c ok_col   = { 0.4f, 1.0f, 0.5f, 1.0f };
     const ImVec4_c warn_col = { 1.0f, 0.8f, 0.4f, 1.0f };
     const ImVec4_c bad_col  = { 1.0f, 0.5f, 0.5f, 1.0f };
@@ -417,6 +476,15 @@ static void lens_render(const ap_module *self, float *params,
     if (match->lens) {
         igTextColored(ok_col, "\xe2\x9c\x93 Lens: %s (score %d)",
                       match->lens_name, match->lens_score);
+        if (is_override) {
+            igTextColored(warn_col,
+                          "\xe2\x86\xb3 overridden \xe2\x80\x94 EXIF: %s",
+                          exif_lens);
+        } else if (baseline->candidate_count > 1) {
+            igTextColored(warn_col,
+                          "\xe2\x86\xb3 auto-picked from %d candidates",
+                          baseline->candidate_count);
+        }
     } else if (match->lens_rejected) {
         igTextColored(bad_col,
                       "\xe2\x9a\xa0 Lens match too weak (best: %s, score %d/%d) "
@@ -426,6 +494,58 @@ static void lens_render(const ap_module *self, float *params,
     } else if (ctx->str_params[STR_LENS][0]) {
         igTextColored(bad_col,
                       "\xe2\x9a\xa0 No lens match \xe2\x80\x94 stage skipped");
+    }
+
+    // Override chooser: surfaced whenever the EXIF-string lookup yields
+    // more than one candidate. The combo's selection reflects which
+    // candidate the *current* STR_LENS resolves to (or 0 when no exact
+    // match — typically when the user typed something manually).
+    if (baseline->candidate_count > 1) {
+        int selected = 0;
+        for (int i = 0; i < baseline->candidate_count; i++) {
+            if (strcmp(baseline->candidates[i].name,
+                       ctx->str_params[STR_LENS]) == 0) {
+                selected = i;
+                break;
+            }
+        }
+        if (igBeginCombo("Choose lens", baseline->candidates[selected].name, 0)) {
+            for (int i = 0; i < baseline->candidate_count; i++) {
+                char label[AP_META_VALUE_LEN * 2 + 32];
+                snprintf(label, sizeof(label), "%s (score %d)",
+                         baseline->candidates[i].name,
+                         baseline->candidates[i].score);
+                bool is_sel = (i == selected);
+                if (igSelectable_Bool(label, is_sel, 0,
+                                      (ImVec2_c){0.0f, 0.0f})) {
+                    snprintf(ctx->str_params[STR_LENS], AP_EDIT_STR_LEN,
+                             "%s", baseline->candidates[i].name);
+                    *ctx->request_rebuild    = true;
+                    *ctx->snapshot_requested = true;
+                }
+                if (is_sel) igSetItemDefaultFocus();
+            }
+            igEndCombo();
+        }
+
+        // Bulk-apply: write the current STR_LENS as an override onto
+        // every selected photo whose EXIF lens model exactly equals
+        // this photo's EXIF lens model.
+        igSameLine(0.0f, 4.0f);
+        if (igSmallButton("Apply to selection")) {
+            int applied = 0, skipped = 0;
+            if (ap_app_apply_lens_override_to_selection(
+                    ctx->app, exif_lens, ctx->str_params[STR_LENS],
+                    &applied, &skipped) == 0) {
+                ap_toast_push(AP_TOAST_INFO,
+                              "Lens override: applied to %d photo%s; "
+                              "skipped %d (different lens or no module).",
+                              applied, applied == 1 ? "" : "s", skipped);
+            } else {
+                ap_toast_push(AP_TOAST_ERROR,
+                              "Lens override: no library / selection.");
+            }
+        }
     }
 
     igSeparator();
