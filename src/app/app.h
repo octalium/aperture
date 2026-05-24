@@ -139,6 +139,15 @@ int ap_app_set_selection_rating(ap_app *app, int rating);
 int ap_app_set_selection_flag(ap_app *app, ap_flag flag);
 int ap_app_set_selection_color(ap_app *app, ap_color_label color);
 
+// Culling: set the rating / pick-reject flag / colour label on the
+// currently open photo (keyed by `app->photo_library_idx`). Mirrors the
+// selection-targeted family above and shares the same write path; the
+// photo-mode keyboard shortcuts route through here. Returns 0 on
+// success, or -1 when no photo is open or the library is missing.
+int ap_app_set_photo_rating(ap_app *app, int rating);
+int ap_app_set_photo_flag(ap_app *app, ap_flag flag);
+int ap_app_set_photo_color(ap_app *app, ap_color_label color);
+
 // Library-grid group filter. Setting it rebuilds the visible grid;
 // the Groups panel reads the active filter back to highlight it.
 // `kind` is an ap_group_filter; `name` is used only for
