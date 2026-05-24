@@ -608,6 +608,14 @@ void ap_app_run_quick_export(ap_app *app)
     const ap_quick_export_settings *q = &app->quick_export_settings;
 
     if (app->mode == AP_MODE_PHOTO) {
+        // ap_app_open_photo flips mode synchronously and decodes async;
+        // app->photo is NULL until install_loaded_photo lands. Ctrl+Shift+E
+        // pressed mid-load reaches here without a photo.
+        if (!app->photo) {
+            ap_toast_push(AP_TOAST_INFO,
+                          "Quick Export: photo is still loading");
+            return;
+        }
         quick_export_one(app, app->photo, ap_photo_path(app->photo), q);
         return;
     }
