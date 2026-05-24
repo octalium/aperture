@@ -104,6 +104,33 @@ int ap_export_resolve_dir(const ap_export_settings *s,
                           const char *src_path, const char *library_root,
                           char *out, size_t out_len);
 
+// User-wide Quick Export preferences. Distinct from ap_export_settings:
+// these drive the no-questions-asked Ctrl+Shift+E action and persist via
+// the app-wide settings store (ap_settings_*), not per-library.
+//
+// `destination` is either an absolute directory the user picked, or "" to
+// mean "use the open library's <root>/export/". Quality is JPEG-only.
+typedef struct {
+    int  format;                          // ap_export_format
+    int  jpeg_quality;                    // 1..100, JPEG only
+    char destination[AP_EXPORT_DEST_LEN]; // absolute dir, or "" for default
+} ap_quick_export_settings;
+
+// Fill `out` with the persisted Quick Export preferences, falling back to
+// defaults for any missing field (JPEG, q=90, empty destination).
+void ap_quick_export_load(ap_quick_export_settings *out);
+
+// Persist `s` into the app-wide settings store. No-op when `s` is NULL.
+void ap_quick_export_save(const ap_quick_export_settings *s);
+
+// Resolve the absolute output directory the next Quick Export should
+// write into. Uses `s->destination` when set; otherwise falls back to
+// `<library_root>/export/`. Returns 0 on success, -1 when neither a
+// destination nor a library root is available.
+int ap_quick_export_resolve_dir(const ap_quick_export_settings *s,
+                                const char *library_root,
+                                char *out, size_t out_len);
+
 #ifdef __cplusplus
 }
 #endif
