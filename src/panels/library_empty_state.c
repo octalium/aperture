@@ -37,7 +37,7 @@ static void library_empty_state_draw(ap_app *app)
 
     igTextWrapped("This library has no photos yet.");
     igSpacing();
-    if (igButton("Import photos\xe2\x80\xa6",
+    if (igButton("Import photos...",
                  (ImVec2_c){ -1.0f, 0.0f })) {
         ap_app_open_import_modal(app);
     }

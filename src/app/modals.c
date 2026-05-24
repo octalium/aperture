@@ -115,14 +115,14 @@ void draw_import_modal(ap_app *app)
         if (!app->import_source[0]) {
             igTextWrapped("(choose a source folder)");
         } else if (s->subdir[0]) {
-            igTextWrapped("%s/  \xe2\x86\x92  %s/%s/", leaf, root, s->subdir);
+            igTextWrapped("%s/  ->  %s/%s/", leaf, root, s->subdir);
         } else {
-            igTextWrapped("%s/  \xe2\x86\x92  %s/", leaf, root);
+            igTextWrapped("%s/  ->  %s/", leaf, root);
         }
     }
 
     if (app->import_inflight) {
-        igTextDisabled("Importing\xe2\x80\xa6 (progress shown in corner)");
+        igTextDisabled("Importing... (progress shown in corner)");
     } else if (app->import_status[0]) {
         igTextWrapped("%s", app->import_status);
         const ap_import_report *r = &app->import_report;
@@ -138,7 +138,7 @@ void draw_import_modal(ap_app *app)
                            r->skip_collision);
         }
         if (r->errored > 0) {
-            igTextDisabled("%d error%s \xe2\x80\x94 see the log",
+            igTextDisabled("%d error%s -- see the log",
                            r->errored, r->errored == 1 ? "" : "s");
         }
     }

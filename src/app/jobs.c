@@ -362,7 +362,7 @@ void submit_import_job(ap_app *app, const char *lib_root, const char *src_dir,
              "%s/.aperture/library.db", lib_root);
     snprintf(j->src_dir,  sizeof(j->src_dir),  "%s", src_dir);
     j->settings  = *settings;
-    j->status_id = ap_status_progress_begin("Importing photos\xe2\x80\xa6", 0);
+    j->status_id = ap_status_progress_begin("Importing photos...", 0);
 
     app->import_inflight    = true;
     app->import_status[0]   = '\0';
