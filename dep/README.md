@@ -16,7 +16,7 @@ overriding Meson's default `subprojects/` location.
 | cimgui                      | fallback         | rolling `docking_inter` | upstream-tracking; system pkg is rare               |
 | libpng                      | fallback         | wrapdb `1.6.58-1`    | system pkg preferred; wrap covers distros that lack it |
 | libtiff                     | fallback         | wrapdb `4.7.1-4`     | same as libpng                                       |
-| tomlc99                     | fallback         | git `master`         | small lib, rarely packaged; revisit pinning if it breaks |
+| tomlc99                     | fallback         | git SHA `29076dfd` (no upstream tags) | small lib, rarely packaged; pinned for reproducibility |
 | nativefiledialog-extended   | fallback         | git tag `v1.3.0`     | rarely packaged                                      |
 
 Dependencies without a wrap are taken from the system unconditionally:

@@ -1,6 +1,7 @@
 [wrap-git]
 url = https://github.com/cktan/tomlc99.git
-revision = master
+# pinned to upstream master HEAD as of 2026-05-24 (no upstream tags exist)
+revision = 29076dfd095bbbbd50a3c1b2760d29f4b83e74ac
 depth = 1
 patch_directory = tomlc99
 
