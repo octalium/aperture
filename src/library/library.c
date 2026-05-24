@@ -812,6 +812,7 @@ static const char *LIBRARY_TABLES_SQL =
     "    id           INTEGER PRIMARY KEY,"
     "    path         TEXT NOT NULL UNIQUE,"
     "    hash         BLOB,"
+    "    identity     TEXT,"
     "    size         INTEGER,"
     "    capture_time INTEGER,"
     "    added_at     INTEGER NOT NULL,"
@@ -855,6 +856,7 @@ static const char *LIBRARY_TABLES_SQL =
 static const char *LIBRARY_INDEXES_SQL =
     "CREATE INDEX IF NOT EXISTS idx_photos_capture_time ON photos(capture_time);"
     "CREATE INDEX IF NOT EXISTS idx_photos_hash         ON photos(hash);"
+    "CREATE INDEX IF NOT EXISTS idx_photos_identity     ON photos(identity);"
     "CREATE INDEX IF NOT EXISTS idx_photos_size         ON photos(size);"
     "CREATE INDEX IF NOT EXISTS idx_photos_rating       ON photos(rating);"
     "CREATE INDEX IF NOT EXISTS idx_photos_flag         ON photos(flag);"
@@ -891,6 +893,21 @@ static void backfill_size_column(sqlite3 *db)
         NULL, NULL, &err);
     if (rc != SQLITE_OK && err && !strstr(err, "duplicate column")) {
         AP_WARN("library: backfill size column: %s", err);
+    }
+    sqlite3_free(err);
+}
+
+// Add the `identity` column on a photos table predating the EXIF
+// identity dedupe. New imports populate both `identity` and `hash`;
+// the lookup falls back to `hash` for rows from before the upgrade.
+static void backfill_identity_column(sqlite3 *db)
+{
+    char *err = NULL;
+    int rc = sqlite3_exec(db,
+        "ALTER TABLE photos ADD COLUMN identity TEXT;",
+        NULL, NULL, &err);
+    if (rc != SQLITE_OK && err && !strstr(err, "duplicate column")) {
+        AP_WARN("library: backfill identity column: %s", err);
     }
     sqlite3_free(err);
 }
@@ -1572,6 +1589,7 @@ ap_library *ap_library_open(const char *path)
     if (exec_simple(lib->db, LIBRARY_TABLES_SQL)                       < 0) goto fail;
     backfill_culling_columns(lib->db);
     backfill_size_column(lib->db);
+    backfill_identity_column(lib->db);
     if (exec_simple(lib->db, LIBRARY_INDEXES_SQL)                      < 0) goto fail;
     if (set_schema_kv(lib->db, "version",          APERTURE_DB_VERSION) < 0) goto fail;
     if (set_schema_kv(lib->db, "aperture_version", APERTURE_VERSION)    < 0) goto fail;
