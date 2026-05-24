@@ -36,12 +36,21 @@ meson compile -C build
 ./build/aperture
 ```
 
-For a release build:
+For a release build with LTO, stripping, and reproducibility flags:
 
 ```
-meson setup build-release --buildtype=release
+SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct) \
+    meson setup build-release \
+        --buildtype=release \
+        -Db_lto=true \
+        -Dstrip=true
 meson compile -C build-release
 ```
+
+`-ffile-prefix-map` is wired into the project unconditionally so
+embedded source paths are stable. `SOURCE_DATE_EPOCH` pins the
+compiler's `__DATE__` / `__TIME__` macros — set it (e.g. to a commit
+timestamp) for reproducible builds.
 
 ## Branch policy
 

@@ -17,6 +17,26 @@ add_project_arguments(
   language: ['c', 'cpp'],
 )
 
+# cheap reproducibility flags: rewrite embedded source paths so
+# identical sources yield identical binaries regardless of where they
+# were built. SOURCE_DATE_EPOCH (honoured by the compiler's
+# __DATE__/__TIME__) pins macro-baked timestamps when callers set it.
+# applied unconditionally — paths in debug info are not load-bearing
+# for development, and keeping the flag set avoids buildtype skew.
+cc = meson.get_compiler('c')
+repro_flags = []
+foreach flag : [
+  '-ffile-prefix-map=' + meson.project_source_root() + '=.',
+  '-ffile-prefix-map=' + meson.project_build_root() + '=./build',
+]
+  if cc.has_argument(flag)
+    repro_flags += flag
+  endif
+endforeach
+if repro_flags.length() > 0
+  add_project_arguments(repro_flags, language: ['c', 'cpp'])
+endif
+
 vulkan_dep  = dependency('vulkan')
 glfw_dep    = dependency('glfw3')
 cimgui_dep  = dependency('cimgui')
