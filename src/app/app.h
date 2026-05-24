@@ -201,6 +201,23 @@ bool        ap_app_has_edit_clipboard(const ap_app *app);
 // (no library, no grid, or empty clipboard).
 int         ap_app_sync_edits_to_selection(ap_app *app);
 
+// Walk the library grid's selection and write `override_lens` into the
+// lens-override slot of every selected photo's first lens_correction
+// edit-stack entry whose EXIF lens-model string matches
+// `match_exif_lens` (compared byte-for-byte). The header-only EXIF
+// read isolates the cost to a libraw_open_file per photo — no pixel
+// decode. The currently-open photo is skipped (its in-memory stack is
+// the canonical version; the chooser already updated it directly).
+// Writes the per-selection counts into `*out_applied` and `*out_skipped`
+// when those pointers are non-NULL. Returns 0 on success, -1 on a
+// missing library / grid or invalid arguments.
+int         ap_app_apply_lens_override_to_selection(
+                ap_app     *app,
+                const char *match_exif_lens,
+                const char *override_lens,
+                int        *out_applied,
+                int        *out_skipped);
+
 // Number of photos currently selected in the library grid.
 int         ap_app_grid_selection_count(const ap_app *app);
 
