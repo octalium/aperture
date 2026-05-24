@@ -15,6 +15,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+// named layout snapshots live under the data root, not the config root.
+// the working layout (imgui.ini) is transient session state — it lives
+// in $XDG_CONFIG_HOME. these files are explicit user-named artifacts
+// (saved presets) and belong with the rest of aperture's user data.
 #define LAYOUTS_DIR  "layouts"
 #define CURRENT_FILE ".current"
 #define LAYOUT_EXT   ".ini"
