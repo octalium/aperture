@@ -2119,7 +2119,8 @@ int ap_library_apply_pipeline_to_photo(ap_library *lib, int index,
 }
 
 int ap_library_apply_stack_to_photo(ap_library *lib, int index,
-                                    const ap_edit_stack *stack)
+                                    const ap_edit_stack *stack,
+                                    const ap_sidecar_ancillary *prefetched)
 {
     if (!lib || !stack || index < 0 || index >= lib->photo_count) return -1;
 
@@ -2128,23 +2129,21 @@ int ap_library_apply_stack_to_photo(ap_library *lib, int index,
         return -1;
     }
 
-    ap_edit_stack existing_stack;
-    ap_edit_stack_init(&existing_stack);
-    bool respect_orientation = true;
-    ap_photo_metadata user_meta;
-    ap_photo_metadata_clear(&user_meta);
-    bool user_set[AP_META_FIELD_COUNT] = {0};
-    ap_photo_culling culling;
-    ap_photo_culling_clear(&culling);
-    ap_photo_groups groups;
-    groups.count = 0;
-    ap_photo_keywords keywords;
-    ap_photo_keywords_clear(&keywords);
-    ap_sidecar_load(path, &existing_stack, &respect_orientation,
-                    &user_meta, user_set, &culling, &groups, &keywords);
+    ap_sidecar_ancillary local;
+    const ap_sidecar_ancillary *a = prefetched;
+    if (!a) {
+        ap_edit_stack existing_stack;
+        ap_edit_stack_init(&existing_stack);
+        ap_sidecar_ancillary_clear(&local);
+        ap_sidecar_load(path, &existing_stack, &local.respect_orientation,
+                        &local.user_meta, local.user_set, &local.culling,
+                        &local.groups, &local.keywords);
+        a = &local;
+    }
 
-    return ap_sidecar_save(path, stack, respect_orientation,
-                           &user_meta, user_set, &culling, &groups, &keywords);
+    return ap_sidecar_save(path, stack, a->respect_orientation,
+                           &a->user_meta, a->user_set, &a->culling,
+                           &a->groups, &a->keywords);
 }
 
 int ap_library_apply_metadata_patch(ap_library *lib, int index,

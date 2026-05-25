@@ -6,6 +6,7 @@
 #include "photo/groups.h"
 #include "output/export.h"
 #include "photo/metadata.h"
+#include "sidecar/sidecar.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -295,10 +296,14 @@ int  ap_library_apply_pipeline_to_photo(ap_library *lib, int index,
                                         int64_t pipeline_id);
 
 // Replace the n-th photo's edit stack with a caller-supplied stack.
-// Loads the existing sidecar to preserve orientation + metadata;
-// writes the sidecar atomically. Returns 0 on success.
+// When `prefetched` is non-NULL, its fields are written verbatim into
+// the sidecar — used by bulk-apply paths that already parsed the
+// sidecar on the way in to avoid a redundant load. When NULL, the
+// existing sidecar is loaded to preserve orientation + metadata.
+// Writes the sidecar atomically. Returns 0 on success.
 int  ap_library_apply_stack_to_photo(ap_library *lib, int index,
-                                     const ap_edit_stack *stack);
+                                     const ap_edit_stack *stack,
+                                     const ap_sidecar_ancillary *prefetched);
 
 // Apply a metadata-override patch to the n-th photo's sidecar.
 // Loads the existing sidecar (seeding the default edit pipeline if

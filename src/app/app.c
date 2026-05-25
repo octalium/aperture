@@ -1118,7 +1118,8 @@ int ap_app_sync_edits_to_selection(ap_app *app)
         int i = app->grid_map[c];
         if (app->photo && i == app->photo_library_idx) continue;
         if (ap_library_apply_stack_to_photo(app->library, i,
-                                            &app->edit_clipboard) == 0) {
+                                            &app->edit_clipboard,
+                                            NULL) == 0) {
             wrote++;
             ap_library_invalidate_thumbnail(app->library, i);
         }
@@ -1181,20 +1182,8 @@ int ap_app_apply_lens_override_to_selection(ap_app *app,
         }
 
         ap_edit_stack stack;
-        ap_edit_stack_init(&stack);
-        bool respect_orientation = true;
-        ap_photo_metadata user_meta;
-        ap_photo_metadata_clear(&user_meta);
-        bool user_set[AP_META_FIELD_COUNT] = {0};
-        ap_photo_culling culling;
-        ap_photo_culling_clear(&culling);
-        ap_photo_groups groups;
-        groups.count = 0;
-        ap_photo_keywords keywords;
-        ap_photo_keywords_clear(&keywords);
-        if (ap_sidecar_load(abs, &stack, &respect_orientation,
-                            &user_meta, user_set, &culling, &groups,
-                            &keywords) != 0) {
+        ap_sidecar_ancillary ancillary;
+        if (ap_sidecar_load_full(abs, &stack, &ancillary) != 0) {
             // No sidecar / unreadable: nothing to attach an override to.
             skipped++;
             continue;
@@ -1215,7 +1204,8 @@ int ap_app_apply_lens_override_to_selection(ap_app *app,
         snprintf(stack.entries[hit].str_params[slot], AP_EDIT_STR_LEN,
                  "%s", override_lens);
 
-        if (ap_library_apply_stack_to_photo(app->library, i, &stack) == 0) {
+        if (ap_library_apply_stack_to_photo(app->library, i, &stack,
+                                            &ancillary) == 0) {
             applied++;
             ap_library_invalidate_thumbnail(app->library, i);
         } else {
