@@ -7,6 +7,7 @@ aperture_sources += files(
   'grain.c',
   'hsl.c',
   'lens_correction.c',
+  'lens_match.c',
   'output_transfer.c',
   'profile.c',
   'raw_passthrough.c',
