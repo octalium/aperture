@@ -36,6 +36,14 @@ typedef struct {
     // sensor-oriented Bayer texture for each lookup.
     int   sensor_width;
     int   sensor_height;
+
+    // Lens nominal range, derived by libraw from EXIF LensInfo (0xA432).
+    // Zero when the source did not carry LensInfo. Consumed by lens_match
+    // to narrow the Lensfun candidate set when the EXIF lens model string
+    // is ambiguous.
+    float lens_min_focal;
+    float lens_max_focal;
+    float lens_min_aperture;
 } ap_raw_metadata;
 
 typedef struct {

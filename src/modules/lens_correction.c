@@ -114,18 +114,28 @@ static int lookup_and_pack(const float *params,
                            const ap_raw_metadata *meta,
                            lens_push_t *pc)
 {
-    (void)meta;
-
     if (!ap_lens_match_ensure_db()) return -1;
 
     const char *cam_str  = str_params ? str_params[STR_CAMERA] : "";
     const char *lens_str = str_params ? str_params[STR_LENS]   : "";
 
-    const ap_lens_match *match = ap_lens_match_resolve(cam_str, lens_str);
+    float shot_focal    = params ? params[SLOT_FOCAL_MM] : 0.0f;
+    float shot_aperture = params ? params[SLOT_APERTURE] : 0.0f;
+
+    const ap_lens_match_hints hints = {
+        .shot_focal_mm     = shot_focal,
+        .shot_aperture     = shot_aperture,
+        .lens_min_focal    = meta ? meta->lens_min_focal    : 0.0f,
+        .lens_max_focal    = meta ? meta->lens_max_focal    : 0.0f,
+        .lens_min_aperture = meta ? meta->lens_min_aperture : 0.0f,
+    };
+
+    const ap_lens_match *match = ap_lens_match_resolve(cam_str, lens_str,
+                                                       &hints);
     const lfLens        *lens  = match->lens;
 
-    float focal   = params ? params[SLOT_FOCAL_MM] : 0.0f;
-    float aperture = params ? params[SLOT_APERTURE] : 0.0f;
+    float focal    = shot_focal;
+    float aperture = shot_aperture;
     if (focal <= 0.0f) focal = 50.0f;    // fallback
     if (aperture <= 0.0f) aperture = 8.0f; // safe fallback
 
@@ -229,6 +239,27 @@ static void build_exif_lens(const ap_photo_metadata *fm, char *out, size_t len)
     }
 }
 
+// Collect the EXIF-derived narrowing hints from `fm` and the focused-
+// edit's current `params`. Mirrors the pack_push view so render-side
+// resolve calls hit the same cache entry.
+static ap_lens_match_hints render_hints(const ap_photo_metadata *fm,
+                                        const float *params)
+{
+    ap_lens_match_hints h = {0};
+    if (params) {
+        h.shot_focal_mm = params[SLOT_FOCAL_MM];
+        h.shot_aperture = params[SLOT_APERTURE];
+    }
+    if (!fm) return h;
+    h.lens_min_focal    = parse_focal(
+        ap_photo_metadata_get(fm, AP_META_LENS_MIN_FOCAL));
+    h.lens_max_focal    = parse_focal(
+        ap_photo_metadata_get(fm, AP_META_LENS_MAX_FOCAL));
+    h.lens_min_aperture = parse_aperture(
+        ap_photo_metadata_get(fm, AP_META_LENS_MIN_APERTURE));
+    return h;
+}
+
 static void lens_render(const ap_module *self, float *params,
                         const ap_module_render_ctx *ctx)
 {
@@ -284,9 +315,11 @@ static void lens_render(const ap_module *self, float *params,
 
     // Lensfun match status. Re-uses the cache populated by pack_push
     // (and refreshed in-place when inputs change), so the panel pays
-    // at most one Lensfun query per (camera, lens) string pair.
+    // at most one Lensfun query per (camera, lens, hints) tuple.
+    ap_lens_match_hints hints = render_hints(fm, params);
     const ap_lens_match *match = ap_lens_match_resolve(ctx->str_params[STR_CAMERA],
-                                                       ctx->str_params[STR_LENS]);
+                                                       ctx->str_params[STR_LENS],
+                                                       &hints);
 
     // Candidate set keyed on the *EXIF* lens string, not the current
     // (possibly-overridden) STR_LENS. The chooser always offers the
@@ -296,7 +329,8 @@ static void lens_render(const ap_module *self, float *params,
     const char *baseline_lens =
         (exif_lens[0]) ? exif_lens : ctx->str_params[STR_LENS];
     const ap_lens_match *baseline =
-        ap_lens_match_resolve(ctx->str_params[STR_CAMERA], baseline_lens);
+        ap_lens_match_resolve(ctx->str_params[STR_CAMERA], baseline_lens,
+                              &hints);
 
     bool is_override = (exif_lens[0] &&
                         strcmp(ctx->str_params[STR_LENS], exif_lens) != 0);

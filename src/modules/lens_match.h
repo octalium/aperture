@@ -31,13 +31,26 @@ typedef struct {
     char          name[AP_META_VALUE_LEN * 2]; // "Maker Model"
 } ap_lens_candidate;
 
-// Result of a (camera_str, lens_str) lookup against the Lensfun
-// database. Cached across frames so multiple modules can read match
-// state every frame without re-running the queries. `cam` / `lens` are
-// borrowed pointers owned by the global database.
+// Narrowing inputs used to prune the strict-match candidate set. The
+// values are quantized when comparing for cache equality so identical
+// queries hit even when float inputs are drift-equal. Zero on any field
+// means "no narrowing on this axis".
+typedef struct {
+    float shot_focal_mm;
+    float shot_aperture;
+    float lens_min_focal;
+    float lens_max_focal;
+    float lens_min_aperture;
+} ap_lens_match_hints;
+
+// Result of a (camera_str, lens_str [, hints]) lookup against the
+// Lensfun database. Cached across frames so multiple modules can read
+// match state every frame without re-running the queries. `cam` /
+// `lens` are borrowed pointers owned by the global database.
 typedef struct {
     char            cam_in[AP_EDIT_STR_LEN];
     char            lens_in[AP_EDIT_STR_LEN];
+    ap_lens_match_hints hints_in;
     bool            valid;
     const lfCamera *cam;
     const lfLens   *lens;          // NULL when no acceptable match
@@ -57,16 +70,22 @@ typedef struct {
 // never destroyed; load failures latch for the session.
 bool ap_lens_match_ensure_db(void);
 
-// Strict cached lookup of (camera_str, lens_str). Returns a pointer to
-// a module-shared cache entry; never NULL. Result fields are zeroed
-// when inputs are empty or the database is unavailable. The lens query
-// is strict (no LF_SEARCH_LOOSE); weak hits are filtered by
-// AP_LENS_MATCH_MIN_SCORE. When more than one candidate clears the
-// threshold, `lens` points at the top-scoring one and
-// `candidates[0..candidate_count)` lists them all so a chooser UI can
-// offer manual override.
+// Strict cached lookup of (camera_str, lens_str), optionally narrowed
+// by EXIF-derived `hints`. Returns a pointer to a module-shared cache
+// entry; never NULL. Result fields are zeroed when inputs are empty or
+// the database is unavailable.
+//
+// The base lens query is strict (no LF_SEARCH_LOOSE); weak hits are
+// filtered by AP_LENS_MATCH_MIN_SCORE. Surviving candidates are then
+// pruned by `hints` — see ap_lens_match_hints. Pass `hints == NULL` (or
+// a zeroed struct) to skip narrowing entirely.
+//
+// When more than one candidate survives, `lens` points at the top-
+// scoring one and `candidates[0..candidate_count)` lists them all so a
+// chooser UI can offer manual override.
 const ap_lens_match *ap_lens_match_resolve(const char *cam_str,
-                                           const char *lens_str);
+                                           const char *lens_str,
+                                           const ap_lens_match_hints *hints);
 
 #ifdef __cplusplus
 }

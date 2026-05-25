@@ -106,6 +106,13 @@ static void extract_metadata(libraw_data_t *raw, ap_photo_metadata *m)
         ap_photo_metadata_set(m, AP_META_LENS_MODEL, lens_buf);
     }
 
+    // Lens nominal range, derived by libraw from EXIF LensInfo (0xA432).
+    // Used by lens_match to filter Lensfun candidates when the lens model
+    // string is ambiguous; also surfaced in the metadata pane.
+    set_numeric(m, AP_META_LENS_MIN_FOCAL,    raw->lens.MinFocal,        "mm");
+    set_numeric(m, AP_META_LENS_MAX_FOCAL,    raw->lens.MaxFocal,        "mm");
+    set_numeric(m, AP_META_LENS_MIN_APERTURE, raw->lens.MaxAp4MinFocal,  "");
+
     set_numeric(m, AP_META_FOCAL_LEN, raw->other.focal_len,   "mm");
     set_numeric(m, AP_META_APERTURE,  raw->other.aperture,    "");
     set_shutter(m, raw->other.shutter);
@@ -259,9 +266,12 @@ int ap_raw_load(const char *path, ap_raw_image *out)
                 path, flip);
         flip = 0;
     }
-    out->meta.flip          = flip;
-    out->meta.sensor_width  = vis_w;
-    out->meta.sensor_height = vis_h;
+    out->meta.flip              = flip;
+    out->meta.sensor_width      = vis_w;
+    out->meta.sensor_height     = vis_h;
+    out->meta.lens_min_focal    = raw->lens.MinFocal;
+    out->meta.lens_max_focal    = raw->lens.MaxFocal;
+    out->meta.lens_min_aperture = raw->lens.MaxAp4MinFocal;
 
     if (flip == 5 || flip == 6) {
         out->width  = vis_h;

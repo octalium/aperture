@@ -109,6 +109,16 @@ static float parse_focal(const char *s)
     return v;
 }
 
+// Accepts either "f/2.8" or a bare "2.8". Returns 0 on parse failure.
+static float parse_aperture(const char *s)
+{
+    if (!s || !s[0]) return 0.0f;
+    float v = 0.0f;
+    if (sscanf(s, "f/%f", &v) == 1) return v;
+    if (sscanf(s, "%f", &v) == 1) return v;
+    return 0.0f;
+}
+
 // Fill `pc` with the per-channel TCA terms for the matched lens at
 // `focal`. Returns true when Lensfun supplied a usable, finite model
 // and the shader should run in auto mode; false when no calibration is
@@ -150,14 +160,16 @@ static bool fill_auto_terms(const lfLens *lens, float focal, ca_push_t *pc)
 }
 
 // Cached resolve helper restricted to the module's STR slots. Returns
-// the cached match for the configured camera+lens strings — used by
-// both pack_push and render_params so they observe the same state.
+// the cached match for the configured camera+lens strings, narrowed by
+// the EXIF hints when supplied — used by both pack_push and
+// render_params so they observe the same state.
 static const ap_lens_match *resolve_module_match(
-    const char (*str_params)[AP_EDIT_STR_LEN])
+    const char (*str_params)[AP_EDIT_STR_LEN],
+    const ap_lens_match_hints *hints)
 {
     const char *cam_str  = str_params ? str_params[STR_CAMERA] : "";
     const char *lens_str = str_params ? str_params[STR_LENS]   : "";
-    return ap_lens_match_resolve(cam_str, lens_str);
+    return ap_lens_match_resolve(cam_str, lens_str, hints);
 }
 
 static int ca_pack_push(const ap_module *self,
@@ -167,7 +179,6 @@ static int ca_pack_push(const ap_module *self,
                         void *push_out)
 {
     (void)self;
-    (void)meta;
 
     ca_push_t *pc = push_out;
     memset(pc, 0, sizeof(*pc));
@@ -187,7 +198,13 @@ static int ca_pack_push(const ap_module *self,
 
     if (mode == MODE_AUTO) {
         if (!ap_lens_match_ensure_db()) return -1;
-        const ap_lens_match *match = resolve_module_match(str_params);
+        const ap_lens_match_hints hints = {
+            .shot_focal_mm     = focal,
+            .lens_min_focal    = meta ? meta->lens_min_focal    : 0.0f,
+            .lens_max_focal    = meta ? meta->lens_max_focal    : 0.0f,
+            .lens_min_aperture = meta ? meta->lens_min_aperture : 0.0f,
+        };
+        const ap_lens_match *match = resolve_module_match(str_params, &hints);
         if (!match->lens) return -1;
         if (focal <= 0.0f) focal = 50.0f;
         if (!fill_auto_terms(match->lens, focal, pc)) return -1;
@@ -282,8 +299,19 @@ static void ca_render(const ap_module *self, float *params,
         igTextDisabled("EXIF: %s", exif_lens);
     }
 
+    // Build EXIF-derived narrowing hints from file_meta so the render-
+    // side resolve hits the same cache entry as pack_push.
+    ap_lens_match_hints hints = {
+        .shot_focal_mm     = params[SLOT_FOCAL_MM],
+        .lens_min_focal    = fm ? parse_focal(
+            ap_photo_metadata_get(fm, AP_META_LENS_MIN_FOCAL)) : 0.0f,
+        .lens_max_focal    = fm ? parse_focal(
+            ap_photo_metadata_get(fm, AP_META_LENS_MAX_FOCAL)) : 0.0f,
+        .lens_min_aperture = fm ? parse_aperture(
+            ap_photo_metadata_get(fm, AP_META_LENS_MIN_APERTURE)) : 0.0f,
+    };
     const ap_lens_match *match = ap_lens_match_resolve(
-        ctx->str_params[STR_CAMERA], ctx->str_params[STR_LENS]);
+        ctx->str_params[STR_CAMERA], ctx->str_params[STR_LENS], &hints);
 
     // probe whether the matched lens carries TCA calibration at the
     // currently-set focal length — this drives the Auto/Manual default
