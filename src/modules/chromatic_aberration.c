@@ -8,6 +8,7 @@
 #include "cimgui.h"
 
 #include <lensfun/lensfun.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -109,9 +110,14 @@ static float parse_focal(const char *s)
 }
 
 // Fill `pc` with the per-channel TCA terms for the matched lens at
-// `focal`. Returns true when Lensfun supplied a usable model and the
-// shader should run in auto mode; false when no calibration is
-// available (caller leaves the shader in manual mode).
+// `focal`. Returns true when Lensfun supplied a usable, finite model
+// and the shader should run in auto mode; false when no calibration is
+// available or any required coefficient interpolated to NaN/Inf
+// (caller skips the stage rather than dispatching garbage).
+//
+// Lensfun's POLY3 Terms[] is interleaved per-channel rather than
+// concatenated: Terms[0..5] = (vr, vb, cr, cb, br, bb). Source:
+// lensfun/libs/lensfun/database.cpp attribute parser.
 static bool fill_auto_terms(const lfLens *lens, float focal, ca_push_t *pc)
 {
     if (!lens) return false;
@@ -121,18 +127,22 @@ static bool fill_auto_terms(const lfLens *lens, float focal, ca_push_t *pc)
 
     switch (tca.Model) {
     case LF_TCA_MODEL_LINEAR:
+        if (!isfinite(tca.Terms[0]) || !isfinite(tca.Terms[1])) return false;
         pc->tca_model     = SHADER_TCA_LINEAR;
         pc->red_terms[0]  = tca.Terms[0]; // kr
         pc->blue_terms[0] = tca.Terms[1]; // kb
         return true;
     case LF_TCA_MODEL_POLY3:
+        for (int i = 0; i < 6; i++) {
+            if (!isfinite(tca.Terms[i])) return false;
+        }
         pc->tca_model     = SHADER_TCA_POLY3;
-        pc->red_terms[0]  = tca.Terms[0]; // br
-        pc->red_terms[1]  = tca.Terms[1]; // cr
-        pc->red_terms[2]  = tca.Terms[2]; // vr
-        pc->blue_terms[0] = tca.Terms[3]; // bb
-        pc->blue_terms[1] = tca.Terms[4]; // cb
-        pc->blue_terms[2] = tca.Terms[5]; // vb
+        pc->red_terms[0]  = tca.Terms[4]; // br
+        pc->red_terms[1]  = tca.Terms[2]; // cr
+        pc->red_terms[2]  = tca.Terms[0]; // vr
+        pc->blue_terms[0] = tca.Terms[5]; // bb
+        pc->blue_terms[1] = tca.Terms[3]; // cb
+        pc->blue_terms[2] = tca.Terms[1]; // vb
         return true;
     default:
         return false;

@@ -145,12 +145,5 @@ void main()
 
     vec4 c = vec4(src_red.r, src_full.g, src_blue.b, src_full.a);
 
-    // guard against degenerate coefficients producing non-finite results
-    bvec4 nans = isnan(c);
-    bvec4 infs = isinf(c);
-    bvec4 bad  = bvec4(nans.x || infs.x, nans.y || infs.y,
-                       nans.z || infs.z, nans.w || infs.w);
-    c = mix(c, vec4(0.0), vec4(bad));
-
     imageStore(out_image, coord, c);
 }
