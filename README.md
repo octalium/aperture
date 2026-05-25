@@ -20,11 +20,11 @@ specification only. No tagged releases yet.
 ## Install (Linux)
 
 Aperture builds with [Meson](https://mesonbuild.com/) + [Ninja](https://ninja-build.org/)
-and ships a `meson install` target that lays down a desktop entry, hicolor
+under a thin Makefile wrapper. The install drops a desktop entry, hicolor
 icon, AppStream metainfo, and MIME associations for the raw formats it
 reads (CR2, CR3, NEF, ARW, RAF, DNG, ORF, RW2, PEF, SRW).
 
-### Distro dependencies
+### 1. Distro dependencies
 
 System packages providing the dependencies pulled in via `pkg-config`. The
 remaining deps (lcms2, libpng, libtiff, cimgui, tomlc99, blake3,
@@ -59,31 +59,37 @@ sudo pacman -S base-devel meson ninja pkgconf shaderc vulkan-headers \
     shared-mime-info appstream
 ```
 
-### Build and install
+### 2. Build and install
 
 System-wide (`/usr/local`):
 
 ```
-meson setup build --buildtype=release
-meson compile -C build
-sudo meson install -C build
+make install
 ```
 
-Per-user, no root required:
+Per-user (`$HOME/.local`), no root required:
 
 ```
-meson setup build --buildtype=release --prefix="$HOME/.local"
-meson compile -C build
-meson install -C build
+make install-user
 ```
+
+Or just build without installing and run from the build dir:
+
+```
+make run
+```
+
+`make` on its own does an incremental debug build. `make release` produces
+a release build in a parallel `build-release/` directory. `make clean`
+removes the build dirs.
 
 When installing into `$HOME/.local`, make sure `$HOME/.local/bin` is on
-your `PATH` and that `$HOME/.local/share` is in `$XDG_DATA_DIRS` so the
+your `PATH` and `$HOME/.local/share` is in `$XDG_DATA_DIRS` so the
 desktop entry, icon, and MIME types are picked up.
 
 ### Desktop / icon / MIME cache refresh
 
-A non-staged `meson install` runs the refresh commands for you. For
+A non-staged `make install` runs the refresh commands for you. For
 staged installs (`DESTDIR=…`), or after manually copying files into
 place, refresh the caches yourself:
 
@@ -97,6 +103,17 @@ User data (library registry) lives under `$XDG_DATA_HOME/aperture`
 (default `~/.local/share/aperture`) and UI configuration (imgui layout)
 under `$XDG_CONFIG_HOME/aperture` (default `~/.config/aperture`),
 regardless of install prefix.
+
+### Manual meson
+
+The `Makefile` is a thin wrapper. For non-default flags (cross-compile,
+sanitizers, custom prefix, custom build dir), drive meson directly:
+
+```
+meson setup build --buildtype=release --prefix=/opt/aperture
+meson compile -C build
+meson install -C build
+```
 
 ## Contributing
 
