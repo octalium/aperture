@@ -35,6 +35,8 @@ static uint32_t rd_u32(const uint8_t *p, bool le)
 // ----- TIFF IFD walk -------------------------------------------------
 
 // EXIF tags of interest.
+#define TAG_MAKE               0x010F
+#define TAG_MODEL              0x0110
 #define TAG_DATETIME_ORIGINAL  0x9003
 #define TAG_DATETIME           0x0132
 #define TAG_SUBSEC_ORIGINAL    0x9291
@@ -120,6 +122,22 @@ static void apply_tag(exif_ctx *ctx, uint16_t tag, uint16_t type,
     }
 
     switch (tag) {
+    case TAG_MAKE: {
+        if (type != 2) return;
+        if (ctx->fields.make[0]) return;
+        copy_ascii(vp, count, ctx->fields.make,
+                   sizeof(ctx->fields.make));
+        if (ctx->fields.make[0]) ctx->populated++;
+        break;
+    }
+    case TAG_MODEL: {
+        if (type != 2) return;
+        if (ctx->fields.model[0]) return;
+        copy_ascii(vp, count, ctx->fields.model,
+                   sizeof(ctx->fields.model));
+        if (ctx->fields.model[0]) ctx->populated++;
+        break;
+    }
     case TAG_DATETIME_ORIGINAL:
     case TAG_DATETIME: {
         if (type != 2 /* ASCII */) return;
@@ -292,20 +310,30 @@ int ap_exif_identity(const ap_exif_fields *f, char *out, size_t out_len)
     if (!f) return 0;
 
     int populated = 0;
+    if (f->make[0])            populated++;
+    if (f->model[0])           populated++;
+    if (f->capture_time != 0)  populated++;
+    if (f->subsec_original[0]) populated++;
+    if (populated == 0) return 0;
+
     char ts[32];
     ts[0] = '\0';
     if (f->capture_time != 0) {
         snprintf(ts, sizeof(ts), "%lld", (long long)f->capture_time);
-        populated++;
     }
-    if (f->body_serial[0])     populated++;
-    if (f->image_unique_id[0]) populated++;
-    if (populated == 0) return 0;
-
-    snprintf(out, out_len, "%s-%s.%s-%s",
-             f->body_serial,
+    snprintf(out, out_len, "%s|%s|%s|%s",
+             f->make,
+             f->model,
              ts,
-             f->subsec_original,
-             f->image_unique_id);
+             f->subsec_original);
     return populated;
+}
+
+bool ap_exif_identity_is_unique(const ap_exif_fields *f)
+{
+    if (!f) return false;
+    return f->make[0]
+        && f->model[0]
+        && f->capture_time != 0
+        && f->subsec_original[0];
 }

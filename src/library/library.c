@@ -857,10 +857,13 @@ static const char *LIBRARY_INDEXES_SQL =
     "CREATE INDEX IF NOT EXISTS idx_photos_capture_time ON photos(capture_time);"
     "CREATE INDEX IF NOT EXISTS idx_photos_hash         ON photos(hash);"
     "CREATE INDEX IF NOT EXISTS idx_photos_identity     ON photos(identity);"
-    "CREATE INDEX IF NOT EXISTS idx_photos_size         ON photos(size);"
     "CREATE INDEX IF NOT EXISTS idx_photos_rating       ON photos(rating);"
     "CREATE INDEX IF NOT EXISTS idx_photos_flag         ON photos(flag);"
-    "CREATE INDEX IF NOT EXISTS idx_photos_color        ON photos(color);";
+    "CREATE INDEX IF NOT EXISTS idx_photos_color        ON photos(color);"
+    // Drop the now-dead size index left over from the removed
+    // size-pre-filter dedupe path; legacy libraries carried it from
+    // before the EXIF identity switch.
+    "DROP INDEX IF EXISTS idx_photos_size;";
 
 // Backfill the culling columns on a photos table created before they
 // were added. Each ALTER returns SQLITE_ERROR with "duplicate column
@@ -898,8 +901,11 @@ static void backfill_size_column(sqlite3 *db)
 }
 
 // Add the `identity` column on a photos table predating the EXIF
-// identity dedupe. New imports populate both `identity` and `hash`;
-// the lookup falls back to `hash` for rows from before the upgrade.
+// identity dedupe. New imports populate both `identity` and `hash`.
+// Rows from before the upgrade have a NULL identity, so a re-import
+// of their source will copy again (the importer's dedupe path skips
+// rows whose identity it can't recover); rebuild the library or
+// clean by hand if that matters.
 static void backfill_identity_column(sqlite3 *db)
 {
     char *err = NULL;

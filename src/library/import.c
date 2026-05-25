@@ -30,6 +30,7 @@
 #define KEY_PATTERN   "import.pattern"
 #define KEY_COLLISION "import.collision"
 #define KEY_DEDUPE    "import.dedupe_content"
+#define KEY_STRICT_ID "import.strict_identity"
 
 void ap_import_settings_load(const ap_library *lib, ap_import_settings *out)
 {
@@ -39,8 +40,9 @@ void ap_import_settings_load(const ap_library *lib, ap_import_settings *out)
     snprintf(out->subdir, sizeof(out->subdir), "raw");
     out->naming = AP_IMPORT_NAME_KEEP;
     snprintf(out->pattern, sizeof(out->pattern), "{YYYY}{MM}{DD}_{HH}{MIN}{SEC}");
-    out->collision      = AP_IMPORT_COLLIDE_SUFFIX;
-    out->dedupe_content = true;
+    out->collision        = AP_IMPORT_COLLIDE_SUFFIX;
+    out->dedupe_content   = true;
+    out->strict_identity  = false;
     if (!lib) return;
 
     char buf[AP_IMPORT_PATTERN_LEN];
@@ -65,6 +67,9 @@ void ap_import_settings_load(const ap_library *lib, ap_import_settings *out)
     if (ap_library_setting_get(lib, KEY_DEDUPE, buf, sizeof(buf)) == 0) {
         out->dedupe_content = (atoi(buf) != 0);
     }
+    if (ap_library_setting_get(lib, KEY_STRICT_ID, buf, sizeof(buf)) == 0) {
+        out->strict_identity = (atoi(buf) != 0);
+    }
 }
 
 void ap_import_settings_save(ap_library *lib, const ap_import_settings *s)
@@ -79,6 +84,8 @@ void ap_import_settings_save(ap_library *lib, const ap_import_settings *s)
     ap_library_setting_set(lib, KEY_COLLISION, num);
     snprintf(num, sizeof(num), "%d", s->dedupe_content ? 1 : 0);
     ap_library_setting_set(lib, KEY_DEDUPE, num);
+    snprintf(num, sizeof(num), "%d", s->strict_identity ? 1 : 0);
+    ap_library_setting_set(lib, KEY_STRICT_ID, num);
 }
 
 // ----- filename formatting ------------------------------------------
@@ -236,7 +243,7 @@ static bool same_file(const char *a, const char *b)
     return realpath(a, ra) && realpath(b, rb) && strcmp(ra, rb) == 0;
 }
 
-// ----- SQLite hash helpers ------------------------------------------
+// ----- SQLite dedupe helpers ----------------------------------------
 
 // Upsert the dedupe columns for `rel_path` in `db`. The import runs
 // before the post-import library reopen has scanned the new files
@@ -307,6 +314,7 @@ typedef enum {
     IMPORT_ONE_DUP_CONTENT,
     IMPORT_ONE_RENAMED,
     IMPORT_ONE_SKIP_COLLISION,
+    IMPORT_ONE_SKIP_INCOMPLETE_IDENTITY,
     IMPORT_ONE_ERROR,
 } import_one_result;
 
@@ -333,15 +341,17 @@ static import_one_result import_one(const char *src, const char *dest_dir,
     memcpy(stem, base, stem_len);
     stem[stem_len] = '\0';
 
-    // EXIF carries both the capture time (for pattern naming) and the
-    // identity tuple (for dedupe). Read once up front; either path
-    // tolerates a failure (naming falls back to mtime, dedupe falls
-    // back to the legacy hash lookup below).
+    // EXIF carries the capture time (for pattern naming) and the
+    // identity tuple (for dedupe). The identity is only built when
+    // all four tuple fields (make, model, capture time, sub-second)
+    // are present — partial tuples can collide across cameras or
+    // across same-camera bursts and must not be used as a dedupe
+    // key. Naming falls back to mtime when EXIF has no capture time.
     ap_exif_fields exif;
     bool have_exif = (ap_exif_read(src, &exif) == 0);
     char identity[256];
     identity[0] = '\0';
-    if (have_exif) {
+    if (have_exif && ap_exif_identity_is_unique(&exif)) {
         ap_exif_identity(&exif, identity, sizeof(identity));
     }
 
@@ -378,10 +388,17 @@ static import_one_result import_one(const char *src, const char *dest_dir,
     }
     int64_t src_size = (int64_t)ss.st_size;
 
-    // Identity dedupe: a 10ms EXIF parse + index lookup beats the
+    // Identity dedupe: a ~10ms EXIF parse + index lookup beats the
     // 5-10s LibRaw-open + full-source-BLAKE3 pre-pass it replaces.
     // Gated on s->dedupe_content so the user can intentionally keep
-    // two copies of the same bytes in different subdirs.
+    // two copies of the same shot in different subdirs. When the
+    // identity tuple is incomplete (`identity` empty), the import
+    // either skips the file or copies it depending on strict_identity.
+    if (db && s->dedupe_content && !identity[0] && s->strict_identity) {
+        AP_INFO("import: %s has incomplete EXIF identity, skipping "
+                "(strict_identity is on)", base);
+        return IMPORT_ONE_SKIP_INCOMPLETE_IDENTITY;
+    }
     if (db && s->dedupe_content && identity[0]) {
         char existing_rel[4096];
         if (db_find_identity(db, identity, existing_rel,
@@ -609,12 +626,13 @@ int ap_import_run_into(const char *lib_root, const char *db_path,
         import_one_result res = import_one(list.paths[i], dest_dir, subdir,
                                            s, i + 1, db);
         switch (res) {
-        case IMPORT_ONE_IMPORTED:       r.imported++;             break;
-        case IMPORT_ONE_DUP_CONTENT:    r.dup_content++;          break;
-        case IMPORT_ONE_RENAMED:        r.imported++;
-                                        r.renamed_collision++;    break;
-        case IMPORT_ONE_SKIP_COLLISION: r.skip_collision++;       break;
-        case IMPORT_ONE_ERROR:          r.errored++;              break;
+        case IMPORT_ONE_IMPORTED:                 r.imported++;                  break;
+        case IMPORT_ONE_DUP_CONTENT:              r.dup_content++;               break;
+        case IMPORT_ONE_RENAMED:                  r.imported++;
+                                                  r.renamed_collision++;         break;
+        case IMPORT_ONE_SKIP_COLLISION:           r.skip_collision++;            break;
+        case IMPORT_ONE_SKIP_INCOMPLETE_IDENTITY: r.skip_incomplete_identity++;  break;
+        case IMPORT_ONE_ERROR:                    r.errored++;                   break;
         }
         if (progress) {
             // false from the caller means "stop now"; the partial
@@ -636,9 +654,10 @@ int ap_import_run_into(const char *lib_root, const char *db_path,
     r.cancelled = cancelled;
     if (report) *report = r;
     AP_INFO("import: %d imported (%d renamed), %d dup, %d skip-collision, "
-            "%d error of %d from %s into %s%s",
+            "%d skip-incomplete-identity, %d error of %d from %s into %s%s",
             r.imported, r.renamed_collision, r.dup_content,
-            r.skip_collision, r.errored, total, src_dir, dest_dir,
+            r.skip_collision, r.skip_incomplete_identity, r.errored,
+            total, src_dir, dest_dir,
             cancelled ? " (cancelled)" : "");
     return 0;
 }

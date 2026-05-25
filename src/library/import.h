@@ -39,25 +39,37 @@ typedef struct {
     char pattern[AP_IMPORT_PATTERN_LEN];  // rename pattern
     int  collision;                       // ap_import_collision
     // When true (default), look each source up in the library's
-    // photos.identity column (camera serial + capture timestamp +
-    // ImageUniqueID, derived from EXIF) before copying; a match
+    // photos.identity column (derived from EXIF: Make | Model |
+    // DateTimeOriginal | SubSecTimeOriginal) before copying; a match
     // anywhere in the library is treated as already imported and
-    // skipped (counted as dup_content). Sources whose EXIF carries
-    // none of those tags skip the lookup and are always copied. Turn
-    // off when you genuinely want to keep two copies of the same shot
-    // in different subdirs. Independent of the byte-equality safety
-    // check at the destination path, which always runs.
+    // skipped (counted as dup_content). Sources whose EXIF can't
+    // populate every field of the identity tuple skip the lookup —
+    // see `strict_identity` for what happens to them next. Rows
+    // imported before the identity column existed have a NULL
+    // identity, so re-importing them into a legacy library will copy
+    // again; rebuild the library or clean by hand if that matters.
+    // Turn this flag off when you genuinely want two copies of the
+    // same shot in different subdirs. Independent of the byte-
+    // equality safety check at the destination path, which always
+    // runs.
     bool dedupe_content;
+    // When true, sources whose EXIF can't populate the full identity
+    // tuple are skipped (counted as skip_incomplete_identity) instead
+    // of copied. Default false: uncertain sources are copied as if
+    // they were fresh, matching the pre-identity behaviour. Only
+    // meaningful when dedupe_content is on.
+    bool strict_identity;
 } ap_import_settings;
 
 // Aggregate counts for a completed import run.
 typedef struct {
-    int  imported;          // files successfully copied
-    int  dup_content;       // files skipped: identical content already in library
-    int  renamed_collision; // files renamed to resolve a name collision
-    int  skip_collision;    // files skipped: name collision, SKIP policy
-    int  errored;           // files that failed to copy
-    bool cancelled;         // user requested cancel before the run finished
+    int  imported;                  // files successfully copied
+    int  dup_content;               // files skipped: identical content already in library
+    int  renamed_collision;         // files renamed to resolve a name collision
+    int  skip_collision;            // files skipped: name collision, SKIP policy
+    int  skip_incomplete_identity;  // files skipped: insufficient EXIF + strict_identity on
+    int  errored;                   // files that failed to copy
+    bool cancelled;                 // user requested cancel before the run finished
 } ap_import_report;
 
 // Load the library's import settings, filling any unset field with its
