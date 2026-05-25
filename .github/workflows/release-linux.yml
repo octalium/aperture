@@ -109,21 +109,27 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: derive version from tag
+      - name: derive version + epoch from tag
         id: meta
         run: |
           tag=${GITHUB_REF#refs/tags/}
           version=${tag#v}
+          epoch=$(git -C "$GITHUB_WORKSPACE" log -1 --pretty=%ct "$tag")
           echo "tag=$tag" >>"$GITHUB_OUTPUT"
           echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "epoch=$epoch" >>"$GITHUB_OUTPUT"
 
-      - name: pin aperture source to this tag
+      - name: pin aperture source + epoch to this tag
         run: |
           tag=${{ steps.meta.outputs.tag }}
-          # rewrite the aperture module source from main → this tag so
-          # flatpak-builder builds the exact release commit. yq would be
-          # cleaner; sed keeps the workflow dependency-free.
+          epoch=${{ steps.meta.outputs.epoch }}
+          # rewrite the aperture module source from main → this tag and
+          # SOURCE_DATE_EPOCH from 0 → the tag commit time so AppStream
+          # <release date> matches the tag (mirrors the AppImage path).
+          # yq would be cleaner; sed keeps the workflow dependency-free.
           sed -i "s|branch: main|tag: ${tag}|" \
+              packaging/flatpak/io.github.octalium.aperture.yml
+          sed -i "s|SOURCE_DATE_EPOCH: '0'|SOURCE_DATE_EPOCH: '${epoch}'|" \
               packaging/flatpak/io.github.octalium.aperture.yml
 
       - name: build flatpak bundle
