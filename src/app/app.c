@@ -7,6 +7,7 @@
 #include "menubar.h"
 #include "modals.h"
 
+#include "core/version.h"
 #include "io/raw.h"
 #include "modules/module.h"
 #include "modules/wb.h"
@@ -15,6 +16,8 @@
 #include "output/jpeg.h"
 #include "output/png.h"
 #include "output/tiff.h"
+#include "update/check.h"
+#include "update/updater.h"
 
 #include <errno.h>
 #include <math.h>
@@ -132,6 +135,15 @@ ap_app *ap_app_create(int width, int height, const char *title)
     // path read from memory; Preferences mutates this in place and
     // re-loads / re-saves through it.
     ap_quick_export_load(&app->quick_export_settings);
+
+    // Update-check preferences; auto-fire a launch check when on.
+    ap_update_settings_load(&app->update_settings);
+    if (app->update_settings.check_on_launch) {
+        ap_update_check_submit(app->workers,
+                               app->update_settings.manifest_url,
+                               AP_VERSION_STRING);
+        app->update_check_inflight = true;
+    }
 
     // Restore the last-active layout profile and which optional panels
     // were open last session. ImGui auto-persists window positions
@@ -540,6 +552,42 @@ void ap_app_open_preferences_modal(ap_app *app)
 {
     if (!app) return;
     app->preferences_modal = true;
+}
+
+ap_update_settings *ap_app_update_settings(ap_app *app)
+{
+    return app ? &app->update_settings : NULL;
+}
+
+void ap_app_open_about_modal(ap_app *app)
+{
+    if (!app) return;
+    app->about_modal = true;
+}
+
+int ap_app_check_for_updates(ap_app *app)
+{
+    if (!app || !app->workers) return -1;
+    if (app->update_check_inflight) return -1;
+    if (ap_update_check_submit(app->workers,
+                               app->update_settings.manifest_url,
+                               AP_VERSION_STRING) != 0) {
+        return -1;
+    }
+    app->update_check_inflight = true;
+    return 0;
+}
+
+bool ap_app_update_check_inflight(const ap_app *app)
+{
+    return app && app->update_check_inflight;
+}
+
+void ap_app_apply_update(ap_app *app)
+{
+    (void)app;
+    const ap_updater *u = ap_updater_get();
+    if (u && u->apply) u->apply();
 }
 
 // Build the basename-no-extension into `out` from a source path.
@@ -2407,6 +2455,8 @@ int ap_app_run_frame(ap_app *app)
     draw_save_layout_modal(app);
     draw_delete_modal(app);
     draw_delete_edit_modal(app);
+    draw_update_modal(app);
+    draw_about_modal(app);
     drive_global_hotkeys(app);
 
     // Full-viewport invisible host window owns the dockspace that

@@ -206,6 +206,12 @@ void draw_menubar(ap_app *app)
             igEndMenu();
         }
 
+        igSeparator();
+
+        if (igMenuItem_Bool("About aperture", NULL, false, true)) {
+            ap_app_open_about_modal(app);
+        }
+
         igEndMenu();
     }
 

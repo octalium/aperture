@@ -6,6 +6,7 @@
 #include "output/export.h"
 #include "ui/file_dialog.h"
 #include "ui/modal_kbd.h"
+#include "update/settings.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -76,11 +77,26 @@ void draw_preferences_modal(ap_app *app)
         }
     }
 
+    ap_update_settings *u = ap_app_update_settings(app);
+
+    igSeparatorText("Updates");
+
+    igCheckbox("Check for updates on launch", &u->check_on_launch);
+
+    igText("Manifest URL:");
+    igSameLine(0.0f, -1.0f);
+    igSetNextItemWidth(320.0f);
+    igInputTextWithHint("##update_manifest_url",
+                        "(default release manifest)",
+                        u->manifest_url, sizeof(u->manifest_url),
+                        0, NULL, NULL);
+
     igSeparator();
 
     if (igButton("Save", (ImVec2_c){ 120.0f, 0.0f })
         || ap_modal_enter_pressed()) {
         ap_quick_export_save(q);
+        ap_update_settings_save(u);
         igCloseCurrentPopup();
     }
     igSameLine(0.0f, -1.0f);
@@ -89,6 +105,7 @@ void draw_preferences_modal(ap_app *app)
         // Reload from the store so any unsaved edits do not leak into
         // the next open.
         ap_quick_export_load(q);
+        ap_update_settings_load(u);
         igCloseCurrentPopup();
     }
 
