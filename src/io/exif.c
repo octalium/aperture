@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 #include "io/exif.h"
 
 #include "core/log.h"
@@ -44,9 +46,12 @@ static uint32_t rd_u32(const uint8_t *p, bool le)
 #define TAG_IMAGE_UNIQUE_ID    0xA420
 #define TAG_EXIF_IFD_POINTER   0x8769
 
-// "YYYY:MM:DD HH:MM:SS" → time_t in local time. Returns 0 on parse
-// failure; cameras never emit a 1970-01-01 capture so 0 is a safe
-// "absent" sentinel.
+// "YYYY:MM:DD HH:MM:SS" → time_t, interpreting the wall-clock fields
+// as UTC. EXIF DateTimeOriginal carries no timezone, so for identity
+// purposes we pick a fixed reference (UTC) to keep the resulting
+// timestamp independent of the host's TZ. Returns 0 on parse failure;
+// cameras never emit a 1970-01-01 capture so 0 is a safe "absent"
+// sentinel.
 static time_t parse_exif_datetime(const char *s, size_t len)
 {
     if (!s || len < 19) return 0;
@@ -66,8 +71,7 @@ static time_t parse_exif_datetime(const char *s, size_t len)
     tm.tm_hour  = h;
     tm.tm_min   = mi;
     tm.tm_sec   = se;
-    tm.tm_isdst = -1;
-    return mktime(&tm);
+    return timegm(&tm);
 }
 
 // Copy an ASCII EXIF value (NUL-terminated in the file) into `out`,

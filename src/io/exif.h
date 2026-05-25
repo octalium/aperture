@@ -24,9 +24,11 @@ typedef struct {
     char image_unique_id[AP_EXIF_STR_LEN];
     // SubSecTimeOriginal (Exif SubIFD tag 0x9291). Empty when absent.
     char subsec_original[AP_EXIF_STR_LEN];
-    // DateTimeOriginal (Exif SubIFD tag 0x9003) as a local-time
-    // time_t (interpreted via mktime; subject to host TZ — tracked in
-    // issue #423). Zero when the tag was absent or unparseable.
+    // DateTimeOriginal (Exif SubIFD tag 0x9003) as a time_t. The EXIF
+    // wall-clock fields are interpreted as UTC (via timegm) so the
+    // value is deterministic across host timezones — required for the
+    // identity tuple to dedupe correctly across machines. Zero when
+    // the tag was absent or unparseable.
     time_t capture_time;
 } ap_exif_fields;
 
