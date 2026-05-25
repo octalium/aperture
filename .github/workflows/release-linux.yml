@@ -1,0 +1,158 @@
+# Tagged-release Linux build matrix.
+#
+# Trigger: push of a v* tag. Produces both AppImage (single-file
+# fallback) and Flatpak (.flatpak bundle, primary channel) artifacts
+# and attaches them to the GitHub Release for the tag.
+#
+# The Flathub submission is manual and lives outside this workflow —
+# see packaging/flatpak/FLATHUB.md.
+
+name: release-linux
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  linux-appimage:
+    name: AppImage (x86_64)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              build-essential meson ninja-build pkg-config \
+              glslc libvulkan-dev libglfw3-dev \
+              libraw-dev liblensfun-dev libsqlite3-dev libjpeg-dev \
+              libtiff-dev libpng-dev desktop-file-utils \
+              shared-mime-info appstream \
+              zsync file
+
+      - name: derive version + epoch from tag
+        id: meta
+        run: |
+          tag=${GITHUB_REF#refs/tags/}
+          version=${tag#v}
+          epoch=$(git -C "$GITHUB_WORKSPACE" log -1 --pretty=%ct "$tag")
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "epoch=$epoch" >>"$GITHUB_OUTPUT"
+
+      - name: fetch linuxdeploy
+        run: |
+          mkdir -p tools
+          curl -fSL -o tools/linuxdeploy \
+              https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x tools/linuxdeploy
+          # AppImage tools fail under containers without FUSE; extract and
+          # invoke the embedded squashfs directly via --appimage-extract.
+          (cd tools && ./linuxdeploy --appimage-extract >/dev/null)
+          echo "$PWD/tools/squashfs-root/usr/bin" >>"$GITHUB_PATH"
+
+      - name: meson setup + compile (prefix=/usr)
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
+        run: |
+          meson setup build \
+              --buildtype=release \
+              --prefix=/usr \
+              -Db_lto=true
+          meson compile -C build
+
+      - name: build AppImage
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          LINUXDEPLOY: linuxdeploy
+        run: |
+          packaging/appimage/build-appimage.sh
+
+      - name: list artifacts
+        run: |
+          ls -lh aperture-*.AppImage aperture-*.AppImage.zsync || true
+          file aperture-*.AppImage || true
+
+      - name: upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            aperture-*.AppImage
+            aperture-*.AppImage.zsync
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: ${{ contains(steps.meta.outputs.tag, '-') }}
+
+  linux-flatpak:
+    name: Flatpak bundle (x86_64)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: install flatpak + flatpak-builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              flatpak flatpak-builder
+
+      - name: enable flathub
+        run: |
+          flatpak --user remote-add --if-not-exists \
+              flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak --user install -y --noninteractive \
+              flathub org.freedesktop.Platform//24.08 \
+                       org.freedesktop.Sdk//24.08
+
+      - name: derive version from tag
+        id: meta
+        run: |
+          tag=${GITHUB_REF#refs/tags/}
+          version=${tag#v}
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+      - name: pin aperture source to this tag
+        run: |
+          tag=${{ steps.meta.outputs.tag }}
+          # rewrite the aperture module source from main → this tag so
+          # flatpak-builder builds the exact release commit. yq would be
+          # cleaner; sed keeps the workflow dependency-free.
+          sed -i "s|branch: main|tag: ${tag}|" \
+              packaging/flatpak/io.github.octalium.aperture.yml
+
+      - name: build flatpak bundle
+        run: |
+          flatpak-builder \
+              --user \
+              --install-deps-from=flathub \
+              --force-clean \
+              --repo=repo \
+              build-dir packaging/flatpak/io.github.octalium.aperture.yml
+          flatpak build-bundle repo \
+              "aperture-${{ steps.meta.outputs.version }}-x86_64.flatpak" \
+              io.github.octalium.aperture
+
+      - name: list artifacts
+        run: |
+          ls -lh aperture-*.flatpak
+
+      - name: upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            aperture-*.flatpak
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: ${{ contains(steps.meta.outputs.tag, '-') }}
