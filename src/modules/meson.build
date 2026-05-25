@@ -1,4 +1,5 @@
 aperture_sources += files(
+  'chromatic_aberration.c',
   'color_grade.c',
   'demosaic.c',
   'denoise.c',
