@@ -8,10 +8,11 @@
 static lfDatabase *g_lf_db;
 static bool        g_lf_db_loaded;
 
-// Two-slot LRU so callers can resolve both the live lens string (for
-// actual rendering) and an EXIF baseline (for the chooser dropdown)
-// without paying two Lensfun queries every frame.
-static ap_lens_match g_match_cache[2];
+// Round-robin LRU. Sized to cover both lens_correction and
+// chromatic_aberration each resolving a live STR_LENS plus an EXIF
+// baseline in the same frame without eviction churn.
+#define LENS_MATCH_CACHE_SLOTS 4
+static ap_lens_match g_match_cache[LENS_MATCH_CACHE_SLOTS];
 static int           g_match_cache_next;
 
 bool ap_lens_match_ensure_db(void)
@@ -49,7 +50,7 @@ const ap_lens_match *ap_lens_match_resolve(const char *cam_in,
     if (!cam_in)  cam_in  = "";
     if (!lens_in) lens_in = "";
 
-    for (int i = 0; i < (int)(sizeof g_match_cache / sizeof g_match_cache[0]); i++) {
+    for (int i = 0; i < LENS_MATCH_CACHE_SLOTS; i++) {
         const ap_lens_match *e = &g_match_cache[i];
         if (e->valid &&
             strncmp(e->cam_in,  cam_in,  AP_EDIT_STR_LEN) == 0 &&
@@ -59,8 +60,7 @@ const ap_lens_match *ap_lens_match_resolve(const char *cam_in,
     }
 
     ap_lens_match *m = &g_match_cache[g_match_cache_next];
-    g_match_cache_next = (g_match_cache_next + 1) %
-        (int)(sizeof g_match_cache / sizeof g_match_cache[0]);
+    g_match_cache_next = (g_match_cache_next + 1) % LENS_MATCH_CACHE_SLOTS;
     memset(m, 0, sizeof *m);
     m->valid = true;
     strncpy(m->cam_in,  cam_in,  AP_EDIT_STR_LEN - 1);
