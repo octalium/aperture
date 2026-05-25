@@ -334,10 +334,11 @@ static void lens_render(const ap_module *self, float *params,
 
     // Override chooser: surfaced whenever the EXIF-string lookup yields
     // more than one candidate. The combo's selection reflects which
-    // candidate the *current* STR_LENS resolves to (or 0 when no exact
-    // match — typically when the user typed something manually).
+    // candidate the *current* STR_LENS resolves to; when none match
+    // (typically a manually typed override) the preview shows the
+    // typed value tagged as custom so the displayed state stays honest.
     if (baseline->candidate_count > 1) {
-        int selected = 0;
+        int  selected = -1;
         for (int i = 0; i < baseline->candidate_count; i++) {
             if (strcmp(baseline->candidates[i].name,
                        ctx->str_params[STR_LENS]) == 0) {
@@ -345,7 +346,16 @@ static void lens_render(const ap_module *self, float *params,
                 break;
             }
         }
-        if (igBeginCombo("Choose lens", baseline->candidates[selected].name, 0)) {
+        char custom_preview[AP_EDIT_STR_LEN + 16];
+        const char *preview;
+        if (selected >= 0) {
+            preview = baseline->candidates[selected].name;
+        } else {
+            snprintf(custom_preview, sizeof(custom_preview),
+                     "(custom: %s)", ctx->str_params[STR_LENS]);
+            preview = custom_preview;
+        }
+        if (igBeginCombo("Choose lens", preview, 0)) {
             for (int i = 0; i < baseline->candidate_count; i++) {
                 char label[AP_META_VALUE_LEN * 2 + 32];
                 snprintf(label, sizeof(label), "%s (score %d)",
