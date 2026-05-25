@@ -1,53 +1,52 @@
-# Thin Makefile wrapping meson. Meson stays the source of truth;
-# this is a developer-UX convenience for the standard `make` / `make
-# install` flow. Set BUILD=somedir to use a different build directory.
+# Thin Makefile wrapping meson. Meson stays the source of truth; this
+# is a developer-UX convenience for the standard `make` / `make
+# install` flow. For non-default flags (cross-compile, custom prefix,
+# sanitizers), drive meson directly per the README's "Manual meson"
+# section.
+#
+# Three parallel build dirs so the common workflows don't trip over
+# each other:
+#   build/         debug   (default `make`)
+#   build-release/ release (system install)
+#   build-user/    release + $HOME/.local prefix (user install)
 
-BUILD ?= build
-TYPE  ?= debug
+.PHONY: all release run install install-user reconfigure clean
 
-# Default: configure (if needed) + incremental build (debug).
-.PHONY: all
-all: $(BUILD)/build.ninja
-	@meson compile -C $(BUILD)
+# Default: incremental debug build.
+all: build/build.ninja
+	@meson compile -C build
 
-# Release build. Uses a separate dir so debug + release can coexist.
-.PHONY: release
-release: BUILD := build-release
-release: TYPE  := release
-release: $(BUILD)/build.ninja
-	@meson compile -C $(BUILD)
+build/build.ninja:
+	@meson setup build --buildtype=debug
 
-# Auto-configure on first build. Trips on the ninja manifest, which
-# meson regenerates after a meson.build edit so this is cheap.
-$(BUILD)/build.ninja:
-	@meson setup $(BUILD) --buildtype=$(TYPE)
+# Release build, parallel dir so debug + release coexist.
+release: build-release/build.ninja
+	@meson compile -C build-release
 
-# Build + run the binary out of the build dir.
-.PHONY: run
+build-release/build.ninja:
+	@meson setup build-release --buildtype=release
+
+# Build + run the debug binary.
 run: all
-	@$(BUILD)/aperture
+	@./build/aperture
 
-# System-wide install (typically /usr/local). Uses sudo.
-.PHONY: install
-install: all
-	@sudo meson install -C $(BUILD)
+# System install. Always a release build.
+install: release
+	@sudo meson install -C build-release
 
-# Per-user install under $HOME/.local. No sudo. Reconfigures with the
-# user prefix on first run if the build dir was set up with the
-# default prefix.
-.PHONY: install-user
-install-user:
-	@meson setup $(BUILD) --buildtype=$(TYPE) --prefix="$$HOME/.local" --reconfigure 2>/dev/null || \
-	 meson setup $(BUILD) --buildtype=$(TYPE) --prefix="$$HOME/.local"
-	@meson compile -C $(BUILD)
-	@meson install -C $(BUILD)
+# Per-user install ($HOME/.local), release build, separate dir for
+# the different prefix so it doesn't fight build-release/.
+install-user: build-user/build.ninja
+	@meson compile -C build-user
+	@meson install -C build-user
 
-# Re-run configure (e.g. after editing meson.build).
-.PHONY: reconfigure
+build-user/build.ninja:
+	@meson setup build-user --buildtype=release --prefix="$$HOME/.local"
+
+# Re-run configure on the default debug dir (e.g. after editing meson.build).
 reconfigure:
-	@meson setup --reconfigure $(BUILD)
+	@meson setup --reconfigure build
 
-# Nuke the build dir.
-.PHONY: clean
+# Nuke all build dirs.
 clean:
-	@rm -rf $(BUILD) build-release
+	@rm -rf build build-release build-user
