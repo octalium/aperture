@@ -13,6 +13,32 @@
 extern "C" {
 #endif
 
+// Bundle of the non-stack fields a sidecar carries: orientation
+// toggle, per-field metadata overrides, culling, group membership and
+// keywords. Used by bulk-apply paths that need to load these once and
+// pass them to ap_library_apply_stack_to_photo without re-parsing the
+// sidecar for every photo.
+typedef struct {
+    bool              respect_orientation;
+    ap_photo_metadata user_meta;
+    bool              user_set[AP_META_FIELD_COUNT];
+    ap_photo_culling  culling;
+    ap_photo_groups   groups;
+    ap_photo_keywords keywords;
+} ap_sidecar_ancillary;
+
+// Reset every field of `*a` to the defaults `ap_sidecar_load` would
+// leave behind for a missing sidecar.
+void ap_sidecar_ancillary_clear(ap_sidecar_ancillary *a);
+
+// Load both the edit stack and the ancillary fields from a sidecar in
+// one parse. `*stack` and `*ancillary` are reset to defaults before
+// reading. Returns 0 on success, nonzero on missing / unparseable file
+// (out-params left at their defaults).
+int ap_sidecar_load_full(const char *source_path,
+                         ap_edit_stack *stack,
+                         ap_sidecar_ancillary *ancillary);
+
 // Load the photo's persisted state from `<source_path>.aperture`.
 // `*stack` is reset and then populated from the file's [[edit]]
 // entries; `*respect_orientation` is filled from the top-level

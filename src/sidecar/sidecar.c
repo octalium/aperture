@@ -102,6 +102,31 @@ static void read_groups(toml_table_t *aperture, ap_photo_groups *out)
     }
 }
 
+void ap_sidecar_ancillary_clear(ap_sidecar_ancillary *a)
+{
+    if (!a) return;
+    a->respect_orientation = true;
+    ap_photo_metadata_clear(&a->user_meta);
+    for (int i = 0; i < AP_META_FIELD_COUNT; i++) a->user_set[i] = false;
+    ap_photo_culling_clear(&a->culling);
+    a->groups.count = 0;
+    ap_photo_keywords_clear(&a->keywords);
+}
+
+int ap_sidecar_load_full(const char *source_path,
+                         ap_edit_stack *stack,
+                         ap_sidecar_ancillary *ancillary)
+{
+    if (!source_path || !stack || !ancillary) return -1;
+    ap_edit_stack_init(stack);
+    ap_sidecar_ancillary_clear(ancillary);
+    return ap_sidecar_load(source_path, stack,
+                           &ancillary->respect_orientation,
+                           &ancillary->user_meta, ancillary->user_set,
+                           &ancillary->culling, &ancillary->groups,
+                           &ancillary->keywords);
+}
+
 int ap_sidecar_load(const char *source_path, ap_edit_stack *stack,
                     bool *respect_orientation,
                     ap_photo_metadata *user_meta,
