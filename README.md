@@ -28,6 +28,15 @@ Both artifacts are produced by `.github/workflows/release-linux.yml` on
 `v*` tag pushes. The packaging sources live under `packaging/` — see
 `packaging/flatpak/FLATHUB.md` for submission notes.
 
+## Install (macOS)
+
+An unsigned arm64 `.dmg` (containing `Aperture.app`) is attached to each
+GitHub Release by `.github/workflows/release-macos.yml`. macOS 11 Big
+Sur or newer; Apple Silicon only. Because the build is not Developer-ID
+signed, the first launch needs a right-click → Open to bypass the
+Gatekeeper "unidentified developer" warning. See
+`packaging/macos/README.md` for build-from-source instructions.
+
 For development or distros where the packaged artifacts aren't an option,
 aperture builds from source with [Meson](https://mesonbuild.com/) +
 [Ninja](https://ninja-build.org/) and ships a `meson install` target that
