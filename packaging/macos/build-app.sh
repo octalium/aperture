@@ -69,8 +69,20 @@ mkdir -p "$APP_OUT/Contents/MacOS"
 mkdir -p "$APP_OUT/Contents/Frameworks"
 mkdir -p "$APP_OUT/Contents/Resources"
 
-cp "$aperture_bin" "$APP_OUT/Contents/MacOS/aperture"
+cp "$aperture_bin" "$APP_OUT/Contents/MacOS/aperture-bin"
 cp "$info_plist"   "$APP_OUT/Contents/Info.plist"
+
+# CFBundleExecutable points at "aperture", which is a shell launcher
+# that sets VK_ICD_FILENAMES so the bundled Vulkan loader discovers the
+# bundled MoltenVK ICD (instead of searching brew's prefix or failing
+# outright). The real ELF binary is "aperture-bin" sitting next to it.
+cat > "$APP_OUT/Contents/MacOS/aperture" <<'LAUNCHER'
+#!/bin/sh
+here=$(cd "$(dirname "$0")" && pwd)
+export VK_ICD_FILENAMES="$here/../Resources/vulkan/icd.d/MoltenVK_icd.json"
+exec "$here/aperture-bin" "$@"
+LAUNCHER
+chmod +x "$APP_OUT/Contents/MacOS/aperture"
 
 # generate aperture.icns from the existing rasterized linux icon. iconutil
 # wants an .iconset directory with the standard size + @2x variants; we
@@ -107,16 +119,20 @@ echo "==> bundling dylibs via $DYLIBBUNDLER"
 # liblensfun.1.dylib).
 "$DYLIBBUNDLER" \
     -of -cd -b \
-    -x "$APP_OUT/Contents/MacOS/aperture" \
+    -x "$APP_OUT/Contents/MacOS/aperture-bin" \
     -d "$APP_OUT/Contents/Frameworks" \
     -p "@executable_path/../Frameworks/" \
     -s /opt/homebrew/lib \
     -s /usr/local/lib
 
-# MoltenVK ships an ICD JSON (MoltenVK_icd.json) that the Vulkan loader
-# discovers via VK_ICD_FILENAMES. Bundle it next to the dylib so the
-# loader inside the .app finds it without leaking out to brew's prefix.
+# MoltenVK ships an ICD JSON (MoltenVK_icd.json) plus the libMoltenVK
+# dylib. The Vulkan loader dlopens MoltenVK at runtime via the JSON's
+# library_path; dylibbundler only follows direct link-time deps so it
+# won't pick the dylib up on its own. Copy both: the dylib into
+# Frameworks/ and the JSON into Resources/vulkan/icd.d/ with a relative
+# library_path that points back at the bundled dylib.
 moltenvk_icd=""
+moltenvk_dylib=""
 for candidate in \
     /opt/homebrew/share/vulkan/icd.d/MoltenVK_icd.json \
     /opt/homebrew/opt/molten-vk/share/vulkan/icd.d/MoltenVK_icd.json \
@@ -127,12 +143,29 @@ do
         break
     fi
 done
+for candidate in \
+    /opt/homebrew/lib/libMoltenVK.dylib \
+    /opt/homebrew/opt/molten-vk/lib/libMoltenVK.dylib \
+    /usr/local/lib/libMoltenVK.dylib
+do
+    if [ -f "$candidate" ]; then
+        moltenvk_dylib=$candidate
+        break
+    fi
+done
 
-if [ -n "$moltenvk_icd" ]; then
+if [ -z "$moltenvk_dylib" ]; then
+    echo "warning: libMoltenVK.dylib not found; brew install molten-vk on the build host" >&2
+elif [ -z "$moltenvk_icd" ]; then
+    echo "warning: MoltenVK_icd.json not found; the molten-vk brew formula should ship it" >&2
+else
+    cp "$moltenvk_dylib" "$APP_OUT/Contents/Frameworks/libMoltenVK.dylib"
     mkdir -p "$APP_OUT/Contents/Resources/vulkan/icd.d"
     cp "$moltenvk_icd" "$APP_OUT/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json"
-    # rewrite library_path to the bundled MoltenVK dylib so the loader
-    # inside the .app resolves it under Frameworks/ rather than brew.
+    # rewrite library_path to the bundled MoltenVK dylib. The path is
+    # resolved relative to the JSON file (Contents/Resources/vulkan/
+    # icd.d/), so it climbs three directories before descending into
+    # Frameworks/.
     python3 - "$APP_OUT/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json" <<'PY'
 import json, sys
 path = sys.argv[1]
@@ -142,8 +175,6 @@ data.setdefault('ICD', {})['library_path'] = '../../../Frameworks/libMoltenVK.dy
 with open(path, 'w') as f:
     json.dump(data, f, indent=4)
 PY
-else
-    echo "warning: MoltenVK_icd.json not found; brew install molten-vk on the build host" >&2
 fi
 
 echo "==> wrote $APP_OUT (version $VERSION)"
