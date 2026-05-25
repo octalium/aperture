@@ -295,12 +295,18 @@ static void ca_render(const ap_module *self, float *params,
     }
     if (probe_focal <= 0.0f) probe_focal = 50.0f;
 
-    bool has_tca = false;
+    bool has_tca         = false;
+    bool tca_unsupported = false;
     if (match->lens) {
         lfLensCalibTCA probe = {0};
         if (lf_lens_interpolate_tca(match->lens, probe_focal, &probe)
             && probe.Model != LF_TCA_MODEL_NONE) {
             has_tca = true;
+            // shader only implements LINEAR + POLY3; anything else
+            // (Lensfun 0.3.95+ adds ACM = Adobe Camera Model) falls
+            // through fill_auto_terms and silently disables Auto.
+            tca_unsupported = (probe.Model != LF_TCA_MODEL_LINEAR
+                               && probe.Model != LF_TCA_MODEL_POLY3);
         }
     }
 
@@ -314,7 +320,11 @@ static void ca_render(const ap_module *self, float *params,
         igTextColored(warn_col, "\xe2\x9a\xa0 Camera not found in Lensfun DB");
     }
     if (match->lens) {
-        if (has_tca) {
+        if (tca_unsupported) {
+            igTextColored(warn_col,
+                          "\xe2\x9a\xa0 Lens: %s (TCA model not yet supported, likely ACM — use Manual)",
+                          match->lens_name);
+        } else if (has_tca) {
             igTextColored(ok_col, "\xe2\x9c\x93 Lens: %s (TCA available)",
                           match->lens_name);
         } else {
