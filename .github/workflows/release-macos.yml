@@ -1,0 +1,85 @@
+# Tagged-release macOS build.
+#
+# Trigger: push of a v* tag. Produces an unsigned arm64 .dmg containing
+# Aperture.app and attaches it to the GitHub Release.
+#
+# Apple Developer ID code-signing + notarization are intentionally out of
+# scope; first-run users see the Gatekeeper "unidentified developer"
+# warning and right-click -> Open to launch. Revisit when there's
+# appetite for a paid Developer ID.
+
+name: release-macos
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  macos-dmg:
+    name: .dmg (arm64)
+    runs-on: macos-14
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: install build dependencies
+        run: |
+          brew update
+          brew install \
+              meson ninja pkg-config \
+              glslang shaderc \
+              vulkan-headers vulkan-loader molten-vk \
+              glfw libraw lensfun \
+              jpeg-turbo libpng libtiff \
+              sqlite \
+              dylibbundler create-dmg
+
+      - name: derive version + epoch from tag
+        id: meta
+        run: |
+          tag=${GITHUB_REF#refs/tags/}
+          version=${tag#v}
+          epoch=$(git -C "$GITHUB_WORKSPACE" log -1 --pretty=%ct "$tag")
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "epoch=$epoch" >>"$GITHUB_OUTPUT"
+
+      - name: meson setup + compile
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
+        run: |
+          meson setup build \
+              --buildtype=release \
+              --prefix=/usr/local \
+              -Db_lto=true
+          meson compile -C build
+
+      - name: assemble Aperture.app
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: packaging/macos/build-app.sh
+
+      - name: package .dmg
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: packaging/macos/build-dmg.sh
+
+      - name: list artifacts
+        run: |
+          ls -lh aperture-*.dmg || true
+          file aperture-*.dmg || true
+
+      - name: upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            aperture-*.dmg
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: ${{ contains(steps.meta.outputs.tag, '-') }}
