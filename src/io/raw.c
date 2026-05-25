@@ -266,9 +266,12 @@ int ap_raw_load(const char *path, ap_raw_image *out)
                 path, flip);
         flip = 0;
     }
-    out->meta.flip          = flip;
-    out->meta.sensor_width  = vis_w;
-    out->meta.sensor_height = vis_h;
+    out->meta.flip              = flip;
+    out->meta.sensor_width      = vis_w;
+    out->meta.sensor_height     = vis_h;
+    out->meta.lens_min_focal    = raw->lens.MinFocal;
+    out->meta.lens_max_focal    = raw->lens.MaxFocal;
+    out->meta.lens_min_aperture = raw->lens.MaxAp4MinFocal;
 
     if (flip == 5 || flip == 6) {
         out->width  = vis_h;
