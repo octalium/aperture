@@ -19,10 +19,21 @@ specification only. No tagged releases yet.
 
 ## Install (Linux)
 
-Aperture builds with [Meson](https://mesonbuild.com/) + [Ninja](https://ninja-build.org/)
-and ships a `meson install` target that lays down a desktop entry, hicolor
-icon, AppStream metainfo, and MIME associations for the raw formats it
-reads (CR2, CR3, NEF, ARW, RAF, DNG, ORF, RW2, PEF, SRW).
+Once tagged releases ship, the easiest paths will be:
+
+- **Flatpak** (primary channel, via Flathub once submission lands).
+- **AppImage** (single-file fallback, attached to each GitHub Release).
+
+Both artifacts are produced by `.github/workflows/release-linux.yml` on
+`v*` tag pushes. The packaging sources live under `packaging/` — see
+`packaging/flatpak/FLATHUB.md` for submission notes.
+
+For development or distros where the packaged artifacts aren't an option,
+aperture builds from source with [Meson](https://mesonbuild.com/) +
+[Ninja](https://ninja-build.org/) and ships a `meson install` target that
+lays down a desktop entry, hicolor icon, AppStream metainfo, and MIME
+associations for the raw formats it reads (CR2, CR3, NEF, ARW, RAF, DNG,
+ORF, RW2, PEF, SRW).
 
 ### Distro dependencies
 
@@ -62,6 +73,13 @@ sudo pacman -S base-devel meson ninja pkgconf shaderc vulkan-headers \
 ### Build and install
 
 System-wide (`/usr/local`):
+
+```
+make build
+sudo make install
+```
+
+Equivalent direct meson invocation:
 
 ```
 meson setup build --buildtype=release

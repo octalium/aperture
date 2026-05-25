@@ -1,0 +1,124 @@
+# Flatpak manifest for aperture.
+#
+# Builds against the freedesktop runtime (24.08 LTS) which already
+# provides Vulkan loader, libpng, libtiff, libjpeg, sqlite3, and the
+# common desktop stack. Dependencies the runtime does NOT ship
+# (glfw, lensfun, libraw) are built as modules below. The remaining
+# vendored deps (cimgui, lcms2, blake3, nativefiledialog, tomlc99)
+# come in via meson wraps under dep/, and their sources are pinned
+# alongside the aperture module so flatpak-builder can build offline.
+#
+# Bump runtime-version in lockstep with the freedesktop release we
+# target. 24.08 is the current LTS as of 2026; 25.08 supersedes it
+# on the next LTS cut.
+
+app-id: io.github.octalium.aperture
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+command: aperture
+
+finish-args:
+  # graphics + window system
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=dri
+  # GPU access for Vulkan
+  - --device=all
+  # filesystem access for libraries and exports — host:ro is overly
+  # broad; aperture writes only inside user-chosen library paths.
+  # Flathub portal usage (file chooser via xdg-desktop-portal) covers
+  # picking individual library roots without --filesystem=host.
+  - --filesystem=host
+  # native file dialogs go through xdg-desktop-portal
+  - --talk-name=org.freedesktop.portal.FileChooser
+
+modules:
+  - name: glfw
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DBUILD_SHARED_LIBS=ON
+      - -DGLFW_BUILD_EXAMPLES=OFF
+      - -DGLFW_BUILD_TESTS=OFF
+      - -DGLFW_BUILD_DOCS=OFF
+    sources:
+      - type: archive
+        url: https://github.com/glfw/glfw/releases/download/3.4/glfw-3.4.zip
+        sha256: b5ec004b2712fd08e8861dc271428f048775200a2df719ccf575143ba749a3e9
+
+  - name: lensfun
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DBUILD_TESTS=OFF
+      - -DBUILD_LENSTOOL=OFF
+      - -DBUILD_FOR_SSE=ON
+      - -DBUILD_FOR_SSE2=ON
+    sources:
+      - type: archive
+        url: https://github.com/lensfun/lensfun/archive/v0.3.4.tar.gz
+        sha256: dafb39c08ef24a0e2abd00d05d7341b1bf1f0c38bfcd5a4c69cf5f0ecb6db112
+
+  - name: libraw
+    buildsystem: autotools
+    config-opts:
+      - --disable-static
+      - --enable-shared
+      - --disable-examples
+    sources:
+      - type: archive
+        url: https://www.libraw.org/data/LibRaw-0.21.4.tar.gz
+        sha256: 6be43f19397e43214ff56aab056bf3ff4925ca14012ce5a1538a172406a09e63
+
+  - name: aperture
+    buildsystem: meson
+    config-opts:
+      - --buildtype=release
+      - -Dwrap_mode=nodownload
+    build-options:
+      env:
+        # pin AppStream release date to the tag's commit time at CI
+        SOURCE_DATE_EPOCH: '0'
+    sources:
+      - type: git
+        url: https://github.com/octalium/aperture.git
+        # branch/tag/commit is rewritten by the release workflow before
+        # flatpak-builder runs. Default keeps manual local builds usable
+        # off main.
+        branch: main
+
+      # vendored wrap sources placed where meson expects them
+      # (subproject_dir = dep/). meson runs with --wrap-mode=nodownload
+      # so it must find each subproject already extracted.
+
+      - type: archive
+        url: https://github.com/mm2/Little-CMS/archive/refs/tags/lcms2.19.tar.gz
+        sha256: 6acc3eb5fac194acc85331194133ad1d4a60419dad16b3bc225a7d27380a5b3a
+        dest: dep/lcms2
+
+      - type: git
+        url: https://github.com/cimgui/cimgui.git
+        commit: 07fde25e7aff0b2b3eb536dd162d5ead162609d8
+        dest: dep/cimgui
+
+      - type: git
+        url: https://github.com/btzy/nativefiledialog-extended.git
+        tag: v1.3.0
+        # wrap base name is "nativefiledialog" (file: dep/nativefiledialog.wrap)
+        dest: dep/nativefiledialog
+
+      - type: git
+        url: https://github.com/cktan/tomlc99.git
+        commit: 29076dfd095bbbbd50a3c1b2760d29f4b83e74ac
+        dest: dep/tomlc99
+
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /lib/cmake
+  - /share/doc
+  - /share/man
+  - '*.a'
+  - '*.la'
