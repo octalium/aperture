@@ -14,6 +14,7 @@ project(
 
 add_project_arguments(
   '-DAPERTURE_VERSION="@0@"'.format(meson.project_version()),
+  '-DAP_VERSION_STRING="@0@"'.format(meson.project_version()),
   language: ['c', 'cpp'],
 )
 
@@ -45,11 +46,14 @@ tomlc99_dep = dependency('tomlc99')
 libjpeg_dep = dependency('libjpeg')
 libtiff_dep = dependency('libtiff-4')
 libpng_dep  = dependency('libpng')
+# Debian/Ubuntu: libcurl4-openssl-dev. Fedora: libcurl-devel. Arch: curl.
+libcurl_dep = dependency('libcurl')
 # Built from the wrap unconditionally — a system liblcms2, if present,
 # would otherwise be picked ahead of it; vendoring keeps the colour
 # engine version deterministic across machines.
 lcms2_dep   = subproject('lcms2').get_variable('lcms2_dep')
 blake3_dep  = subproject('blake3').get_variable('blake3_dep')
+cjson_dep   = subproject('cJSON').get_variable('cjson_dep')
 nfd_dep     = dependency('nativefiledialog-extended')
 threads_dep = dependency('threads')
 
@@ -78,6 +82,8 @@ aperture_deps = [
   libpng_dep,
   lcms2_dep,
   blake3_dep,
+  cjson_dep,
+  libcurl_dep,
   nfd_dep,
   threads_dep,
   shaders_dep,

@@ -1,4 +1,5 @@
 aperture_sources += files(
+  'about_modal.c',
   'app.c',
   'export_modal.c',
   'grid_view.c',

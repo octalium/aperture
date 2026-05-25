@@ -34,6 +34,8 @@ struct import_job;
 #include "ui/imgui.h"
 #include "ui/status.h"
 #include "ui/toast.h"
+#include "update/manifest.h"
+#include "update/settings.h"
 
 #include "cimgui.h"
 
@@ -105,6 +107,14 @@ struct ap_app {
     bool             delete_modal;
     bool             delete_edit_modal;
     bool             quit_requested;
+
+    ap_update_settings update_settings;
+    bool               update_modal;          // open the "newer version" modal
+    bool               update_modal_dismissed;// suppress until next session
+    bool               about_modal;
+    bool               update_check_inflight;
+    bool               update_available;
+    ap_manifest        update_manifest;
 
     ap_canvas_tool   canvas_tool;
     int              canvas_tool_entry;

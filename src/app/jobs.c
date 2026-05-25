@@ -7,6 +7,8 @@
 #include "output/jpeg.h"
 #include "output/png.h"
 #include "output/tiff.h"
+#include "update/check.h"
+#include "update/updater.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -187,6 +189,32 @@ static void handle_thumb_encode_complete(ap_app *app, thumb_encode_job *j)
     free(j);
 }
 
+static void handle_update_check_complete(ap_app *app, ap_update_check_job *j)
+{
+    app->update_check_inflight = false;
+    if (!j->ok) {
+        if (j->error[0]) {
+            AP_WARN("update: version check failed: %s", j->error);
+        }
+        ap_updater_set_pending(NULL, false);
+        app->update_available = false;
+        free(j);
+        return;
+    }
+
+    ap_updater_set_pending(&j->manifest, j->newer);
+    app->update_available = j->newer;
+    if (j->newer) {
+        app->update_manifest = j->manifest;
+        AP_INFO("update: %s available (running %s)",
+                j->manifest.latest, j->current_version);
+        if (!app->update_modal_dismissed) app->update_modal = true;
+    } else {
+        AP_INFO("update: running latest (%s)", j->current_version);
+    }
+    free(j);
+}
+
 static void handle_import_complete(ap_app *app, import_job *j)
 {
     app->import_inflight     = false;
@@ -265,6 +293,10 @@ void discard_completed_item(ap_app *app, ap_work_item *it)
         app->inflight_import_job = NULL;
         ap_status_progress_finish(j->status_id, 0);
         free(j);
+    } else if (it->run == ap_update_check_run) {
+        ap_update_check_job *j = (ap_update_check_job *)it;
+        app->update_check_inflight = false;
+        free(j);
     } else {
         AP_WARN("worker: unknown completed run-fn at discard, leaking item");
     }
@@ -296,6 +328,8 @@ void drain_one_completed_job(ap_app *app)
         handle_thumb_encode_complete(app, (thumb_encode_job *)it);
     } else if (it->run == import_job_run) {
         handle_import_complete(app, (import_job *)it);
+    } else if (it->run == ap_update_check_run) {
+        handle_update_check_complete(app, (ap_update_check_job *)it);
     } else {
         AP_WARN("worker: unknown completed run-fn, leaking item");
     }

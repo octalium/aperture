@@ -47,7 +47,7 @@ ORF, RW2, PEF, SRW).
 ### Distro dependencies
 
 System packages providing the dependencies pulled in via `pkg-config`. The
-remaining deps (lcms2, libpng, libtiff, cimgui, tomlc99, blake3,
+remaining deps (lcms2, libpng, libtiff, cimgui, tomlc99, blake3, cJSON,
 nativefiledialog) are vendored as meson wraps and built from source.
 
 **Debian / Ubuntu**
@@ -56,8 +56,8 @@ nativefiledialog) are vendored as meson wraps and built from source.
 sudo apt install build-essential meson ninja-build pkg-config \
     glslc libvulkan-dev vulkan-validationlayers libglfw3-dev \
     libraw-dev liblensfun-dev libsqlite3-dev libjpeg-dev \
-    libtiff-dev libpng-dev desktop-file-utils shared-mime-info \
-    appstream
+    libtiff-dev libpng-dev libcurl4-openssl-dev \
+    desktop-file-utils shared-mime-info appstream
 ```
 
 **Fedora**
@@ -66,7 +66,7 @@ sudo apt install build-essential meson ninja-build pkg-config \
 sudo dnf install gcc gcc-c++ meson ninja-build pkgconf-pkg-config \
     glslc vulkan-headers vulkan-loader-devel vulkan-validation-layers \
     glfw-devel LibRaw-devel lensfun-devel sqlite-devel \
-    libjpeg-turbo-devel libtiff-devel libpng-devel \
+    libjpeg-turbo-devel libtiff-devel libpng-devel libcurl-devel \
     desktop-file-utils shared-mime-info appstream
 ```
 
@@ -75,7 +75,7 @@ sudo dnf install gcc gcc-c++ meson ninja-build pkgconf-pkg-config \
 ```
 sudo pacman -S base-devel meson ninja pkgconf shaderc vulkan-headers \
     vulkan-icd-loader vulkan-validation-layers glfw libraw lensfun \
-    sqlite libjpeg-turbo libtiff libpng desktop-file-utils \
+    sqlite libjpeg-turbo libtiff libpng curl desktop-file-utils \
     shared-mime-info appstream
 ```
 

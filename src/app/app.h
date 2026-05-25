@@ -6,6 +6,7 @@
 #include "library/library.h"
 #include "output/export.h"
 #include "photo/metadata.h"
+#include "update/settings.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -93,6 +94,28 @@ void ap_app_open_export_modal(ap_app *app);
 // time the modal opens and saved on commit.
 ap_quick_export_settings *ap_app_quick_export_settings(ap_app *app);
 void ap_app_open_preferences_modal(ap_app *app);
+
+// Cached update preferences (check-on-launch, manifest URL override).
+// Loaded once at create time; the Preferences modal mutates this in
+// place and persists via ap_update_settings_save on commit.
+ap_update_settings *ap_app_update_settings(ap_app *app);
+
+// Open the About aperture modal. No-op when already open.
+void ap_app_open_about_modal(ap_app *app);
+
+// Kick off an async manifest fetch + version compare. Returns 0
+// when a check was submitted, -1 when one is already in flight or
+// the worker pool is unavailable. The result lands via the normal
+// worker-pool drain path; when newer, the startup update modal is
+// raised (unless dismissed for the session).
+int ap_app_check_for_updates(ap_app *app);
+
+// True while an async update-check job is running.
+bool ap_app_update_check_inflight(const ap_app *app);
+
+// Trigger the platform updater's apply path (defaults to opening
+// the GitHub Releases page in the browser).
+void ap_app_apply_update(ap_app *app);
 
 // Run a Quick Export from the current context. In photo mode exports
 // the open photo; in library mode exports every selected grid photo.
