@@ -1,4 +1,5 @@
 aperture_sources += files(
+  'chromatic_aberration.c',
   'color_grade.c',
   'demosaic.c',
   'denoise.c',
@@ -7,6 +8,7 @@ aperture_sources += files(
   'grain.c',
   'hsl.c',
   'lens_correction.c',
+  'lens_match.c',
   'output_transfer.c',
   'profile.c',
   'raw_passthrough.c',
