@@ -107,12 +107,14 @@ void draw_import_modal(ap_app *app)
     igSeparatorText("Duplicates");
     igCheckbox("Skip files already in the library (EXIF identity)",
                &s->dedupe_content);
+    igBeginDisabled(!s->dedupe_content);
     igCheckbox("Strict identity: skip files with incomplete EXIF",
                &s->strict_identity);
-    if (igIsItemHovered(0)) {
+    if (igIsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
         igSetTooltip("When on, photos missing Make/Model/DateTime/SubSec "
                      "are skipped on import instead of copied.");
     }
+    igEndDisabled();
 
     igText("On name collision:");
     igSameLine(0.0f, -1.0f);
