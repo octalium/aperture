@@ -61,6 +61,8 @@ subdir('src')
 
 if host_machine.system() == 'linux'
   subdir('packaging/linux')
+elif host_machine.system() == 'darwin'
+  subdir('packaging/macos')
 endif
 
 aperture_deps = [

@@ -6,7 +6,7 @@ BUILD_DIR    ?= build
 PREFIX       ?= /usr/local
 BUILDTYPE    ?= release
 
-.PHONY: help build setup compile install clean appimage flatpak release-linux
+.PHONY: help build setup compile install clean appimage flatpak release-linux app macos
 
 help:
 	@echo "common targets:"
@@ -15,6 +15,8 @@ help:
 	@echo "  make appimage         build a single-file AppImage (needs linuxdeploy)"
 	@echo "  make flatpak          build a .flatpak bundle (needs flatpak-builder + flathub remote)"
 	@echo "  make release-linux    build both AppImage and Flatpak"
+	@echo "  make app              build Aperture.app (macOS host only; needs dylibbundler)"
+	@echo "  make macos            build Aperture.app + .dmg (macOS host only; needs create-dmg)"
 	@echo "  make clean            remove $(BUILD_DIR)"
 	@echo ""
 	@echo "variables: BUILD_DIR (=$(BUILD_DIR)), PREFIX (=$(PREFIX)), BUILDTYPE (=$(BUILDTYPE))"
@@ -47,6 +49,19 @@ flatpak:
 		$(BUILD_DIR)/aperture.flatpak io.github.octalium.aperture
 
 release-linux: appimage flatpak
+
+app:
+	@if [ "$$(uname -s)" != "Darwin" ]; then \
+		echo "make app requires macOS (got $$(uname -s))" >&2; exit 1; \
+	fi
+	@if [ ! -d $(BUILD_DIR) ]; then \
+		meson setup $(BUILD_DIR) --buildtype=release --prefix=/usr/local; \
+	fi
+	meson compile -C $(BUILD_DIR)
+	BUILD_DIR=$(BUILD_DIR) packaging/macos/build-app.sh
+
+macos: app
+	packaging/macos/build-dmg.sh
 
 clean:
 	rm -rf $(BUILD_DIR)
