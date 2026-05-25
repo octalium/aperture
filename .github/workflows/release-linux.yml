@@ -31,12 +31,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-              build-essential meson ninja-build pkg-config \
+              build-essential ninja-build pkg-config python3-pip \
               glslc libvulkan-dev libglfw3-dev \
               libraw-dev liblensfun-dev libsqlite3-dev libjpeg-dev \
               libtiff-dev libpng-dev desktop-file-utils \
               shared-mime-info appstream \
               zsync file
+          # ubuntu-22.04's apt meson is 0.61; the project requires >=1.3.
+          # pip is the cleanest way to pin a recent meson on the runner.
+          python3 -m pip install --upgrade 'meson>=1.3.0'
 
       - name: derive version + epoch from tag
         id: meta
@@ -95,25 +98,16 @@ jobs:
   linux-flatpak:
     name: Flatpak bundle (x86_64)
     runs-on: ubuntu-22.04
+    # flatpak/flatpak-github-actions runs flatpak-builder inside the
+    # freedesktop SDK container so the runner only needs Docker.
+    container:
+      image: bilelmoussaoui/flatpak-github-actions:freedesktop-24.08
+      options: --privileged
     steps:
       - name: checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: install flatpak + flatpak-builder
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-              flatpak flatpak-builder
-
-      - name: enable flathub
-        run: |
-          flatpak --user remote-add --if-not-exists \
-              flathub https://flathub.org/repo/flathub.flatpakrepo
-          flatpak --user install -y --noninteractive \
-              flathub org.freedesktop.Platform//24.08 \
-                       org.freedesktop.Sdk//24.08
 
       - name: derive version from tag
         id: meta
@@ -133,20 +127,12 @@ jobs:
               packaging/flatpak/io.github.octalium.aperture.yml
 
       - name: build flatpak bundle
-        run: |
-          flatpak-builder \
-              --user \
-              --install-deps-from=flathub \
-              --force-clean \
-              --repo=repo \
-              build-dir packaging/flatpak/io.github.octalium.aperture.yml
-          flatpak build-bundle repo \
-              "aperture-${{ steps.meta.outputs.version }}-x86_64.flatpak" \
-              io.github.octalium.aperture
-
-      - name: list artifacts
-        run: |
-          ls -lh aperture-*.flatpak
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: packaging/flatpak/io.github.octalium.aperture.yml
+          bundle: aperture-${{ steps.meta.outputs.version }}-x86_64.flatpak
+          cache-key: flatpak-builder-${{ github.sha }}
+          upload-artifact: false
 
       - name: upload to GitHub Release
         uses: softprops/action-gh-release@v2
