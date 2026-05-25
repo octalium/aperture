@@ -1,0 +1,156 @@
+#version 450
+
+// Chromatic aberration removal: per-channel geometric resample.
+//
+// Lateral chromatic aberration manifests as red and blue channels
+// magnifying slightly differently from green. We correct it by
+// resampling red and blue from offset source coordinates, leaving
+// green as the geometric reference.
+//
+// Two source models are supported, matching Lensfun's per-channel
+// calibration formulae (lfTCAModel):
+//
+//   Linear:
+//     r_d,C = r_u,C * k_C        (C in {R, B})
+//
+//   Poly3:
+//     r_d,C = r_u,C * (b_C r_u,C^2 + c_C r_u,C + v_C)
+//
+// In both cases `r_u` is the undistorted (output) radius normalised
+// against the half-diagonal and `r_d` is the source (distorted)
+// radius. We backward-warp: given the output pixel's r_u, evaluate
+// r_d for each channel and sample the source at that radius.
+//
+// The manual override path layers a per-channel scale (k_R, k_B in
+// the Linear sense) and a small radial offset (in normalised units)
+// on top. When the auto coefficients leave a channel at identity,
+// the manual override is the entire signal — matching the spec's
+// "vintage / adapted glass without Lensfun profiles" use case.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D in_image;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
+
+layout(push_constant) uniform PushConstants {
+    // tca_model: 0 = none (manual-only), 1 = linear, 2 = poly3
+    int   tca_model;
+    int   _pad0;
+    int   _pad1;
+    int   _pad2;
+
+    // linear model:  kr (.x), kb (.x)   — terms[1..3] unused
+    // poly3  model:  br, cr, vr  /  bb, cb, vb
+    vec4  red_terms;
+    vec4  blue_terms;
+
+    // manual additive scale and radial offset applied on top of the
+    // model evaluation. r_scale / b_scale multiply r_d; r_offset /
+    // b_offset shift r_d by a fixed normalised amount.
+    float r_scale;
+    float b_scale;
+    float r_offset;
+    float b_offset;
+
+    // principal-point shift inherited from Lensfun calibration.
+    // Auto mode forwards lens->CenterX/Y; manual mode leaves these
+    // zero so the geometry stays image-centric.
+    float center_x;
+    float center_y;
+    float _pad3;
+    float _pad4;
+} pc;
+
+vec4 sample_bilinear(vec2 coord, ivec2 size)
+{
+    vec2  f  = fract(coord);
+    ivec2 c0 = ivec2(floor(coord));
+
+    ivec2 c00 = clamp(c0,              ivec2(0), size - 1);
+    ivec2 c10 = clamp(c0 + ivec2(1,0), ivec2(0), size - 1);
+    ivec2 c01 = clamp(c0 + ivec2(0,1), ivec2(0), size - 1);
+    ivec2 c11 = clamp(c0 + ivec2(1,1), ivec2(0), size - 1);
+
+    vec4 s00 = imageLoad(in_image, c00);
+    vec4 s10 = imageLoad(in_image, c10);
+    vec4 s01 = imageLoad(in_image, c01);
+    vec4 s11 = imageLoad(in_image, c11);
+
+    return mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);
+}
+
+// Evaluate the model's r_d for a channel given r_u and its term vector.
+// Linear uses only terms.x (k); Poly3 uses terms.xyz (b, c, v).
+float channel_rd(float ru, vec4 terms)
+{
+    if (pc.tca_model == 2) {
+        float b = terms.x;
+        float c = terms.y;
+        float v = terms.z;
+        return ru * (b * ru * ru + c * ru + v);
+    }
+    if (pc.tca_model == 1) {
+        return ru * terms.x;
+    }
+    return ru;
+}
+
+// Compute the source pixel coordinate for a colour channel: take the
+// undistorted radius, run it through the channel's model, apply the
+// manual scale + radial offset, then build the source position in
+// pixel space.
+vec2 channel_src(vec2 shifted, float ru,
+                 vec4 terms, float scale, float offset,
+                 vec2 center, float half_diag)
+{
+    if (ru < 1e-6) {
+        vec2 src_norm = vec2(pc.center_x, pc.center_y);
+        return src_norm * half_diag + center - vec2(0.5);
+    }
+
+    float rd_model = channel_rd(ru, terms);
+    float rd       = rd_model * scale + offset;
+    if (rd < 0.0) rd = 0.0;
+
+    vec2 dir       = shifted / ru;
+    vec2 src_norm  = dir * rd + vec2(pc.center_x, pc.center_y);
+    return src_norm * half_diag + center - vec2(0.5);
+}
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(in_image);
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    float half_diag = length(vec2(size)) * 0.5;
+    vec2  center    = vec2(size) * 0.5;
+    vec2  out_uv    = (vec2(coord) + 0.5 - center) / half_diag;
+
+    // Principal-point shift moves the optical centre off the geometric
+    // image centre. Source coordinates live in the shifted frame.
+    vec2  shifted   = out_uv - vec2(pc.center_x, pc.center_y);
+    float ru        = length(shifted);
+
+    vec2  red_px    = channel_src(shifted, ru,
+                                  pc.red_terms,  pc.r_scale, pc.r_offset,
+                                  center, half_diag);
+    vec2  blue_px   = channel_src(shifted, ru,
+                                  pc.blue_terms, pc.b_scale, pc.b_offset,
+                                  center, half_diag);
+
+    vec4 src_full   = sample_bilinear(vec2(coord), size); // green source
+    vec4 src_red    = sample_bilinear(red_px,  size);
+    vec4 src_blue   = sample_bilinear(blue_px, size);
+
+    vec4 c = vec4(src_red.r, src_full.g, src_blue.b, src_full.a);
+
+    // guard against degenerate coefficients producing non-finite results
+    bvec4 nans = isnan(c);
+    bvec4 infs = isinf(c);
+    bvec4 bad  = bvec4(nans.x || infs.x, nans.y || infs.y,
+                       nans.z || infs.z, nans.w || infs.w);
+    c = mix(c, vec4(0.0), vec4(bad));
+
+    imageStore(out_image, coord, c);
+}
