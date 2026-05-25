@@ -93,9 +93,11 @@ void draw_import_modal(ap_app *app)
     // Duplicates section. Two distinct conflict-avoidance layers,
     // surfaced together so the difference is obvious:
     //
-    //   - Library-wide content dedupe (BLAKE3 hash lookup against the
-    //     photos table). Catches "same bytes already imported anywhere
-    //     in the library". User-toggleable; on by default.
+    //   - Library-wide content dedupe (EXIF identity lookup against
+    //     photos.identity). Catches "same shot already imported
+    //     anywhere in the library". User-toggleable; on by default.
+    //     The strict_identity sub-flag decides what to do with files
+    //     whose EXIF can't form a full identity tuple.
     //
     //   - Per-destination name collision. Triggers when a file with
     //     the same target filename already exists at the destination
@@ -103,8 +105,14 @@ void draw_import_modal(ap_app *app)
     //     runs as a safety net; the policy combo only governs the
     //     differing-content branch.
     igSeparatorText("Duplicates");
-    igCheckbox("Skip files already in the library (content hash)",
+    igCheckbox("Skip files already in the library (EXIF identity)",
                &s->dedupe_content);
+    igCheckbox("Strict identity: skip files with incomplete EXIF",
+               &s->strict_identity);
+    if (igIsItemHovered(0)) {
+        igSetTooltip("When on, photos missing Make/Model/DateTime/SubSec "
+                     "are skipped on import instead of copied.");
+    }
 
     igText("On name collision:");
     igSameLine(0.0f, -1.0f);
@@ -147,6 +155,10 @@ void draw_import_modal(ap_app *app)
         if (r->skip_collision > 0) {
             igTextDisabled("%d skipped (name collision, different content)",
                            r->skip_collision);
+        }
+        if (r->skip_incomplete_identity > 0) {
+            igTextDisabled("%d skipped (incomplete EXIF, strict identity on)",
+                           r->skip_incomplete_identity);
         }
         if (r->errored > 0) {
             igTextDisabled("%d error%s -- see the log",

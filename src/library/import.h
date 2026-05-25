@@ -38,24 +38,38 @@ typedef struct {
     int  naming;                          // ap_import_naming
     char pattern[AP_IMPORT_PATTERN_LEN];  // rename pattern
     int  collision;                       // ap_import_collision
-    // When true (default), BLAKE3-hash every source file and look it
-    // up in the library's photos.hash column before copying; an exact
-    // content match anywhere in the library is treated as already
-    // imported and skipped (counted as dup_content). Turn off when you
-    // genuinely want to keep two copies of the same bytes in different
-    // subdirs. Independent of the byte-equality safety check at the
-    // destination path, which always runs.
+    // When true (default), look each source up in the library's
+    // photos.identity column (derived from EXIF: Make | Model |
+    // DateTimeOriginal | SubSecTimeOriginal) before copying; a match
+    // anywhere in the library is treated as already imported and
+    // skipped (counted as dup_content). Sources whose EXIF can't
+    // populate every field of the identity tuple skip the lookup —
+    // see `strict_identity` for what happens to them next. Rows
+    // imported before the identity column existed have a NULL
+    // identity, so re-importing them into a legacy library will copy
+    // again; rebuild the library or clean by hand if that matters.
+    // Turn this flag off when you genuinely want two copies of the
+    // same shot in different subdirs. Independent of the byte-
+    // equality safety check at the destination path, which always
+    // runs.
     bool dedupe_content;
+    // When true, sources whose EXIF can't populate the full identity
+    // tuple are skipped (counted as skip_incomplete_identity) instead
+    // of copied. Default false: uncertain sources are copied as if
+    // they were fresh, matching the pre-identity behaviour. Only
+    // meaningful when dedupe_content is on.
+    bool strict_identity;
 } ap_import_settings;
 
 // Aggregate counts for a completed import run.
 typedef struct {
-    int  imported;          // files successfully copied
-    int  dup_content;       // files skipped: identical content already in library
-    int  renamed_collision; // files renamed to resolve a name collision
-    int  skip_collision;    // files skipped: name collision, SKIP policy
-    int  errored;           // files that failed to copy
-    bool cancelled;         // user requested cancel before the run finished
+    int  imported;                  // files successfully copied
+    int  dup_content;               // files skipped: identical content already in library
+    int  renamed_collision;         // files renamed to resolve a name collision
+    int  skip_collision;            // files skipped: name collision, SKIP policy
+    int  skip_incomplete_identity;  // files skipped: insufficient EXIF + strict_identity on
+    int  errored;                   // files that failed to copy
+    bool cancelled;                 // user requested cancel before the run finished
 } ap_import_report;
 
 // Load the library's import settings, filling any unset field with its
@@ -89,7 +103,7 @@ int ap_import_run_ex(ap_library *lib, const char *src_dir,
 // Like ap_import_run_ex but takes the library root and db path as strings
 // instead of an ap_library pointer. Safe to call from a worker thread
 // because it does not touch shared library state. `db_path` may be NULL
-// to skip content-dedupe (hash lookup).
+// to skip content-dedupe (identity lookup).
 int ap_import_run_into(const char *lib_root, const char *db_path,
                        const char *src_dir, const ap_import_settings *s,
                        ap_import_report *report,
