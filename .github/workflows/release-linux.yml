@@ -149,7 +149,10 @@ jobs:
         with:
           manifest-path: packaging/flatpak/io.github.octalium.aperture.yml
           bundle: aperture-${{ steps.meta.outputs.version }}-x86_64.flatpak
-          cache-key: flatpak-builder-${{ github.sha }}
+          # key on manifest hash so the cache survives across releases
+          # until the manifest itself changes (the previous github.sha
+          # key cold-started the cache on every tag push).
+          cache-key: flatpak-builder-${{ hashFiles('packaging/flatpak/*.yml') }}
           upload-artifact: false
 
       - name: upload to GitHub Release
