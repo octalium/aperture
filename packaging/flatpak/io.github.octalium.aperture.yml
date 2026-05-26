@@ -4,9 +4,10 @@
 # provides Vulkan loader, libpng, libtiff, libjpeg, sqlite3, and the
 # common desktop stack. Dependencies the runtime does NOT ship
 # (glfw, lensfun, libraw) are built as modules below. The remaining
-# vendored deps (cimgui, lcms2, blake3, nativefiledialog, tomlc99)
-# come in via meson wraps under dep/, and their sources are pinned
-# alongside the aperture module so flatpak-builder can build offline.
+# vendored deps (cimgui, lcms2, blake3, cJSON, nativefiledialog,
+# tomlc99) come in via meson wraps under dep/, and their sources are
+# pinned alongside the aperture module so flatpak-builder can build
+# offline.
 #
 # Bump runtime-version in lockstep with the freedesktop release we
 # target. 24.08 is the current LTS as of 2026; 25.08 supersedes it
@@ -116,6 +117,11 @@ modules:
         url: https://github.com/cktan/tomlc99.git
         commit: 29076dfd095bbbbd50a3c1b2760d29f4b83e74ac
         dest: dep/tomlc99
+
+      - type: git
+        url: https://github.com/DaveGamble/cJSON.git
+        tag: v1.7.19
+        dest: dep/cJSON
 
 cleanup:
   - /include
