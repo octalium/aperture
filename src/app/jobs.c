@@ -191,24 +191,24 @@ static void handle_thumb_encode_complete(ap_app *app, thumb_encode_job *j)
 
 static void handle_update_check_complete(ap_app *app, ap_update_check_job *j)
 {
-    app->update_check_inflight = false;
+    app->update.check_inflight = false;
     if (!j->ok) {
         if (j->error[0]) {
             AP_WARN("update: version check failed: %s", j->error);
         }
         ap_updater_set_pending(NULL, false);
-        app->update_available = false;
+        app->update.available = false;
         free(j);
         return;
     }
 
     ap_updater_set_pending(&j->manifest, j->newer);
-    app->update_available = j->newer;
+    app->update.available = j->newer;
     if (j->newer) {
-        app->update_manifest = j->manifest;
+        app->update.manifest = j->manifest;
         AP_INFO("update: %s available (running %s)",
                 j->manifest.latest, j->current_version);
-        if (!app->update_modal_dismissed) app->update_modal = true;
+        if (!app->update.modal_dismissed) app->update.modal = true;
     } else {
         AP_INFO("update: running latest (%s)", j->current_version);
     }
@@ -295,7 +295,7 @@ void discard_completed_item(ap_app *app, ap_work_item *it)
         free(j);
     } else if (it->run == ap_update_check_run) {
         ap_update_check_job *j = (ap_update_check_job *)it;
-        app->update_check_inflight = false;
+        app->update.check_inflight = false;
         free(j);
     } else {
         AP_WARN("worker: unknown completed run-fn at discard, leaking item");
