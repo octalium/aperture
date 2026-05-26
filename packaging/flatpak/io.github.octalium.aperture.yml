@@ -123,6 +123,17 @@ modules:
         tag: v1.7.19
         dest: dep/cJSON
 
+      # meson's --wrap-mode=nodownload skips patch_directory overlay,
+      # so we replicate it manually for every wrap that relies on one.
+      # All five vendored wraps (cimgui, cJSON, lcms2, nativefiledialog,
+      # tomlc99) ship our meson.build via dep/packagefiles/<name>/ and
+      # would otherwise fail dependency resolution in order of first
+      # use in the root meson.build. Runs during source extraction,
+      # before meson setup. The trailing /. copies hidden files too.
+      - type: shell
+        commands:
+          - 'for d in cimgui cJSON lcms2 nativefiledialog tomlc99; do cp -r dep/packagefiles/$d/. dep/$d/; done'
+
 cleanup:
   - /include
   - /lib/pkgconfig
