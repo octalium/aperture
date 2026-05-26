@@ -51,16 +51,6 @@ int ap_manifest_parse(const char *json, size_t len, ap_manifest *out)
 
     const cJSON *channels = cJSON_GetObjectItemCaseSensitive(root, "channels");
     if (cJSON_IsObject(channels)) {
-        const cJSON *appimage =
-            cJSON_GetObjectItemCaseSensitive(channels, "appimage");
-        if (cJSON_IsObject(appimage)) {
-            copy_str(out->appimage.url,    sizeof(out->appimage.url),
-                     appimage, "url");
-            copy_str(out->appimage.zsync,  sizeof(out->appimage.zsync),
-                     appimage, "zsync");
-            copy_str(out->appimage.sha256, sizeof(out->appimage.sha256),
-                     appimage, "sha256");
-        }
         const cJSON *dmg =
             cJSON_GetObjectItemCaseSensitive(channels, "dmg");
         if (cJSON_IsObject(dmg)) {
