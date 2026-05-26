@@ -12,6 +12,12 @@ project(
   subproject_dir: 'dep',
 )
 
+# nativefiledialog's macOS backend (nfd_cocoa.m) needs objc; only
+# enable on darwin so Linux builds don't require an objc toolchain.
+if host_machine.system() == 'darwin'
+  add_languages('objc', native: false)
+endif
+
 add_project_arguments(
   '-DAPERTURE_VERSION="@0@"'.format(meson.project_version()),
   '-DAP_VERSION_STRING="@0@"'.format(meson.project_version()),
