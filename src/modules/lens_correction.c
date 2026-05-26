@@ -356,11 +356,19 @@ static void lens_render(const ap_module *self, float *params,
                           baseline->candidate_count);
         }
     } else if (match->lens_rejected) {
-        igTextColored(bad_col,
-                      "\xe2\x9a\xa0 Lens match too weak (best: %s, score %d/%d) "
-                      "\xe2\x80\x94 stage skipped",
-                      match->lens_name, match->lens_score,
-                      AP_LENS_MATCH_MIN_SCORE);
+        if (match->lens_pruned_by_hints) {
+            igTextColored(bad_col,
+                          "\xe2\x9a\xa0 Lens metadata mismatch (best: %s, "
+                          "focal/aperture outside the lens's declared range) "
+                          "\xe2\x80\x94 stage skipped",
+                          match->lens_name);
+        } else {
+            igTextColored(bad_col,
+                          "\xe2\x9a\xa0 Lens match too weak (best: %s, score %d/%d) "
+                          "\xe2\x80\x94 stage skipped",
+                          match->lens_name, match->lens_score,
+                          AP_LENS_MATCH_MIN_SCORE);
+        }
     } else if (ctx->str_params[STR_LENS][0]) {
         igTextColored(bad_col,
                       "\xe2\x9a\xa0 No lens match \xe2\x80\x94 stage skipped");
