@@ -1,0 +1,141 @@
+#ifndef APERTURE_PHOTO_H
+#define APERTURE_PHOTO_H
+
+#include "edit/history.h"
+#include "edit/stack.h"
+#include "edit/viewport.h"
+#include "gpu/gpu.h"
+#include "gpu/pipeline_graph.h"
+#include "io/raw.h"
+#include "photo/culling.h"
+#include "photo/keywords.h"
+#include "photo/metadata.h"
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct ap_photo ap_photo;
+
+// Open a single source file as an editable photo. Allocates GPU
+// resources (input texture, pipeline graph, display image).
+//
+// Lifetime: paired with ap_photo_close. Caller is responsible for
+// dropping the photo from ap_gpu's current-graph pointer (via
+// ap_gpu_set_graph(NULL)) before closing, and for waiting on the
+// device to idle.
+ap_photo *ap_photo_open(ap_gpu *g, const char *path);
+
+// Async-friendly equivalent that takes a pre-loaded raw image and
+// builds the photo around it without touching the disk in the main
+// thread. The photo takes ownership of `*raw` regardless of outcome
+// (succeed → consumed; fail → freed).
+ap_photo *ap_photo_open_with_raw(ap_gpu *g, const char *path,
+                                 ap_raw_image *raw);
+
+void      ap_photo_close(ap_photo *photo);
+
+ap_pipeline_graph *ap_photo_graph(ap_photo *photo);
+
+// Per-photo edit stack. Mutable - panels mutate slot params and
+// add / remove / move entries, the render loop reads it each frame.
+ap_edit_stack *ap_photo_stack(ap_photo *photo);
+
+// Whether to apply the raw's EXIF orientation. Persisted per-photo
+// in the sidecar. Toggling rebuilds the graph at different dims, so
+// the caller (app) reopens the photo on change.
+bool ap_photo_respect_orientation(const ap_photo *photo);
+void ap_photo_set_respect_orientation(ap_photo *photo, bool yes);
+
+// Rebuild the pipeline graph from the current stack. The display
+// image's view + sampler change, so the caller must rebind the
+// canvas to the new outputs (ap_canvas_set_input). Returns 0 on
+// success; the photo's previous graph is destroyed first.
+int ap_photo_rebuild_graph(ap_photo *photo);
+
+// Synchronous GPU readback of the rendered display image to a
+// freshly malloc'd RGBA8 buffer (caller frees). Used by the
+// photo-close path to snapshot pixels while the graph is alive;
+// the downsample + JPEG encode + library db store happen off the
+// GPU thread on a worker. Call on the GPU thread. Returns 0 on
+// success.
+int ap_photo_readback_rgba(ap_photo *photo,
+                           uint8_t **out_rgba, int *out_w, int *out_h);
+
+// "View Raw" mode: when on, the graph is rebuilt with an empty
+// stack — every user edit is bypassed and only the raw_passthrough
+// stage runs, showing the Bayer plane as grayscale. The user's
+// stack data is preserved; toggling off restores the rendered
+// view.
+bool ap_photo_view_raw(const ap_photo *photo);
+void ap_photo_set_view_raw(ap_photo *photo, bool yes);
+
+int         ap_photo_width(const ap_photo *photo);
+int         ap_photo_height(const ap_photo *photo);
+const char *ap_photo_path(const ap_photo *photo);
+
+// Active viewport — crop / rotation / flip / scale — from the photo's
+// first enabled "transform" stack entry, or the identity viewport
+// when none. Consumed by the canvas (display) and export, not by the
+// pixel pipeline. See src/edit/viewport.h.
+ap_viewport ap_photo_viewport(const ap_photo *photo);
+
+// Per-field metadata accessors. The "effective" value is the user's
+// override when set, otherwise the value the loader read from the
+// file. `is_user` tells the panel whether to enable the per-field
+// reset button. set_user marks the field overridden (even with an
+// empty string, which means "user explicitly blanked it"); reset
+// clears the override and reverts to the file value.
+const char *ap_photo_metadata_value(const ap_photo *photo, ap_meta_field f);
+const char *ap_photo_metadata_file_value(const ap_photo *photo,
+                                         ap_meta_field f);
+// Bulk accessor for the file-extracted metadata — what the loader read
+// from the source EXIF. Modules that need multiple fields (e.g. lens
+// correction) use this rather than calling metadata_file_value per field.
+// Returns NULL when `photo` is NULL.
+const ap_photo_metadata *ap_photo_file_meta(const ap_photo *photo);
+bool        ap_photo_metadata_is_user(const ap_photo *photo, ap_meta_field f);
+void        ap_photo_metadata_set_user(ap_photo *photo, ap_meta_field f,
+                                       const char *value);
+void        ap_photo_metadata_reset(ap_photo *photo, ap_meta_field f);
+
+// Culling state — rating / pick-reject flag / colour label. Persisted
+// in the sidecar's [metadata] table. The setters mutate the in-memory
+// state only; the change reaches disk on the next sidecar save (photo
+// close).
+ap_photo_culling ap_photo_get_culling(const ap_photo *photo);
+void             ap_photo_set_rating(ap_photo *photo, int rating);
+void             ap_photo_set_flag(ap_photo *photo, ap_flag flag);
+void             ap_photo_set_color_label(ap_photo *photo,
+                                          ap_color_label color);
+
+// Keyword accessors. Keywords are flat strings with hierarchy encoded
+// via AP_KW_SEPARATOR ('|'). The list is owned by the photo and
+// persisted in the sidecar's [metadata] `keywords` array. Mutations
+// are in-memory only until sidecar save (photo close).
+const ap_photo_keywords *ap_photo_get_keywords(const ap_photo *photo);
+bool ap_photo_keyword_add(ap_photo *photo, const char *kw);
+bool ap_photo_keyword_remove(ap_photo *photo, const char *kw);
+
+// Per-photo undo/redo. ap_photo_edit_snapshot captures the current
+// edit stack into the history ring before a mutation. ap_photo_undo /
+// ap_photo_redo restore a previous / next state into the edit stack
+// and return true when a state was available; false means the history
+// was exhausted and the stack was not touched.
+void              ap_photo_edit_snapshot(ap_photo *photo);
+bool              ap_photo_undo(ap_photo *photo);
+bool              ap_photo_redo(ap_photo *photo);
+
+// Direct access to the history ring. Used by the config window to push
+// a pre-render snapshot when a slider drag begins (coalescing).
+ap_edit_history  *ap_photo_history(ap_photo *photo);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

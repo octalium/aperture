@@ -1,0 +1,49 @@
+#version 450
+
+// Stage 2: sigmoid tone curve.
+//
+// Anchored logistic:
+//
+//   k       = contrast * 4
+//   raw(x)  = 1 / (1 + exp(-k * (x - pivot)))
+//   anchor  = raw(0)                              // sigmoid value at black
+//   y(x)    = (raw(x) - anchor) / (1 - anchor)
+//
+// The anchor subtraction guarantees black-input -> black-output (no
+// foggy shadows). Output is clamped to [0, 1] for the encode pass.
+//
+// Contrast = 1 → unit slope at the pivot (mostly-linear, mild shoulder).
+// Contrast > 1 → steeper midtones, softer shoulder/toe (classic S-curve).
+// Pivot is in linear-light scene-referred values (0.18 ≈ 18% gray).
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D in_image;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
+
+layout(push_constant) uniform PushConstants {
+    float contrast;
+    float pivot;
+} pc;
+
+vec3 sigmoid_tone(vec3 c, float contrast, float pivot)
+{
+    float k      = contrast * 4.0;
+    float anchor = 1.0 / (1.0 + exp(k * pivot));
+    vec3  raw    = 1.0 / (1.0 + exp(-k * (c - vec3(pivot))));
+    return clamp((raw - vec3(anchor)) / (1.0 - anchor), vec3(0.0), vec3(1.0));
+}
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(in_image);
+    if (coord.x >= size.x || coord.y >= size.y) {
+        return;
+    }
+
+    vec4 c   = imageLoad(in_image, coord);
+    vec3 out_rgb = sigmoid_tone(c.rgb, pc.contrast, pc.pivot);
+
+    imageStore(out_image, coord, vec4(out_rgb, c.a));
+}

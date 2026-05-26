@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="image/x-canon-cr2">
+    <comment>Canon raw image (CR2)</comment>
+    <glob pattern="*.cr2"/>
+    <glob pattern="*.CR2"/>
+  </mime-type>
+  <mime-type type="image/x-canon-cr3">
+    <comment>Canon raw image (CR3)</comment>
+    <glob pattern="*.cr3"/>
+    <glob pattern="*.CR3"/>
+  </mime-type>
+  <mime-type type="image/x-nikon-nef">
+    <comment>Nikon raw image (NEF)</comment>
+    <glob pattern="*.nef"/>
+    <glob pattern="*.NEF"/>
+  </mime-type>
+  <mime-type type="image/x-sony-arw">
+    <comment>Sony raw image (ARW)</comment>
+    <glob pattern="*.arw"/>
+    <glob pattern="*.ARW"/>
+  </mime-type>
+  <mime-type type="image/x-fuji-raf">
+    <comment>Fujifilm raw image (RAF)</comment>
+    <glob pattern="*.raf"/>
+    <glob pattern="*.RAF"/>
+  </mime-type>
+  <mime-type type="image/x-adobe-dng">
+    <comment>Adobe Digital Negative (DNG)</comment>
+    <glob pattern="*.dng"/>
+    <glob pattern="*.DNG"/>
+  </mime-type>
+  <mime-type type="image/x-olympus-orf">
+    <comment>Olympus raw image (ORF)</comment>
+    <glob pattern="*.orf"/>
+    <glob pattern="*.ORF"/>
+  </mime-type>
+  <mime-type type="image/x-panasonic-rw2">
+    <comment>Panasonic raw image (RW2)</comment>
+    <glob pattern="*.rw2"/>
+    <glob pattern="*.RW2"/>
+  </mime-type>
+  <mime-type type="image/x-pentax-pef">
+    <comment>Pentax raw image (PEF)</comment>
+    <glob pattern="*.pef"/>
+    <glob pattern="*.PEF"/>
+  </mime-type>
+  <mime-type type="image/x-samsung-srw">
+    <comment>Samsung raw image (SRW)</comment>
+    <glob pattern="*.srw"/>
+    <glob pattern="*.SRW"/>
+  </mime-type>
+</mime-info>

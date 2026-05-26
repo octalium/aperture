@@ -1,0 +1,49 @@
+#version 450
+
+// Bayer-as-grayscale fallback: maps the R16_UNORM sensor plane into the
+// chain's RGBA16F working format with R=G=B = normalized raw value, no
+// demosaic, no white balance, no color profile. Used when the user has
+// disabled / removed the Demosaic module and is viewing the sensor data
+// as-shot, and also as the body of "View Raw" mode.
+//
+// Honors the same EXIF flip code Demosaic uses, so a portrait shot
+// stays upright at the display dims when Respect EXIF Orientation is
+// on, instead of getting stretched onto a rotated canvas.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, r16)     uniform readonly  image2D in_image;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
+
+layout(push_constant) uniform PushConstants {
+    uvec4 sensor_size_flip;   // .xy = sensor (W, H), .z = flip code, .w = pad
+} pc;
+
+ivec2 sensor_coord_of(ivec2 out_coord, ivec2 sensor_size, uint flip)
+{
+    if (flip == 3u) {
+        return sensor_size - ivec2(1) - out_coord;
+    } else if (flip == 5u) {
+        return ivec2(sensor_size.x - 1 - out_coord.y, out_coord.x);
+    } else if (flip == 6u) {
+        return ivec2(out_coord.y, sensor_size.y - 1 - out_coord.x);
+    }
+    return out_coord;
+}
+
+void main()
+{
+    ivec2 out_coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 out_size  = imageSize(out_image);
+    if (out_coord.x >= out_size.x || out_coord.y >= out_size.y) {
+        return;
+    }
+
+    ivec2 sensor_size = ivec2(pc.sensor_size_flip.xy);
+    uint  flip        = pc.sensor_size_flip.z;
+    ivec2 in_coord    = sensor_coord_of(out_coord, sensor_size, flip);
+    in_coord = clamp(in_coord, ivec2(0), sensor_size - ivec2(1));
+
+    float v = imageLoad(in_image, in_coord).r;
+    imageStore(out_image, out_coord, vec4(v, v, v, 1.0));
+}

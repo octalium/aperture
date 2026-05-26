@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+
+    <key>CFBundleExecutable</key>
+    <string>aperture</string>
+
+    <key>CFBundleIconFile</key>
+    <string>aperture</string>
+
+    <key>CFBundleIdentifier</key>
+    <string>io.github.octalium.aperture</string>
+
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+
+    <key>CFBundleName</key>
+    <string>Aperture</string>
+
+    <key>CFBundleDisplayName</key>
+    <string>Aperture</string>
+
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+
+    <key>CFBundleShortVersionString</key>
+    <string>@version@</string>
+
+    <key>CFBundleVersion</key>
+    <string>@version@</string>
+
+    <key>CFBundleSignature</key>
+    <string>????</string>
+
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+
+    <key>NSHighResolutionCapable</key>
+    <true/>
+
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+
+    <key>NSHumanReadableCopyright</key>
+    <string>MIT-licensed. See LICENSE.</string>
+
+    <key>SUFeedURL</key>
+    <string>https://github.com/octalium/aperture/releases/download/latest/appcast.xml</string>
+
+    <key>SUPublicEDKey</key>
+    <string>@sparkle_public_ed_key@</string>
+
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Canon Raw Image (CR2)</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array><string>com.canon.cr2-raw-image</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Canon Raw Image (CR3)</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array><string>com.canon.cr3-raw-image</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Nikon Raw Image (NEF)</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array><string>com.nikon.raw-image</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Sony Raw Image (ARW)</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array><string>com.sony.arw-raw-image</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Fujifilm Raw Image (RAF)</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array><string>com.fuji.raw-image</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Adobe Digital Negative (DNG)</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array><string>com.adobe.raw-image</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Olympus Raw Image (ORF)</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array><string>com.olympus.raw-image</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Panasonic Raw Image (RW2)</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array><string>com.panasonic.rw2-raw-image</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Pentax Raw Image (PEF)</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array><string>com.pentax.raw-image</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Samsung Raw Image (SRW)</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array><string>com.samsung.raw-image</string></array>
+        </dict>
+    </array>
+</dict>
+</plist>

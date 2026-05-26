@@ -1,7 +1,8 @@
 # Build output
-build/
-out/
-cmake-build-*/
+/build/
+/build-*/
+/out/
+/cmake-build-*/
 *.o
 *.a
 *.so
@@ -15,6 +16,15 @@ compile_commands.json
 .cache/
 .ccls-cache/
 
+# Meson subprojects (lives in dep/): track .wrap files and our overlay
+# files in packagefiles/, ignore fetched-source subdirectories and the
+# transient .wraplock (revisit if we start pinning revisions explicitly).
+/dep/*/
+!/dep/*.wrap
+!/dep/packagefiles/
+/dep/packagecache/
+/dep/.wraplock
+
 # Editors / IDEs
 .vscode/
 .idea/
@@ -26,3 +36,9 @@ compile_commands.json
 # Local dev
 .env
 .env.local
+
+# macOS packaging cache (Sparkle tarball + extracted framework)
+/packaging/macos/.sparkle-cache/
+
+# ImGui's runtime layout file
+imgui.ini

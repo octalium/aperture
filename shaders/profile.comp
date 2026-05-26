@@ -1,0 +1,33 @@
+#version 450
+
+// Color Profile: 3x3 camera-RGB -> linear sRGB matrix transform.
+// Input is expected to be WB-corrected linear camera-RGB; output is
+// linear sRGB-primaries RGB ready for tone / output transfer.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D in_image;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
+
+layout(push_constant) uniform PushConstants {
+    vec4 cam_to_srgb_r0;  // .xyz = row 0
+    vec4 cam_to_srgb_r1;
+    vec4 cam_to_srgb_r2;
+} pc;
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(out_image);
+    if (coord.x >= size.x || coord.y >= size.y) {
+        return;
+    }
+
+    vec4 in_px = imageLoad(in_image, coord);
+    vec3 srgb  = vec3(
+        dot(pc.cam_to_srgb_r0.xyz, in_px.rgb),
+        dot(pc.cam_to_srgb_r1.xyz, in_px.rgb),
+        dot(pc.cam_to_srgb_r2.xyz, in_px.rgb));
+
+    imageStore(out_image, coord, vec4(srgb, in_px.a));
+}

@@ -1,0 +1,8 @@
+[wrap-git]
+url = https://github.com/mm2/Little-CMS.git
+revision = lcms2.19
+depth = 1
+patch_directory = lcms2
+
+[provide]
+lcms2 = lcms2_dep

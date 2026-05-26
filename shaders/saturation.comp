@@ -1,0 +1,43 @@
+#version 450
+
+// Saturation + Vibrance. Mixes between luma (BT.709) and the original
+// RGB. Vibrance weighting biases the effect toward less-saturated
+// pixels — same value with more `vibrance` than `saturation` boosts
+// flat areas more than already-saturated highlights.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D in_image;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
+
+layout(push_constant) uniform PushConstants {
+    float saturation;
+    float vibrance;
+} pc;
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(in_image);
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    vec4 c = imageLoad(in_image, coord);
+    vec3 rgb = c.rgb;
+
+    // BT.709 luma. We're working in sRGB-primary linear space; this
+    // is the right luma for that.
+    float luma = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
+
+    // "Existing saturation" approximation: chroma range / max channel.
+    // Cheap, doesn't require full RGB->HSL.
+    float maxc = max(rgb.r, max(rgb.g, rgb.b));
+    float minc = min(rgb.r, min(rgb.g, rgb.b));
+    float existing = (maxc > 1e-5) ? (maxc - minc) / maxc : 0.0;
+
+    // Vibrance contributes more to pixels with low existing sat;
+    // saturation contributes uniformly.
+    float t = pc.saturation + pc.vibrance * (1.0 - existing);
+
+    rgb = mix(vec3(luma), rgb, 1.0 + t);
+    imageStore(out_image, coord, vec4(rgb, c.a));
+}

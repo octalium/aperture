@@ -1,0 +1,85 @@
+#version 450
+
+// Bayer demosaic + black-level normalization, with EXIF orientation baked
+// into the input-coordinate transform. Produces normalized linear
+// camera-space RGB; white balance and the camera-to-sRGB matrix are the
+// job of the Color module further down the chain (when enabled).
+//
+// The shader dispatches at the **display dimensions** (sensor dims swapped
+// for 90° rotations). Each output pixel maps back to a sensor coordinate
+// using the flip code, samples the raw R16_UNORM Bayer plane, and runs a
+// 3x3 neighborhood-average demosaic.
+//
+// Flip codes (dcraw / LibRaw convention):
+//   0 = no rotation
+//   3 = 180°
+//   5 = 90° CCW (sensor was rotated 90° CW for the shot)
+//   6 = 90° CW  (sensor was rotated 90° CCW for the shot)
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, r16)     uniform readonly  image2D in_image;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
+
+layout(push_constant) uniform PushConstants {
+    uvec4 channel_map;        // [c00, c01, c10, c11]
+    vec4  black_level;        // R, G, B, G2
+    vec4  white_minus_black;  // (white_level - black_level) per channel
+    uvec4 sensor_size_flip;   // .xy = sensor (W, H), .z = flip code, .w = pad
+} pc;
+
+uint channel_at(ivec2 p)
+{
+    return pc.channel_map[(p.y & 1) * 2 + (p.x & 1)];
+}
+
+float sample_raw(ivec2 p, ivec2 size)
+{
+    p = clamp(p, ivec2(0), size - 1);
+    return imageLoad(in_image, p).r * 65535.0;
+}
+
+ivec2 sensor_coord_of(ivec2 out_coord, ivec2 sensor_size, uint flip)
+{
+    if (flip == 3u) {
+        return sensor_size - ivec2(1) - out_coord;
+    } else if (flip == 5u) {
+        return ivec2(sensor_size.x - 1 - out_coord.y, out_coord.x);
+    } else if (flip == 6u) {
+        return ivec2(out_coord.y, sensor_size.y - 1 - out_coord.x);
+    }
+    return out_coord;
+}
+
+void main()
+{
+    ivec2 out_coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 out_size  = imageSize(out_image);
+    if (out_coord.x >= out_size.x || out_coord.y >= out_size.y) {
+        return;
+    }
+
+    ivec2 sensor_size = ivec2(pc.sensor_size_flip.xy);
+    uint  flip        = pc.sensor_size_flip.z;
+    ivec2 center      = sensor_coord_of(out_coord, sensor_size, flip);
+
+    // Per-output-channel sums and counts (R, G, B). G2 folds into G.
+    vec3 sum   = vec3(0.0);
+    vec3 count = vec3(0.0);
+
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            ivec2 p     = center + ivec2(dx, dy);
+            uint  ch    = channel_at(p);
+            float raw   = sample_raw(p, sensor_size);
+            uint  out_ch = (ch == 3u) ? 1u : ch;
+            float v      = (raw - pc.black_level[ch])
+                         / max(pc.white_minus_black[ch], 1.0);
+            sum[out_ch]   += v;
+            count[out_ch] += 1.0;
+        }
+    }
+
+    vec3 cam_rgb = sum / max(count, vec3(1.0));
+    imageStore(out_image, out_coord, vec4(cam_rgb, 1.0));
+}

@@ -1,0 +1,183 @@
+#version 450
+
+// Lens correction: geometric distortion (backward warp) + vignetting.
+//
+// Distortion removes barrel / pincushion by backward-mapping each output
+// pixel to its undistorted source coordinate, then bilinear-sampling the
+// input.  Three models match Lensfun's database exactly:
+//
+//   Poly3  (LF_DIST_MODEL_POLY3):
+//     r_d = r_u * (1 - k1 + k1 * r_u^2)
+//
+//   Poly5  (LF_DIST_MODEL_POLY5):
+//     r_d = r_u * (1 + k1 * r_u^2 + k2 * r_u^4)
+//
+//   PTLens (LF_DIST_MODEL_PTLENS):
+//     r_d = r_u * (a * r_u^3 + b * r_u^2 + c * r_u + 1 - a - b - c)
+//
+// Here r_u is the normalised undistorted radius (half-diagonal == 1) and
+// r_d is the normalised distorted (source image) radius.  The backward
+// map inverts the formula: given the undistorted destination coord we want
+// the distorted source coord.  Because all three models are monotone in
+// [0, ~1.5] we invert via a fixed-point iteration (Newton-like), which
+// converges in 3-4 steps for typical coefficients.
+//
+// Vignetting (Pablo D'Angelo / Hugin model, LF_VIGNETTING_MODEL_PA):
+//   gain = 1 + k1 * r^2 + k2 * r^4 + k3 * r^6
+// Applied at the undistorted output coordinate — after the geometric
+// correction — so the gain map is measured in corrected image space.
+//
+// Coordinates are normalised so the half-diagonal of the output image
+// equals 1.0, matching Lensfun's internal convention.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D in_image;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
+
+layout(push_constant) uniform PushConstants {
+    float dist_a;       // PTLens a; Poly3: 0; Poly5: 0
+    float dist_b;       // PTLens b; Poly3: 0; Poly5: k2
+    float dist_c;       // PTLens c; Poly3: k1; Poly5: k1
+    int   dist_model;   // 0=none, 1=poly3, 2=poly5, 3=ptlens
+
+    float vig_k1;
+    float vig_k2;
+    float vig_k3;
+    int   do_vignetting;  // 0=skip, 1=apply
+
+    float center_x;     // lens principal point shift, normalised [-0.5, 0.5]
+    float center_y;
+    float _pad0;
+    float _pad1;
+} pc;
+
+// Bilinear sample from in_image at floating-point pixel coordinate.
+vec4 sample_bilinear(vec2 coord, ivec2 size)
+{
+    vec2  f  = fract(coord);
+    ivec2 c0 = ivec2(floor(coord));
+
+    ivec2 c00 = clamp(c0,              ivec2(0), size - 1);
+    ivec2 c10 = clamp(c0 + ivec2(1,0), ivec2(0), size - 1);
+    ivec2 c01 = clamp(c0 + ivec2(0,1), ivec2(0), size - 1);
+    ivec2 c11 = clamp(c0 + ivec2(1,1), ivec2(0), size - 1);
+
+    vec4 s00 = imageLoad(in_image, c00);
+    vec4 s10 = imageLoad(in_image, c10);
+    vec4 s01 = imageLoad(in_image, c01);
+    vec4 s11 = imageLoad(in_image, c11);
+
+    return mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);
+}
+
+// Evaluate r_d given r_u for the active distortion model.
+float distorted_r(float ru)
+{
+    float ru2 = ru  * ru;
+    float ru3 = ru2 * ru;
+    float ru4 = ru2 * ru2;
+
+    if (pc.dist_model == 1) {
+        // Poly3: k1 stored in dist_c
+        float k1 = pc.dist_c;
+        return ru * (1.0 - k1 + k1 * ru2);
+    } else if (pc.dist_model == 2) {
+        // Poly5: k1 in dist_c, k2 in dist_b
+        float k1 = pc.dist_c;
+        float k2 = pc.dist_b;
+        return ru * (1.0 + k1 * ru2 + k2 * ru4);
+    } else {
+        // PTLens: a, b, c
+        float a = pc.dist_a;
+        float b = pc.dist_b;
+        float c = pc.dist_c;
+        return ru * (a * ru3 + b * ru2 + c * ru + (1.0 - a - b - c));
+    }
+}
+
+// Invert distorted_r via Newton iteration: find r_u such that
+// distorted_r(r_u) == rd_target.  Works because all Lensfun models are
+// strictly monotone on [0, 2].
+//
+// Pathological coefficients (a Lensfun row that doesn't match the body,
+// or our own UI sliders cranked outside their tested range) can drive
+// the Newton step toward NaN/Inf or wildly outside the image. Each step
+// is clamped to a generous but finite envelope and the final value is
+// validated; on failure we return the input rd_target so the backward
+// warp degrades to identity rather than corrupting the output. A bad
+// shader output here has been observed to escalate into VK_DEVICE_LOST.
+float undistorted_r(float rd_target)
+{
+    if (rd_target < 1e-6) return rd_target;
+
+    const float R_MAX = 4.0;        // far beyond the half-diagonal
+    const float DR    = 1e-4;
+
+    float ru = rd_target;  // initial guess
+    for (int i = 0; i < 6; i++) {
+        float f  = distorted_r(ru) - rd_target;
+        float fp = (distorted_r(ru + DR) - distorted_r(ru - DR)) / (2.0 * DR);
+        if (abs(fp) < 1e-8) break;
+        ru -= f / fp;
+        ru = clamp(ru, 0.0, R_MAX);
+    }
+    return isnan(ru) || isinf(ru) ? rd_target : ru;
+}
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(in_image);
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    // Normalised output coordinate: centre at (0,0), half-diagonal = 1.
+    float half_diag = length(vec2(size)) * 0.5;
+    vec2  center    = vec2(size) * 0.5;
+    vec2  out_uv    = (vec2(coord) + 0.5 - center) / half_diag;
+
+    // Apply principal-point shift from lens calibration.
+    vec2  shifted   = out_uv - vec2(pc.center_x, pc.center_y);
+
+    vec2 src_pixel;
+
+    if (pc.dist_model != 0) {
+        float rd = length(shifted);
+        float ru = undistorted_r(rd);
+
+        vec2 direction = (rd > 1e-8) ? (shifted / rd) : vec2(0.0);
+        vec2 src_norm  = direction * ru + vec2(pc.center_x, pc.center_y);
+        src_pixel      = src_norm * half_diag + center - 0.5;
+    } else {
+        src_pixel = vec2(coord);
+    }
+
+    vec4 c = sample_bilinear(src_pixel, size);
+
+    if (pc.do_vignetting != 0) {
+        // Lensfun's LF_VIGNETTING_MODEL_PA gives the *measured falloff*:
+        //   observed = unvignetted * (1 + k1 r^2 + k2 r^4 + k3 r^6)
+        // To *correct*, divide the observed pixel by the falloff. The
+        // earlier version multiplied, which doubled the vignette
+        // (corners went darker, looked like a heavy desaturation).
+        // Clamp the divisor so a degenerate term set can't blow the
+        // corners up to infinity.
+        float r2      = dot(out_uv, out_uv);
+        float r4      = r2 * r2;
+        float r6      = r4 * r2;
+        float falloff = 1.0 + pc.vig_k1 * r2 + pc.vig_k2 * r4 + pc.vig_k3 * r6;
+        c.rgb /= max(falloff, 0.05);
+    }
+
+    // Final NaN/Inf guard. Any non-finite component would propagate
+    // through later compute stages and (on some drivers) cause a
+    // device-lost when sampled — easier to clamp here than to track
+    // back the producer.
+    bvec4 nans = isnan(c);
+    bvec4 infs = isinf(c);
+    bvec4 bad  = bvec4(nans.x || infs.x, nans.y || infs.y,
+                       nans.z || infs.z, nans.w || infs.w);
+    c = mix(c, vec4(0.0), vec4(bad));
+
+    imageStore(out_image, coord, c);
+}

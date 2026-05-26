@@ -1,0 +1,131 @@
+# Tagged-release macOS build.
+#
+# Trigger: push of a v* tag. Produces an unsigned arm64 .dmg containing
+# Aperture.app and attaches it to the GitHub Release.
+#
+# Apple Developer ID code-signing + notarization are intentionally out of
+# scope; first-run users see the Gatekeeper "unidentified developer"
+# warning and right-click -> Open to launch. Revisit when there's
+# appetite for a paid Developer ID.
+
+name: release-macos
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  macos-dmg:
+    name: .dmg (arm64)
+    runs-on: macos-14
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: install build dependencies
+        run: |
+          brew update
+          brew install \
+              meson ninja pkg-config \
+              glslang shaderc \
+              vulkan-headers vulkan-loader molten-vk \
+              glfw libraw lensfun \
+              jpeg-turbo libpng libtiff \
+              sqlite \
+              dylibbundler create-dmg \
+              librsvg \
+              shellcheck
+
+      - name: shellcheck packaging scripts
+        run: shellcheck packaging/macos/*.sh packaging/appimage/*.sh
+
+      - name: derive version + epoch from tag
+        id: meta
+        run: |
+          tag=${GITHUB_REF#refs/tags/}
+          version=${tag#v}
+          epoch=$(git -C "$GITHUB_WORKSPACE" log -1 --pretty=%ct "$tag")
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "epoch=$epoch" >>"$GITHUB_OUTPUT"
+
+      - name: meson setup + compile
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
+        run: |
+          meson setup build \
+              --buildtype=release \
+              --prefix=/usr/local \
+              -Db_lto=true \
+              -Dap_dist=macos \
+              -Dstrip=true
+          meson compile -C build
+
+      - name: assemble Aperture.app
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: packaging/macos/build-app.sh
+
+      - name: package .dmg
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: packaging/macos/build-dmg.sh
+
+      - name: list artifacts
+        run: |
+          ls -lh aperture-*.dmg || true
+          file aperture-*.dmg || true
+
+      - name: sign update + generate appcast.xml
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          dmg=$(ls aperture-*.dmg | head -n 1)
+          if [ -z "$dmg" ]; then
+              echo "no .dmg produced; cannot sign" >&2
+              exit 1
+          fi
+          DMG_PATH="$PWD/$dmg" \
+          DMG_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ steps.meta.outputs.tag }}/$dmg" \
+          RELEASE_NOTES_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${{ steps.meta.outputs.tag }}" \
+          APPCAST_OUT="$PWD/appcast.xml" \
+              packaging/macos/generate-appcast.sh
+          ls -lh appcast.xml
+
+      - name: upload .dmg + appcast.xml to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            aperture-*.dmg
+            appcast.xml
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: ${{ contains(steps.meta.outputs.tag, '-') }}
+
+      - name: mirror appcast.xml to the latest release
+        # Info.plist's SUFeedURL points at releases/download/latest/appcast.xml,
+        # so Sparkle clients fetch from a stable URL regardless of which v*
+        # tag is current. Create the latest release if it doesn't already
+        # exist, then clobber its appcast.xml asset with the freshly-signed
+        # appcast for this tag. Skipped on prereleases.
+        if: ${{ !contains(steps.meta.outputs.tag, '-') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh release view latest >/dev/null 2>&1; then
+              gh release create latest \
+                  --title "Latest stable Sparkle appcast" \
+                  --notes "Sparkle appcast for the current stable release. Do not delete." \
+                  --target main
+          fi
+          gh release upload latest appcast.xml --clobber

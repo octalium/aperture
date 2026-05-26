@@ -1,0 +1,48 @@
+#version 450
+
+// Pass 2 of the two-pass Gaussian unsharp mask. binding 0 is the
+// horizontally-blurred image from pass 1; blurring it vertically here
+// yields the full 2D Gaussian. binding 2 is the original input. The
+// unsharp combine is out = orig + amount * (orig - blurred), gated by
+// a magnitude threshold so flat areas don't amplify noise.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D hblur_image;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
+layout(set = 0, binding = 2, rgba16f) uniform readonly  image2D orig_image;
+
+layout(push_constant) uniform PushConstants {
+    int   radius;
+    float sigma;
+    float amount;
+    float threshold;
+} pc;
+
+void main()
+{
+    ivec2 c  = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(out_image);
+    if (c.x >= sz.x || c.y >= sz.y) return;
+
+    int   r  = clamp(pc.radius, 0, 16);
+    float s2 = 2.0 * pc.sigma * pc.sigma;
+
+    // Vertical blur of the horizontally-blurred image -> full 2D blur.
+    vec3  acc  = vec3(0.0);
+    float wsum = 0.0;
+    for (int t = -r; t <= r; t++) {
+        ivec2 p = clamp(c + ivec2(0, t), ivec2(0), sz - 1);
+        float w = exp(-float(t * t) / max(s2, 1e-6));
+        acc  += imageLoad(hblur_image, p).rgb * w;
+        wsum += w;
+    }
+    vec3 blurred = acc / max(wsum, 1e-6);
+
+    vec4  orig = imageLoad(orig_image, c);
+    vec3  hp   = orig.rgb - blurred;
+    float gate = step(pc.threshold, length(hp));
+
+    imageStore(out_image, c,
+               vec4(orig.rgb + gate * pc.amount * hp, orig.a));
+}

@@ -1,0 +1,53 @@
+#version 450
+
+// GPU histogram accumulation pass.
+//
+// Reads the display image (RGBA8 UNORM, after output_transfer sRGB encode)
+// and accumulates per-pixel counts into a storage buffer with 256 bins for
+// each of R, G, B and a perceptual Luma (Y) channel.
+//
+// Buffer layout (4 × 256 uint = 1024 uints, 4096 bytes):
+//   [0   .. 255] - R bins
+//   [256 .. 511] - G bins
+//   [512 .. 767] - B bins
+//   [768 .. 1023] - Luma bins  (Rec.709: 0.2126R + 0.7152G + 0.0722B)
+//
+// The buffer must be zeroed by the CPU (or via vkCmdFillBuffer) before
+// each dispatch. Invocations use imageAtomicAdd; the image format must
+// be declared as r32ui to enable atomics.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba8ui) uniform readonly uimage2D in_image;
+layout(set = 0, binding = 1) buffer HistogramBuffer {
+    uint bins[1024];
+} hist;
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(in_image);
+    if (coord.x >= size.x || coord.y >= size.y) {
+        return;
+    }
+
+    uvec4 px = imageLoad(in_image, coord);
+
+    uint r = px.r;
+    uint g = px.g;
+    uint b = px.b;
+
+    // Rec.709 luma coefficients, scaled to match the 0..255 bin range.
+    // Coefficients: 0.2126, 0.7152, 0.0722  (sum = 1.0)
+    // Multiply by 255 then divide by 255 = identity; just use the float
+    // and round to the nearest bin.
+    float rf = float(r) / 255.0;
+    float gf = float(g) / 255.0;
+    float bf = float(b) / 255.0;
+    uint  luma = uint(clamp(0.2126 * rf + 0.7152 * gf + 0.0722 * bf, 0.0, 1.0) * 255.0 + 0.5);
+
+    atomicAdd(hist.bins[r],         1u);
+    atomicAdd(hist.bins[256u + g],  1u);
+    atomicAdd(hist.bins[512u + b],  1u);
+    atomicAdd(hist.bins[768u + luma], 1u);
+}

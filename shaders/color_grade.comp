@@ -1,0 +1,42 @@
+#version 450
+
+// ASC CDL-style color grading: per-channel lift / gamma / gain.
+// c' = pow((1 + gain) * c + lift, 1 / (1 + gamma))
+//
+// Lift offsets shadows + everything, but visually pushes the dark
+// end. Gamma reshapes midtones via the power-curve exponent. Gain
+// scales the whole signal — most visible in highlights. All knobs
+// default to 0 → identity transform.
+//
+// v1 doesn't do range-weighted three-band wheels (smoothstep on luma
+// to separate shadows/mids/highlights) — that's a follow-up.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D in_image;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D out_image;
+
+layout(push_constant) uniform PushConstants {
+    float lift_r,  lift_g,  lift_b;
+    float gamma_r, gamma_g, gamma_b;
+    float gain_r,  gain_g,  gain_b;
+} pc;
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(in_image);
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    vec4 px = imageLoad(in_image, coord);
+    vec3 c  = px.rgb;
+
+    vec3 gain  = vec3(pc.gain_r,  pc.gain_g,  pc.gain_b);
+    vec3 lift  = vec3(pc.lift_r,  pc.lift_g,  pc.lift_b);
+    vec3 gamma = vec3(pc.gamma_r, pc.gamma_g, pc.gamma_b);
+
+    c = (vec3(1.0) + gain) * c + lift;
+    c = pow(max(c, vec3(1e-6)), vec3(1.0) / (vec3(1.0) + gamma));
+
+    imageStore(out_image, coord, vec4(c, px.a));
+}
