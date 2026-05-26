@@ -29,6 +29,17 @@
     </p>
   </description>
 
+  <screenshots>
+    <screenshot type="default">
+      <caption>Library — culling and metadata</caption>
+      <image>https://raw.githubusercontent.com/octalium/aperture/main/docs/screenshots/library.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Photo — single-image edit</caption>
+      <image>https://raw.githubusercontent.com/octalium/aperture/main/docs/screenshots/photo.png</image>
+    </screenshot>
+  </screenshots>
+
   <launchable type="desktop-id">io.github.octalium.aperture.desktop</launchable>
   <provides>
     <binary>aperture</binary>
@@ -69,7 +80,7 @@
   <releases>
     <release version="@version@" date="@release_date@">
       <description>
-        <p>Pre-v0 development release.</p>
+        <p>Initial release. See the project README for what's in scope and what isn't.</p>
       </description>
     </release>
   </releases>
