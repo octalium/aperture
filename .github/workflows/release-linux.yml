@@ -142,12 +142,41 @@ jobs:
         run: |
           tag=${{ steps.meta.outputs.tag }}
           epoch=${{ steps.meta.outputs.epoch }}
-          # rewrite the aperture module source from main → this tag and
-          # SOURCE_DATE_EPOCH from 0 → the tag commit time so AppStream
-          # <release date> matches the tag (mirrors the AppImage path).
-          # yq would be cleaner; sed keeps the workflow dependency-free.
-          sed -i "s|branch: main|tag: ${tag}|" \
-              packaging/flatpak/io.github.octalium.aperture.yml
+          # rewrite the aperture module's source from type:git+branch:main
+          # to type:archive against the tarball URL, with sha256 computed
+          # from the tarball itself. tarballs avoid the credential-prompt
+          # failure mode flatpak-builder hit on git+tag fetches inside
+          # the container (see #484). also rewrite SOURCE_DATE_EPOCH
+          # from 0 → the tag commit time so AppStream <release date>
+          # matches the tag (mirrors the AppImage path).
+          tarball_url="https://github.com/octalium/aperture/archive/refs/tags/${tag}.tar.gz"
+          tarball_sha=$(curl -fsSL "$tarball_url" | sha256sum | cut -d' ' -f1)
+          export tag tarball_url tarball_sha
+          python3 - <<'PY'
+          import os
+          p = "packaging/flatpak/io.github.octalium.aperture.yml"
+          tag = os.environ["tag"]
+          tarball_url = os.environ["tarball_url"]
+          tarball_sha = os.environ["tarball_sha"]
+          old = (
+              "      - type: git\n"
+              "        url: https://github.com/octalium/aperture.git\n"
+              "        # branch/tag/commit is rewritten by the release workflow before\n"
+              "        # flatpak-builder runs. Default keeps manual local builds usable\n"
+              "        # off main.\n"
+              "        branch: main"
+          )
+          new = (
+              f"      - type: archive\n"
+              f"        url: {tarball_url}\n"
+              f"        sha256: {tarball_sha}\n"
+              f"        dest-filename: aperture-{tag}.tar.gz\n"
+              f"        strip-components: 1"
+          )
+          src = open(p).read()
+          assert old in src, "manifest aperture-source block didn't match expected shape; aborting rewrite"
+          open(p, "w").write(src.replace(old, new))
+          PY
           sed -i "s|SOURCE_DATE_EPOCH: '0'|SOURCE_DATE_EPOCH: '${epoch}'|" \
               packaging/flatpak/io.github.octalium.aperture.yml
 
