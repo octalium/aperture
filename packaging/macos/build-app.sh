@@ -113,17 +113,16 @@ fi
 echo "==> bundling dylibs via $DYLIBBUNDLER"
 # -of overwrites existing rewrites, -cd copies non-system deps, -b runs
 # the bundler, -p sets the rpath embedded into the binary, -d points at
-# the destination Frameworks dir, -x is the binary to walk. Brew installs
-# under /opt/homebrew on Apple Silicon; -s adds it to the search path
-# explicitly so dylibbundler picks up sibling deps (e.g. lensfun ->
-# liblensfun.1.dylib).
+# the destination Frameworks dir, -x is the binary to walk. The runner is
+# Apple Silicon (macos-14) so brew lives under /opt/homebrew; -s adds it
+# to the search path so dylibbundler picks up sibling deps
+# (e.g. lensfun -> liblensfun.1.dylib).
 "$DYLIBBUNDLER" \
     -of -cd -b \
     -x "$APP_OUT/Contents/MacOS/aperture-bin" \
     -d "$APP_OUT/Contents/Frameworks" \
     -p "@executable_path/../Frameworks/" \
-    -s /opt/homebrew/lib \
-    -s /usr/local/lib
+    -s /opt/homebrew/lib
 
 # Sparkle.framework: fetched on demand by fetch-sparkle.sh (also
 # invoked at meson configure time). cp -a preserves the versioned
