@@ -16,7 +16,6 @@ extern "C" {
 //     "latest":   "0.2.0",
 //     "released": "2026-06-01T00:00:00Z",
 //     "channels": {
-//       "appimage": { "url": "...", "zsync": "...", "sha256": "..." },
 //       "dmg":      { "url": "...", "sha256": "..." },
 //       "msi":      { "url": "...", "sha256": "..." },
 //       "flatpak":  { "ref": "io.github.octalium.aperture/x86_64/stable" }
@@ -39,12 +38,6 @@ extern "C" {
 
 typedef struct {
     char url[AP_MANIFEST_URL_LEN];
-    char zsync[AP_MANIFEST_URL_LEN];
-    char sha256[AP_MANIFEST_HASH_LEN];
-} ap_manifest_appimage;
-
-typedef struct {
-    char url[AP_MANIFEST_URL_LEN];
     char sha256[AP_MANIFEST_HASH_LEN];
 } ap_manifest_artifact;
 
@@ -55,7 +48,6 @@ typedef struct {
 typedef struct {
     char                 latest[AP_MANIFEST_VERSION_LEN];
     char                 released[AP_MANIFEST_DATE_LEN];
-    ap_manifest_appimage appimage;
     ap_manifest_artifact dmg;
     ap_manifest_artifact msi;
     ap_manifest_flatpak  flatpak;
