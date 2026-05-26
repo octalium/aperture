@@ -38,7 +38,11 @@ jobs:
               glfw libraw lensfun \
               jpeg-turbo libpng libtiff \
               sqlite \
-              dylibbundler create-dmg
+              dylibbundler create-dmg \
+              shellcheck
+
+      - name: shellcheck packaging scripts
+        run: shellcheck packaging/macos/*.sh packaging/appimage/*.sh
 
       - name: derive version + epoch from tag
         id: meta
