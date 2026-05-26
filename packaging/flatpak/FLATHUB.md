@@ -69,10 +69,10 @@ flatpak --user uninstall -y io.github.octalium.aperture
 - The Flathub build bot rebuilds on each commit to the Flathub repo's
   per-app branch. To publish a new aperture version, push a manifest
   update there that bumps the `tag:` for the `aperture` module.
-- AppImage releases continue to flow through this repo's GH Actions on
-  `v*` tags; Flathub publication is a separate manual or automated
-  flow against the Flathub repo (the auto-promotion bot can be wired
-  up later — see flathub.org docs).
+- The `.flatpak` bundle published in this repo's GH Releases on `v*`
+  tags is a sideload artifact; Flathub publication is a separate
+  manual or automated flow against the Flathub repo (the
+  auto-promotion bot can be wired up later — see flathub.org docs).
 
 ## Notes on the manifest
 

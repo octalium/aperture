@@ -13,8 +13,8 @@ extern "C" {
 // the update flow. Each platform's implementation lives in its own
 // TU under src/update/ and is selected at build time. The active
 // updater is reached through ap_updater_get(); the per-platform
-// real implementations land in subsequent PRs (#418 AppImage, #419
-// macOS Sparkle, #420 Windows WinSparkle, #421 Flatpak detect).
+// real implementations land in subsequent PRs (#419 macOS Sparkle,
+// #420 Windows WinSparkle, #421 Flatpak detect).
 //
 // The default implementation in updater.c is a no-op placeholder
 // that records the latest manifest and falls back to opening the

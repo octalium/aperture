@@ -43,7 +43,7 @@ jobs:
               shellcheck
 
       - name: shellcheck packaging scripts
-        run: shellcheck packaging/macos/*.sh packaging/appimage/*.sh
+        run: shellcheck packaging/macos/*.sh
 
       - name: derive version + epoch from tag
         id: meta
