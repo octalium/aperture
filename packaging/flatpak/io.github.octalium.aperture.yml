@@ -123,6 +123,16 @@ modules:
         tag: v1.7.19
         dest: dep/cJSON
 
+      # meson's --wrap-mode=nodownload skips patch_directory overlay,
+      # so we replicate it manually for the wraps whose upstreams ship
+      # no meson.build (cimgui, nativefiledialog). Runs during source
+      # extraction, before meson setup. The trailing /. copies hidden
+      # files too.
+      - type: shell
+        commands:
+          - cp -r dep/packagefiles/cimgui/. dep/cimgui/
+          - cp -r dep/packagefiles/nativefiledialog/. dep/nativefiledialog/
+
 cleanup:
   - /include
   - /lib/pkgconfig
