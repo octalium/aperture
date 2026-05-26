@@ -21,17 +21,34 @@ extern "C" {
 // GitHub Releases page via xdg-open / open / start when the user
 // hits "Update now".
 typedef struct {
-    // Trigger a platform-specific manifest poll. The default
-    // implementation submits an async update-check job through the
-    // worker pool; platform implementations may layer their own
-    // signature / channel logic on top.
+    // Trigger a check for a new version. The default no-op delegates
+    // to the app's manifest-fetch worker (src/update/check.{c,h}),
+    // which is always submitted from app init / About modal regardless
+    // of the active updater. Platform impls may override when they
+    // have a native polling mechanism (e.g. Sparkle's scheduled
+    // appcast fetch); when they do, the override is responsible for
+    // posting results back through ap_updater_set_pending and
+    // (optionally) suppressing the app's manifest fetch for that
+    // session.
     void (*check)(void);
 
     // Apply the pending update and restart, when the platform
     // supports in-place install. The default implementation opens
     // the project's Releases page in the user's browser so the user
     // can grab the artifact manually.
-    void (*apply)(void);
+    //
+    // Returns 0 on success (the update process has been initiated;
+    // the app may exit or restart as part of that). Non-zero on
+    // failure; the impl-defined code is opaque to the caller.
+    //
+    // `err_msg` (out): when the impl wants to surface a failure
+    // reason to the user, it sets *err_msg to a pointer to
+    // impl-owned storage (static string, or app-lifetime buffer)
+    // describing the failure. Callers must NOT free the string.
+    // Impls may leave *err_msg untouched (NULL) on either success
+    // or failure if no message is appropriate. Callers should
+    // initialize *err_msg = NULL before the call.
+    int (*apply)(const char **err_msg);
 
     // True when a newer version is known to be available. The
     // default implementation returns whatever ap_updater_set_pending

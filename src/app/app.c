@@ -587,7 +587,13 @@ void ap_app_apply_update(ap_app *app)
 {
     (void)app;
     const ap_updater *u = ap_updater_get();
-    if (u && u->apply) u->apply();
+    if (!u || !u->apply) return;
+    const char *err = NULL;
+    int rc = u->apply(&err);
+    if (rc != 0) {
+        ap_toast_push(AP_TOAST_ERROR, "Update failed: %s",
+                      err ? err : "see the log.");
+    }
 }
 
 // Build the basename-no-extension into `out` from a source path.

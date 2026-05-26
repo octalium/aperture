@@ -20,7 +20,10 @@ static void default_check(void)
     // keeps no extra state, so this is a no-op.
 }
 
-static void open_releases_page(void)
+// Hardcoded compile-time URL above is the only argument; do NOT
+// extend this to interpolate user-controlled strings without
+// shell-quoting first.
+static int open_releases_page(void)
 {
 #if defined(__linux__)
     int rc = system("xdg-open '" AP_UPDATE_RELEASES_URL "' >/dev/null 2>&1");
@@ -31,15 +34,22 @@ static void open_releases_page(void)
 #else
     int rc = -1;
 #endif
+    return rc;
+}
+
+static int default_apply(const char **err_msg)
+{
+    int rc = open_releases_page();
     if (rc != 0) {
         AP_WARN("update: could not launch browser for %s",
                 AP_UPDATE_RELEASES_URL);
+        if (err_msg) {
+            *err_msg = "Could not launch browser. Visit "
+                       AP_UPDATE_RELEASES_URL " manually.";
+        }
+        return rc;
     }
-}
-
-static void default_apply(void)
-{
-    open_releases_page();
+    return 0;
 }
 
 static bool default_available(void)
