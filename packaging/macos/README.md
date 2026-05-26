@@ -21,8 +21,12 @@ brew install \
     vulkan-headers vulkan-loader molten-vk \
     glfw libraw lensfun \
     jpeg-turbo libpng libtiff sqlite \
-    dylibbundler create-dmg
+    dylibbundler create-dmg \
+    librsvg
 ```
+
+`librsvg` ships `rsvg-convert`, used by `build-app.sh` to rasterize the
+iconset entries from the project SVG.
 
 ## Local build
 
@@ -45,11 +49,11 @@ Both targets refuse to run on non-Darwin hosts.
   `$prefix/share/aperture/macos/Info.plist`. Active only when
   `host_machine.system() == 'darwin'`.
 - `build-app.sh` — stages a `meson install`, lays out the
-  `Aperture.app/Contents/{MacOS,Frameworks,Resources}/` tree, generates
-  an `.icns` from the linux 256px raster via `sips` + `iconutil`, runs
-  `dylibbundler` to rewrite brew dylib paths to
-  `@executable_path/../Frameworks/`, and bundles MoltenVK's ICD JSON
-  next to `libMoltenVK.dylib`.
+  `Aperture.app/Contents/{MacOS,Frameworks,Resources}/` tree, renders a
+  complete `.icns` (all standard sizes + @2x) from the project SVG via
+  `rsvg-convert` + `iconutil`, runs `dylibbundler` to rewrite brew
+  dylib paths to `@executable_path/../Frameworks/`, and bundles
+  MoltenVK's ICD JSON next to `libMoltenVK.dylib`.
 - `build-dmg.sh` — prefers `create-dmg` with a drag-to-Applications
   layout. Falls back to `hdiutil` (plain UDZO image) when `create-dmg`
   is unavailable.

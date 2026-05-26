@@ -86,25 +86,32 @@ exec "$here/aperture-bin" "$@"
 LAUNCHER
 chmod +x "$APP_OUT/Contents/MacOS/aperture"
 
-# generate aperture.icns from the existing rasterized linux icon. iconutil
-# wants an .iconset directory with the standard size + @2x variants; we
-# only have a single 256px master so the iconset is sparse, but iconutil
-# accepts that and macOS falls back to the closest match.
-iconset=$(mktemp -d)
-src_icon="$repo_root/packaging/linux/icons/hicolor/256x256/apps/io.github.octalium.aperture.png"
-if [ -f "$src_icon" ]; then
-    cp "$src_icon" "$iconset/icon_256x256.png"
-    sips -z 128 128 "$src_icon" --out "$iconset/icon_128x128.png" >/dev/null
-    sips -z 64  64  "$src_icon" --out "$iconset/icon_64x64.png"   >/dev/null
-    sips -z 32  32  "$src_icon" --out "$iconset/icon_32x32.png"   >/dev/null
-    sips -z 16  16  "$src_icon" --out "$iconset/icon_16x16.png"   >/dev/null
-    mv "$iconset" "${iconset}.iconset"
-    iconutil --convert icns --output "$APP_OUT/Contents/Resources/aperture.icns" "${iconset}.iconset"
-    rm -rf "${iconset}.iconset"
-else
-    echo "note: source icon $src_icon not found; .app will use the system default" >&2
-    rm -rf "$iconset"
+# render aperture.icns from the project SVG. iconutil expects an
+# .iconset directory containing both the 1x and @2x variant of every
+# standard size (16, 32, 128, 256, 512); the @2x file is rendered at
+# 2x the named pixel dimensions. rsvg-convert produces crisp output at
+# arbitrary sizes - sips can't rasterize SVG directly. brew install
+# librsvg ships rsvg-convert.
+src_svg="$repo_root/packaging/linux/icons/hicolor/scalable/apps/io.github.octalium.aperture.svg"
+if [ ! -f "$src_svg" ]; then
+    echo "error: source icon $src_svg not found" >&2
+    exit 1
 fi
+if ! command -v rsvg-convert >/dev/null 2>&1; then
+    echo "error: rsvg-convert not found; brew install librsvg on the build host" >&2
+    exit 1
+fi
+iconset_dir=$(mktemp -d)
+iconset="$iconset_dir/aperture.iconset"
+mkdir -p "$iconset"
+for base in 16 32 128 256 512; do
+    px1=$base
+    px2=$((base * 2))
+    rsvg-convert -w "$px1" -h "$px1" "$src_svg" -o "$iconset/icon_${base}x${base}.png"
+    rsvg-convert -w "$px2" -h "$px2" "$src_svg" -o "$iconset/icon_${base}x${base}@2x.png"
+done
+iconutil --convert icns --output "$APP_OUT/Contents/Resources/aperture.icns" "$iconset"
+rm -rf "$iconset_dir"
 
 # preserve AppStream metainfo + MIME xml inside the bundle for tooling
 # that scans Resources/ (Sparkle reads metainfo for release notes).

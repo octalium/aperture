@@ -39,6 +39,7 @@ jobs:
               jpeg-turbo libpng libtiff \
               sqlite \
               dylibbundler create-dmg \
+              librsvg \
               shellcheck
 
       - name: shellcheck packaging scripts
