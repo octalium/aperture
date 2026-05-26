@@ -168,18 +168,21 @@ do
 done
 
 if [ -z "$moltenvk_dylib" ]; then
-    echo "warning: libMoltenVK.dylib not found; brew install molten-vk on the build host" >&2
-elif [ -z "$moltenvk_icd" ]; then
-    echo "warning: MoltenVK_icd.json not found; the molten-vk brew formula should ship it" >&2
-else
-    cp "$moltenvk_dylib" "$APP_OUT/Contents/Frameworks/libMoltenVK.dylib"
-    mkdir -p "$APP_OUT/Contents/Resources/vulkan/icd.d"
-    cp "$moltenvk_icd" "$APP_OUT/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json"
-    # rewrite library_path to the bundled MoltenVK dylib. The path is
-    # resolved relative to the JSON file (Contents/Resources/vulkan/
-    # icd.d/), so it climbs three directories before descending into
-    # Frameworks/.
-    python3 - "$APP_OUT/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json" <<'PY'
+    echo "error: libMoltenVK.dylib not found; brew install molten-vk on the build host" >&2
+    exit 1
+fi
+if [ -z "$moltenvk_icd" ]; then
+    echo "error: MoltenVK_icd.json not found; the molten-vk brew formula should ship it" >&2
+    exit 1
+fi
+cp "$moltenvk_dylib" "$APP_OUT/Contents/Frameworks/libMoltenVK.dylib"
+mkdir -p "$APP_OUT/Contents/Resources/vulkan/icd.d"
+cp "$moltenvk_icd" "$APP_OUT/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json"
+# rewrite library_path to the bundled MoltenVK dylib. The path is
+# resolved relative to the JSON file (Contents/Resources/vulkan/
+# icd.d/), so it climbs three directories before descending into
+# Frameworks/.
+python3 - "$APP_OUT/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json" <<'PY'
 import json, sys
 path = sys.argv[1]
 with open(path) as f:
@@ -188,6 +191,5 @@ data.setdefault('ICD', {})['library_path'] = '../../../Frameworks/libMoltenVK.dy
 with open(path, 'w') as f:
     json.dump(data, f, indent=4)
 PY
-fi
 
 echo "==> wrote $APP_OUT (version $VERSION)"
