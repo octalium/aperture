@@ -1,49 +1,72 @@
 # aperture
 
-An opinionated raw photo processor. C + Vulkan + Dear ImGui.
+Opinionated raw photo processor.
 
-A focused, non-destructive editor for photographers who find existing FOSS
-raw processors workflow-wrong or architecturally compromised. Narrow scope
-by design — feature parity with mature tools is explicitly not the goal.
+A focused, non-destructive editor for photographers whose workflow doesn't
+fit the existing FOSS raw options. The scope is deliberately narrow:
+library management, culling, grading, and export — done well. Feature
+parity with darktable, RawTherapee, or commercial suites is explicitly
+not the goal.
 
-aperture's job is library management, culling, grading, and export.
-Anything that needs pixel-level retouching belongs in a dedicated editor
-afterward.
+## What it does
 
-## Status
+- Library management for raw photo banks
+- Culling, rating, and grouping
+- Non-destructive grading via reusable pipelines and per-photo edits
+- Export to JPEG, TIFF, and PNG
 
-Pre-v0. Implementation is underway on `dev`; `main` carries the
-specification only. No tagged releases yet.
+## What it doesn't
 
-## Install (Linux)
+- Pixel-level retouching (heal, clone, dodge, burn, frequency separation)
+- Layers, compositing, complex masks
+- Vector tools, text, drawing
+- Stitching, panoramas, focus stacking
+- Time-lapse, video
+- Tethered shooting, print module
+- Cloud sync, mobile or web apps
+- Multi-user collaboration, catalogs spanning libraries
 
-Once tagged releases ship, the easiest path will be **Flatpak** (via
-Flathub once submission lands; a `.flatpak` bundle is also attached to
-each GitHub Release for sideloading). The bundle is produced by
-`.github/workflows/release-linux.yml` on `v*` tag pushes. Packaging
-sources live under `packaging/` — see `packaging/flatpak/FLATHUB.md`
-for submission notes.
+If you need any of the above, use a dedicated editor afterward —
+aperture's job ends at "well-organized, exposure-and-color-correct,
+exported."
 
-## Install (macOS)
+## Install
 
-An unsigned arm64 `.dmg` (containing `Aperture.app`) is attached to each
-GitHub Release by `.github/workflows/release-macos.yml`. macOS 11 Big
-Sur or newer; Apple Silicon only. Because the build is not Developer-ID
-signed, the first launch needs a right-click → Open to bypass the
-Gatekeeper "unidentified developer" warning. See
-`packaging/macos/README.md` for build-from-source instructions.
+### Linux
 
-For development or distros where the packaged artifacts aren't an option,
-aperture builds from source with [Meson](https://mesonbuild.com/) +
-[Ninja](https://ninja-build.org/) and ships a `meson install` target that
-lays down a desktop entry, hicolor icon, AppStream metainfo, and MIME
+- **Flatpak** (recommended): `flatpak install --user io.github.octalium.aperture.flatpak`
+  (sideload the bundle from the latest [GitHub Release](https://github.com/octalium/aperture/releases)).
+  Flathub submission is tracked separately.
+- **Build from source**: see the [Build from source](#build-from-source)
+  section below.
+
+### macOS
+
+- **.dmg from Releases** (Apple Silicon only, macOS 11+): download from
+  the latest [GitHub Release](https://github.com/octalium/aperture/releases)
+  and drag `Aperture.app` to `/Applications`. First launch needs
+  **right-click → Open** to bypass the Gatekeeper "unidentified developer"
+  warning (the .dmg is signed for Sparkle updates but not Developer-ID
+  notarized).
+- **Build from source**: see [`packaging/macos/README.md`](packaging/macos/README.md).
+
+### Windows
+
+Tracked in [#375](https://github.com/octalium/aperture/issues/375); not
+yet available.
+
+## Build from source
+
+aperture is C + Vulkan + Dear ImGui, built with [Meson](https://mesonbuild.com/)
+and [Ninja](https://ninja-build.org/). The `meson install` target lays
+down a desktop entry, hicolor icon, AppStream metainfo, and MIME
 associations for the raw formats it reads (CR2, CR3, NEF, ARW, RAF, DNG,
 ORF, RW2, PEF, SRW).
 
-### Distro dependencies
+### Linux
 
-System packages providing the dependencies pulled in via `pkg-config`. The
-remaining deps (lcms2, libpng, libtiff, cimgui, tomlc99, blake3, cJSON,
+System packages provide the dependencies pulled in via `pkg-config`. The
+rest (lcms2, libpng, libtiff, cimgui, tomlc99, blake3, cJSON,
 nativefiledialog) are vendored as meson wraps and built from source.
 
 **Debian / Ubuntu**
@@ -75,40 +98,27 @@ sudo pacman -S base-devel meson ninja pkgconf shaderc vulkan-headers \
     shared-mime-info appstream
 ```
 
-### Build and install
+Build and install:
 
-System-wide (`/usr/local`):
-
-```
+```bash
 make build
-sudo make install
+sudo make install                       # /usr/local
+# or, no root needed:
+PREFIX="$HOME/.local" make install
 ```
 
-Equivalent direct meson invocation:
+When installing under `$HOME/.local`, make sure `$HOME/.local/bin` is on
+`PATH` and `$HOME/.local/share` is in `XDG_DATA_DIRS` so the desktop
+entry, icon, and MIME types are picked up.
 
-```
-meson setup build --buildtype=release
-meson compile -C build
-sudo meson install -C build
-```
+### macOS
 
-Per-user, no root required:
+See [`packaging/macos/README.md`](packaging/macos/README.md).
 
-```
-meson setup build --buildtype=release --prefix="$HOME/.local"
-meson compile -C build
-meson install -C build
-```
+### Cache refresh (system installs only)
 
-When installing into `$HOME/.local`, make sure `$HOME/.local/bin` is on
-your `PATH` and that `$HOME/.local/share` is in `$XDG_DATA_DIRS` so the
-desktop entry, icon, and MIME types are picked up.
-
-### Desktop / icon / MIME cache refresh
-
-A non-staged `meson install` runs the refresh commands for you. For
-staged installs (`DESTDIR=…`), or after manually copying files into
-place, refresh the caches yourself:
+A non-staged `meson install` runs these for you. For staged installs
+(`DESTDIR=…`):
 
 ```
 update-desktop-database "$PREFIX/share/applications"
@@ -116,15 +126,14 @@ gtk-update-icon-cache -qtf "$PREFIX/share/icons/hicolor"
 update-mime-database "$PREFIX/share/mime"
 ```
 
-User data (library registry) lives under `$XDG_DATA_HOME/aperture`
-(default `~/.local/share/aperture`) and UI configuration (imgui layout)
-under `$XDG_CONFIG_HOME/aperture` (default `~/.config/aperture`),
-regardless of install prefix.
+### User data locations
+
+- Library registry: `$XDG_DATA_HOME/aperture` (default `~/.local/share/aperture`)
+- UI config (ImGui layout, prefs): `$XDG_CONFIG_HOME/aperture` (default `~/.config/aperture`)
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev loop, branch policy,
-and commit convention.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
