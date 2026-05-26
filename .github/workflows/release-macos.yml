@@ -65,11 +65,13 @@ jobs:
 
       - name: assemble Aperture.app
         env:
+          SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
           VERSION: ${{ steps.meta.outputs.version }}
         run: packaging/macos/build-app.sh
 
       - name: package .dmg
         env:
+          SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
           VERSION: ${{ steps.meta.outputs.version }}
         run: packaging/macos/build-dmg.sh
 

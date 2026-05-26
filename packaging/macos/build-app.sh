@@ -2,11 +2,13 @@
 # Build Aperture.app from a release-configured meson tree on macOS.
 #
 # Inputs (env vars, all optional unless noted):
-#   BUILD_DIR     meson build dir (default: build)
-#   STAGE_DIR     staging prefix for meson install (default: $BUILD_DIR/stage)
-#   APP_OUT       destination .app path (default: $PWD/Aperture.app)
-#   VERSION       version string (default: project version from meson)
-#   DYLIBBUNDLER  override dylibbundler binary (default: dylibbundler)
+#   BUILD_DIR          meson build dir (default: build)
+#   STAGE_DIR          staging prefix for meson install (default: $BUILD_DIR/stage)
+#   APP_OUT            destination .app path (default: $PWD/Aperture.app)
+#   VERSION            version string (default: project version from meson)
+#   DYLIBBUNDLER       override dylibbundler binary (default: dylibbundler)
+#   SOURCE_DATE_EPOCH  when set, every file inside $APP_OUT is touched
+#                      to this epoch for reproducible mtimes.
 #
 # Output:
 #   $APP_OUT, a self-contained Aperture.app with brew-sourced dylibs
@@ -190,5 +192,13 @@ data.setdefault('ICD', {})['library_path'] = '../../../Frameworks/libMoltenVK.dy
 with open(path, 'w') as f:
     json.dump(data, f, indent=4)
 PY
+
+# pin every file in the bundle to SOURCE_DATE_EPOCH for reproducible
+# mtimes (matches the compile step). Skipped silently when the env var
+# isn't set so the developer dev loop stays untouched.
+if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
+    echo "==> pinning bundle mtimes to SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
+    find "$APP_OUT" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+fi
 
 echo "==> wrote $APP_OUT (version $VERSION)"
