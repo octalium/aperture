@@ -110,7 +110,7 @@ jobs:
     # flatpak/flatpak-github-actions runs flatpak-builder inside the
     # freedesktop SDK container so the runner only needs Docker.
     container:
-      image: bilelmoussaoui/flatpak-github-actions:freedesktop-24.08
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-24.08
       options: --privileged
     steps:
       - name: checkout
