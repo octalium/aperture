@@ -137,12 +137,12 @@ ap_app *ap_app_create(int width, int height, const char *title)
     ap_quick_export_load(&app->quick_export_settings);
 
     // Update-check preferences; auto-fire a launch check when on.
-    ap_update_settings_load(&app->update_settings);
-    if (app->update_settings.check_on_launch) {
+    ap_update_settings_load(&app->update.settings);
+    if (app->update.settings.check_on_launch) {
         ap_update_check_submit(app->workers,
-                               app->update_settings.manifest_url,
+                               app->update.settings.manifest_url,
                                AP_VERSION_STRING);
-        app->update_check_inflight = true;
+        app->update.check_inflight = true;
     }
 
     // Restore the last-active layout profile and which optional panels
@@ -556,7 +556,7 @@ void ap_app_open_preferences_modal(ap_app *app)
 
 ap_update_settings *ap_app_update_settings(ap_app *app)
 {
-    return app ? &app->update_settings : NULL;
+    return app ? &app->update.settings : NULL;
 }
 
 void ap_app_open_about_modal(ap_app *app)
@@ -568,19 +568,22 @@ void ap_app_open_about_modal(ap_app *app)
 int ap_app_check_for_updates(ap_app *app)
 {
     if (!app || !app->workers) return -1;
-    if (app->update_check_inflight) return -1;
+    if (app->update.check_inflight) return -1;
     if (ap_update_check_submit(app->workers,
-                               app->update_settings.manifest_url,
+                               app->update.settings.manifest_url,
                                AP_VERSION_STRING) != 0) {
         return -1;
     }
-    app->update_check_inflight = true;
+    app->update.check_inflight = true;
+    // re-arm the startup modal: a manual recheck should surface any
+    // newer version even if the user dismissed an earlier offer.
+    app->update.modal_dismissed = false;
     return 0;
 }
 
 bool ap_app_update_check_inflight(const ap_app *app)
 {
-    return app && app->update_check_inflight;
+    return app && app->update.check_inflight;
 }
 
 void ap_app_apply_update(ap_app *app)

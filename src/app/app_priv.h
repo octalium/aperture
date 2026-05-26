@@ -108,13 +108,17 @@ struct ap_app {
     bool             delete_edit_modal;
     bool             quit_requested;
 
-    ap_update_settings update_settings;
-    bool               update_modal;          // open the "newer version" modal
-    bool               update_modal_dismissed;// suppress until next session
+    // grouped update-flow state; about_modal is the generic About panel
+    // trigger and stays at the top level (not update-specific).
+    struct ap_update_state {
+        ap_update_settings settings;
+        bool               check_inflight;
+        bool               available;
+        ap_manifest        manifest;
+        bool               modal;       // open the "newer version" modal
+        bool               modal_dismissed; // suppress until next session
+    } update;
     bool               about_modal;
-    bool               update_check_inflight;
-    bool               update_available;
-    ap_manifest        update_manifest;
 
     ap_canvas_tool   canvas_tool;
     int              canvas_tool_entry;

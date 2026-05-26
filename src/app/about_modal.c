@@ -48,6 +48,9 @@ void draw_about_modal(ap_app *app)
     }
 
     igSeparatorText("Vendored dependencies");
+    // manually kept in sync with dep/*.wrap (vendored) and the
+    // dependency() calls in meson.build (system). update both lists
+    // together whenever a dep is added, removed, or moved.
     igTextDisabled("cimgui, lcms2, libpng, libtiff, tomlc99, blake3, cJSON,");
     igTextDisabled("nativefiledialog-extended.");
     igTextDisabled("System: vulkan, glfw3, libraw, lensfun, sqlite3,");
@@ -66,16 +69,16 @@ void draw_about_modal(ap_app *app)
 
 void draw_update_modal(ap_app *app)
 {
-    if (app->update_modal) {
+    if (app->update.modal) {
         igOpenPopup_Str("Update available", 0);
-        app->update_modal = false;
+        app->update.modal = false;
     }
 
     ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize
                            | ImGuiWindowFlags_NoCollapse;
     if (!igBeginPopupModal("Update available", NULL, flags)) return;
 
-    const ap_manifest *m = &app->update_manifest;
+    const ap_manifest *m = &app->update.manifest;
     igText("aperture %s is available.", m->latest);
     igTextDisabled("You're on %s.", AP_VERSION_STRING);
 
@@ -89,19 +92,19 @@ void draw_update_modal(ap_app *app)
     if (igButton("Update now", (ImVec2_c){ 120.0f, 0.0f })
         || ap_modal_enter_pressed()) {
         ap_app_apply_update(app);
-        app->update_modal_dismissed = true;
+        app->update.modal_dismissed = true;
         igCloseCurrentPopup();
     }
     igSameLine(0.0f, -1.0f);
     if (igButton("Remind later", (ImVec2_c){ 120.0f, 0.0f })) {
         // Per-session suppression: don't auto-reopen this session.
-        app->update_modal_dismissed = true;
+        app->update.modal_dismissed = true;
         igCloseCurrentPopup();
     }
     igSameLine(0.0f, -1.0f);
     if (igButton("Skip", (ImVec2_c){ 80.0f, 0.0f })
         || ap_modal_esc_pressed()) {
-        app->update_modal_dismissed = true;
+        app->update.modal_dismissed = true;
         igCloseCurrentPopup();
     }
 
