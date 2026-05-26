@@ -63,7 +63,6 @@ jobs:
               --buildtype=release \
               --prefix=/usr/local \
               -Db_lto=true \
-              -Dap_dist=macos \
               -Dstrip=true
           meson compile -C build
 
