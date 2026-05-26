@@ -80,11 +80,12 @@ flatpak --user uninstall -y io.github.octalium.aperture
   in lockstep with Flathub guidance when a new LTS is cut.
 - System deps come from the runtime: Vulkan loader, libpng, libtiff,
   libjpeg, sqlite3. Deps the runtime lacks (glfw, lensfun, libraw) are
-  built as separate modules. Vendored deps (cimgui, lcms2, blake3,
-  nativefiledialog, tomlc99) come in through meson wraps under `dep/`
-  with `--wrap-mode=nodownload`, and the wrap sources are pinned as
-  `sources:` entries alongside the aperture module so flatpak-builder
-  can build offline.
+  built as separate modules. Vendored deps that require a fetch
+  (cimgui, lcms2, cJSON, nativefiledialog, tomlc99) come in through
+  meson wraps under `dep/` with `--wrap-mode=nodownload`, and the
+  wrap sources are pinned as `sources:` entries alongside the aperture
+  module so flatpak-builder can build offline. In-tree wraps (blake3)
+  need no `sources:` entry.
 - The `aperture` module's `sources:` block defaults to `branch: main`.
   CI rewrites it to `tag: v<version>` before building so the release
   build is bit-for-bit reproducible against the tag.
