@@ -154,7 +154,15 @@ cp -a "$sparkle_framework" "$APP_OUT/Contents/Frameworks/Sparkle.framework"
 # library_path that points back at the bundled dylib.
 moltenvk_icd=""
 moltenvk_dylib=""
+# brew's molten-vk formula installs the ICD JSON under prefix/etc/vulkan/
+# icd.d/ (see Homebrew/homebrew-core Formula/m/molten-vk.rb), so the
+# opt-keg path is the canonical lookup. The legacy share/vulkan/icd.d/
+# paths are kept as fallbacks for older formula layouts.
 for candidate in \
+    /opt/homebrew/opt/molten-vk/etc/vulkan/icd.d/MoltenVK_icd.json \
+    /opt/homebrew/etc/vulkan/icd.d/MoltenVK_icd.json \
+    /usr/local/opt/molten-vk/etc/vulkan/icd.d/MoltenVK_icd.json \
+    /usr/local/etc/vulkan/icd.d/MoltenVK_icd.json \
     /opt/homebrew/share/vulkan/icd.d/MoltenVK_icd.json \
     /opt/homebrew/opt/molten-vk/share/vulkan/icd.d/MoltenVK_icd.json \
     /usr/local/share/vulkan/icd.d/MoltenVK_icd.json
