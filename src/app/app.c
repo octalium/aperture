@@ -575,6 +575,9 @@ int ap_app_check_for_updates(ap_app *app)
         return -1;
     }
     app->update_check_inflight = true;
+    // re-arm the startup modal: a manual recheck should surface any
+    // newer version even if the user dismissed an earlier offer.
+    app->update_modal_dismissed = false;
     return 0;
 }
 
