@@ -7,8 +7,12 @@ project('nativefiledialog-extended', 'cpp',
 
 # nativefiledialog-extended — native OS file dialogs. Only the host
 # platform's backend is compiled. The macOS backend (nfd_cocoa.m) is
-# Objective-C; the parent project adds 'objc' to project languages
-# when host is darwin.
+# Objective-C, so enable that language on darwin only — adding it to
+# project() unconditionally would force an objc toolchain on Linux.
+if host_machine.system() == 'darwin'
+  add_languages('objc', native: false)
+endif
+
 cpp     = meson.get_compiler('cpp')
 nfd_inc = include_directories('src/include')
 
