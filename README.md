@@ -57,8 +57,8 @@ exported."
   the latest [GitHub Release](https://github.com/octalium/aperture/releases)
   and drag `Aperture.app` to `/Applications`. First launch needs
   **right-click → Open** to bypass the Gatekeeper "unidentified developer"
-  warning (the .dmg is signed for Sparkle updates but not Developer-ID
-  notarized).
+  warning (the .dmg is unsigned — there is no Apple Developer ID
+  notarization).
 - **Build from source**: see [`packaging/macos/README.md`](packaging/macos/README.md).
 
 ### Windows
