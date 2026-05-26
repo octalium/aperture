@@ -59,6 +59,13 @@ typedef struct {
 // Return the active platform updater. Never NULL.
 const ap_updater *ap_updater_get(void);
 
+// Default cross-platform updater (no-op check, opens releases page on
+// apply, available reflects ap_updater_set_pending state). Exposed so
+// platform-specific updaters can inherit fields they don't override —
+// the standard pattern is `self = *ap_updater_default(); self.apply =
+// platform_apply;`.
+const ap_updater *ap_updater_default(void);
+
 // Record the manifest the most recent check produced. `newer`
 // indicates whether `manifest->latest` is strictly newer than the
 // running build. Passing newer=false clears the "available" flag.
