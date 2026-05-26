@@ -54,7 +54,7 @@ jobs:
           # failure mode flatpak-builder hit on git+tag fetches inside
           # the container (see #484). also rewrite SOURCE_DATE_EPOCH
           # from 0 → the tag commit time so AppStream <release date>
-          # matches the tag (mirrors the AppImage path).
+          # matches the tag.
           tarball_url="https://github.com/octalium/aperture/archive/refs/tags/${tag}.tar.gz"
           tarball_sha=$(curl -fsSL "$tarball_url" | sha256sum | cut -d' ' -f1)
           export tag tarball_url tarball_sha
