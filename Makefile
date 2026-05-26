@@ -6,12 +6,13 @@ BUILD_DIR    ?= build
 PREFIX       ?= /usr/local
 BUILDTYPE    ?= release
 
-.PHONY: help build setup compile install clean appimage flatpak release-linux app macos
+.PHONY: help build setup compile install test clean appimage flatpak release-linux app macos
 
 help:
 	@echo "common targets:"
 	@echo "  make build            configure (if needed) + compile aperture"
 	@echo "  make install          install into \$$PREFIX (default $(PREFIX))"
+	@echo "  make test             build + run the test suite (meson test)"
 	@echo "  make appimage         build a single-file AppImage (needs linuxdeploy)"
 	@echo "  make flatpak          build a .flatpak bundle (needs flatpak-builder + flathub remote)"
 	@echo "  make release-linux    build both AppImage and Flatpak"
@@ -33,6 +34,9 @@ build: compile
 
 install: compile
 	meson install -C $(BUILD_DIR)
+
+test: setup
+	meson test -C $(BUILD_DIR)
 
 appimage:
 	@if [ ! -d $(BUILD_DIR) ]; then \

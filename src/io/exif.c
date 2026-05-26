@@ -276,6 +276,30 @@ static bool looks_like_bmff(const uint8_t *buf, size_t len)
 
 // ----- public --------------------------------------------------------
 
+int ap_exif_read_buf(const unsigned char *buf, size_t len,
+                     ap_exif_fields *out)
+{
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+    if (!buf || len < 8) return -1;
+
+    exif_ctx ctx = { .buf = buf, .len = len };
+    if (looks_like_bmff(buf, len)) {
+        const uint8_t *tiff = NULL;
+        size_t         tlen = 0;
+        if (find_cr3_exif(buf, len, &tiff, &tlen)) {
+            ctx.buf = tiff;
+            ctx.len = tlen;
+            parse_tiff(&ctx);
+        }
+    } else {
+        parse_tiff(&ctx);
+    }
+
+    *out = ctx.fields;
+    return ctx.populated > 0 ? 0 : -1;
+}
+
 int ap_exif_read(const char *path, ap_exif_fields *out)
 {
     if (!path || !out) return -1;
@@ -289,22 +313,9 @@ int ap_exif_read(const char *path, ap_exif_fields *out)
     fclose(f);
     if (n < 8) { free(buf); return -1; }
 
-    exif_ctx ctx = { .buf = buf, .len = n };
-    if (looks_like_bmff(buf, n)) {
-        const uint8_t *tiff = NULL;
-        size_t         tlen = 0;
-        if (find_cr3_exif(buf, n, &tiff, &tlen)) {
-            ctx.buf = tiff;
-            ctx.len = tlen;
-            parse_tiff(&ctx);
-        }
-    } else {
-        parse_tiff(&ctx);
-    }
-
-    *out = ctx.fields;
+    int rc = ap_exif_read_buf(buf, n, out);
     free(buf);
-    return ctx.populated > 0 ? 0 : -1;
+    return rc;
 }
 
 int ap_exif_identity(const ap_exif_fields *f, char *out, size_t out_len)

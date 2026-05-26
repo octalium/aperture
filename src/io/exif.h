@@ -39,6 +39,13 @@ typedef struct {
 // -1 return `out` is zeroed.
 int ap_exif_read(const char *path, ap_exif_fields *out);
 
+// Same as ap_exif_read but parses from an in-memory byte blob (the
+// first 256 KB of a RAW is enough; see ap_exif_read). `buf` is read-
+// only and never mutated. Returns 0 when at least one field was
+// populated, -1 otherwise (and zeros `out`).
+int ap_exif_read_buf(const unsigned char *buf, size_t len,
+                     ap_exif_fields *out);
+
 // Compose the importer's dedupe identity string from `f` into `out`
 // (NUL-terminated, truncated to `out_len`). Format:
 //   "<make>|<model>|<dto>|<subsec>"

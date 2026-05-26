@@ -110,3 +110,5 @@ aperture_exe = executable(
   dependencies: aperture_deps,
   install: true,
 )
+
+subdir('test')

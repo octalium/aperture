@@ -78,6 +78,50 @@ File an issue before non-trivial work and link the PR to it. Issues
 should be concise and scoped. Hierarchical relationships (epics,
 dependencies) are tracked with GitHub's native linking.
 
+## Tests
+
+Tests are plain `int main` binaries wired via meson's `test()` rule.
+No framework, no DSL — just `AP_TEST_ASSERT` from `test/include/aptest.h`.
+Run the suite with `make test` (or `meson test -C build` directly).
+
+To add a new test:
+
+1. Create `test/<area>/<thing>_test.c` next to its peers. Mirror the
+   `src/` layout so the test sits beside the code under test.
+2. Compile the source under test directly into the test executable —
+   tests are tiny and standalone, not linked against the full binary.
+3. Add (or extend) a `test/<area>/meson.build`:
+
+```meson
+my_thing_test = executable(
+  'my_thing_test',
+  'my_thing_test.c',
+  files('../../src/<area>/my_thing.c'),
+  include_directories: [aperture_inc, aptest_inc],
+)
+test('<area>/my_thing', my_thing_test)
+```
+
+4. If `test/<area>/` is new, `subdir('<area>')` it from `test/meson.build`.
+
+Inside the test, use `AP_TEST_ASSERT(cond, fmt, ...)` for failure
+reporting — it prints `file:line` + the formatted message and aborts:
+
+```c
+#include "aptest.h"
+#include "io/my_thing.h"
+
+int main(void) {
+    my_thing_t t;
+    AP_TEST_ASSERT(my_thing_init(&t) == 0, "init failed");
+    return 0;
+}
+```
+
+Prefer synthesized in-memory fixtures over checked-in binary files
+(see `test/io/exif_test.c` for a worked example: TIFF and CR3 blobs
+built byte-by-byte in test code).
+
 ## Code style
 
 - Documentation is required on all public entities. Keep it brief and
