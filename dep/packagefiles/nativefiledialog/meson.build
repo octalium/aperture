@@ -6,10 +6,9 @@ project('nativefiledialog-extended', 'cpp',
 )
 
 # nativefiledialog-extended — native OS file dialogs. Only the host
-# platform's backend is compiled. The project is Linux-only today; the
-# Windows branch is kept ready, and macOS (nfd_cocoa.m, Objective-C)
-# needs the objc language added at project() level when that platform
-# becomes a build target.
+# platform's backend is compiled. The macOS backend (nfd_cocoa.m) is
+# Objective-C; the parent project adds 'objc' to project languages
+# when host is darwin.
 cpp     = meson.get_compiler('cpp')
 nfd_inc = include_directories('src/include')
 
@@ -25,7 +24,10 @@ if sys == 'windows'
     cpp.find_library('shell32'),
   ]
 elif sys == 'darwin'
-  error('nativefiledialog wrap: macOS backend (nfd_cocoa.m) needs the objc language — wire up when macOS is a build target')
+  nfd_src  = files('src/nfd_cocoa.m')
+  nfd_deps = [
+    dependency('appleframeworks', modules: ['AppKit', 'Foundation', 'UniformTypeIdentifiers']),
+  ]
 else
   # Linux / *BSD — the xdg-desktop-portal backend: D-Bus only, no GTK.
   nfd_src  = files('src/nfd_portal.cpp')
