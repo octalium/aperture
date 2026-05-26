@@ -1,9 +1,7 @@
 # Contributing to aperture
 
 Thanks for your interest. This document covers the local dev loop, branch
-policy, and commit-message conventions. Scope and architectural direction
-live in [SPEC.md](SPEC.md) — read that first if you intend to propose a
-feature.
+policy, and commit-message conventions.
 
 ## Local dev loop
 
@@ -128,5 +126,3 @@ built byte-by-byte in test code).
   descriptive.
 - Comments are single-line and lowercase where they add clarity. Avoid
   sectional or separatory comments.
-- See [SPEC.md](SPEC.md) for the architectural stance — in particular
-  the module-registry convention and the "no workarounds" rule.

@@ -10,8 +10,6 @@ aperture's job is library management, culling, grading, and export.
 Anything that needs pixel-level retouching belongs in a dedicated editor
 afterward.
 
-See [SPEC.md](SPEC.md) for design, scope, and stack rationale.
-
 ## Status
 
 Pre-v0. Implementation is underway on `dev`; `main` carries the
