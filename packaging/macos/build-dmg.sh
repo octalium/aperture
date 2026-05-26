@@ -2,12 +2,16 @@
 # Package Aperture.app into a distributable .dmg.
 #
 # Inputs (env vars, all optional unless noted):
-#   APP_IN     source .app (default: $PWD/Aperture.app)
-#   DMG_OUT    destination .dmg path (default: $PWD/aperture-<version>-arm64.dmg)
-#   VERSION    version string baked into the .dmg filename and volume
-#              label (default: derived from APP_IN's Info.plist
-#              CFBundleShortVersionString)
-#   ARCH       arch tag for the filename (default: arm64)
+#   APP_IN             source .app (default: $PWD/Aperture.app)
+#   DMG_OUT            destination .dmg path
+#                      (default: $PWD/aperture-<version>-arm64.dmg)
+#   VERSION            version string baked into the .dmg filename and
+#                      volume label (default: derived from APP_IN's
+#                      Info.plist CFBundleShortVersionString)
+#   ARCH               arch tag for the filename (default: arm64)
+#   SOURCE_DATE_EPOCH  when set, the staged .app contents are touched
+#                      to this epoch before hdiutil snapshots them so
+#                      the resulting .dmg mtimes are reproducible.
 #
 # Output:
 #   $DMG_OUT.
@@ -77,6 +81,9 @@ else
     trap 'rm -rf "$stage"' EXIT
     cp -a "$APP_IN" "$stage/"
     ln -s /Applications "$stage/Applications"
+    if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
+        find "$stage" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+    fi
     hdiutil create \
         -volname "$VOL_NAME" \
         -srcfolder "$stage" \

@@ -38,7 +38,12 @@ jobs:
               glfw libraw lensfun \
               jpeg-turbo libpng libtiff \
               sqlite \
-              dylibbundler create-dmg
+              dylibbundler create-dmg \
+              librsvg \
+              shellcheck
+
+      - name: shellcheck packaging scripts
+        run: shellcheck packaging/macos/*.sh packaging/appimage/*.sh
 
       - name: derive version + epoch from tag
         id: meta
@@ -65,11 +70,13 @@ jobs:
 
       - name: assemble Aperture.app
         env:
+          SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
           VERSION: ${{ steps.meta.outputs.version }}
         run: packaging/macos/build-app.sh
 
       - name: package .dmg
         env:
+          SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
           VERSION: ${{ steps.meta.outputs.version }}
         run: packaging/macos/build-dmg.sh
 
