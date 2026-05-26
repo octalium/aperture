@@ -76,12 +76,16 @@ const ap_updater *ap_updater_default(void)
 // any developer build.
 #if defined(AP_DIST_FLATPAK)
 const ap_updater *ap_updater_flatpak_get(void);
+#elif defined(AP_DIST_MACOS)
+const ap_updater *ap_updater_macos_get(void);
 #endif
 
 const ap_updater *ap_updater_get(void)
 {
 #if defined(AP_DIST_FLATPAK)
     return ap_updater_flatpak_get();
+#elif defined(AP_DIST_MACOS)
+    return ap_updater_macos_get();
 #else
     return &g_default;
 #endif

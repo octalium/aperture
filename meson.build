@@ -22,6 +22,8 @@ add_project_arguments(
 ap_dist = get_option('ap_dist')
 if ap_dist == 'flatpak'
   add_project_arguments('-DAP_DIST_FLATPAK=1', language: ['c', 'cpp'])
+elif ap_dist == 'macos'
+  add_project_arguments('-DAP_DIST_MACOS=1', language: ['c', 'cpp'])
 endif
 
 # cheap reproducibility: rewrite the build root in embedded debug info
