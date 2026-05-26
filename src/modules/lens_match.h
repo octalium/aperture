@@ -58,7 +58,8 @@ typedef struct {
     int             lens_score;    // best candidate score even if rejected
     char            cam_name[AP_META_VALUE_LEN * 2];
     char            lens_name[AP_META_VALUE_LEN * 2];   // best candidate name
-    bool            lens_rejected; // a candidate existed but scored too low
+    bool            lens_rejected; // a candidate existed but did not survive
+    bool            lens_pruned_by_hints; // rejection was hint-narrowing, not weak score
 
     ap_lens_candidate candidates[AP_LENS_MATCH_MAX_CANDIDATES];
     int               candidate_count;

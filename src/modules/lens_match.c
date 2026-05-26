@@ -156,12 +156,16 @@ const ap_lens_match *ap_lens_match_resolve(const char *cam_in,
             compose_name(lenses[0]->Maker, lenses[0]->Model,
                          m->lens_name, sizeof m->lens_name);
 
+            int hint_pruned = 0;
             for (int i = 0;
                  lenses[i] &&
                  m->candidate_count < AP_LENS_MATCH_MAX_CANDIDATES &&
                  lenses[i]->Score >= AP_LENS_MATCH_MIN_SCORE;
                  i++) {
-                if (!candidate_passes_hints(lenses[i], hints)) continue;
+                if (!candidate_passes_hints(lenses[i], hints)) {
+                    hint_pruned++;
+                    continue;
+                }
                 m->candidates[m->candidate_count].lens  = lenses[i];
                 m->candidates[m->candidate_count].score = lenses[i]->Score;
                 compose_name(lenses[i]->Maker, lenses[i]->Model,
@@ -176,10 +180,12 @@ const ap_lens_match *ap_lens_match_resolve(const char *cam_in,
                              m->candidates[0].lens->Model,
                              m->lens_name, sizeof m->lens_name);
             } else {
-                // Weak match below the score threshold, or the strict
-                // string match's qualifying candidates were all pruned
-                // by the hints.
-                m->lens_rejected = true;
+                // Either the best candidate's score was below the
+                // threshold, or every qualifying candidate was pruned
+                // by hint narrowing. `lens_pruned_by_hints` distinguishes
+                // the two so consumer UI can explain the actual cause.
+                m->lens_rejected       = true;
+                m->lens_pruned_by_hints = hint_pruned > 0;
             }
         }
         lf_free(lenses);
