@@ -125,6 +125,23 @@ echo "==> bundling dylibs via $DYLIBBUNDLER"
     -s /opt/homebrew/lib \
     -s /usr/local/lib
 
+# Sparkle.framework: fetched on demand by fetch-sparkle.sh and copied
+# in as a versioned framework (preserving symlinks so codesign and the
+# loader see the canonical Versions/A/Sparkle layout). Skipped only
+# when SPARKLE_SKIP=1 (used by devs working on non-update changes).
+if [ "${SPARKLE_SKIP:-0}" != "1" ]; then
+    echo "==> staging Sparkle.framework"
+    sparkle_framework=$("$here/fetch-sparkle.sh")
+    if [ ! -d "$sparkle_framework" ]; then
+        echo "fetch-sparkle.sh did not produce a framework at $sparkle_framework" >&2
+        exit 1
+    fi
+    rm -rf "$APP_OUT/Contents/Frameworks/Sparkle.framework"
+    cp -a "$sparkle_framework" "$APP_OUT/Contents/Frameworks/Sparkle.framework"
+else
+    echo "==> SPARKLE_SKIP=1, leaving Sparkle.framework out of the bundle" >&2
+fi
+
 # MoltenVK ships an ICD JSON (MoltenVK_icd.json) plus the libMoltenVK
 # dylib. The Vulkan loader dlopens MoltenVK at runtime via the JSON's
 # library_path; dylibbundler only follows direct link-time deps so it
