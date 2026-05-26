@@ -112,6 +112,9 @@ jobs:
       - name: derive version + epoch from tag
         id: meta
         run: |
+          # flatpak-builder action runs in a container as a different uid;
+          # mark the workspace safe so git doesn't reject it (CVE-2022-24765).
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           tag=${GITHUB_REF#refs/tags/}
           version=${tag#v}
           epoch=$(git -C "$GITHUB_WORKSPACE" log -1 --pretty=%ct "$tag")
