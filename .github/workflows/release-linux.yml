@@ -77,7 +77,8 @@ jobs:
           meson setup build \
               --buildtype=release \
               --prefix=/usr \
-              -Db_lto=true
+              -Db_lto=true \
+              -Dstrip=true
           meson compile -C build
 
       - name: build AppImage
