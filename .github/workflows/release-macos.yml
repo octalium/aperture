@@ -53,6 +53,7 @@ jobs:
       - name: meson setup + compile
         env:
           SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
         run: |
           meson setup build \
               --buildtype=release \
@@ -75,11 +76,47 @@ jobs:
           ls -lh aperture-*.dmg || true
           file aperture-*.dmg || true
 
-      - name: upload to GitHub Release
+      - name: sign update + generate appcast.xml
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          dmg=$(ls aperture-*.dmg | head -n 1)
+          if [ -z "$dmg" ]; then
+              echo "no .dmg produced; cannot sign" >&2
+              exit 1
+          fi
+          DMG_PATH="$PWD/$dmg" \
+          DMG_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ steps.meta.outputs.tag }}/$dmg" \
+          RELEASE_NOTES_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${{ steps.meta.outputs.tag }}" \
+          APPCAST_OUT="$PWD/appcast.xml" \
+              packaging/macos/generate-appcast.sh
+          ls -lh appcast.xml
+
+      - name: upload .dmg + appcast.xml to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             aperture-*.dmg
+            appcast.xml
           fail_on_unmatched_files: true
           draft: false
           prerelease: ${{ contains(steps.meta.outputs.tag, '-') }}
+
+      - name: mirror appcast.xml to the latest release
+        # Info.plist's SUFeedURL points at releases/download/latest/appcast.xml,
+        # so Sparkle clients fetch from a stable URL regardless of which v*
+        # tag is current. Create the latest release if it doesn't already
+        # exist, then clobber its appcast.xml asset with the freshly-signed
+        # appcast for this tag. Skipped on prereleases.
+        if: ${{ !contains(steps.meta.outputs.tag, '-') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh release view latest >/dev/null 2>&1; then
+              gh release create latest \
+                  --title "Latest stable Sparkle appcast" \
+                  --notes "Sparkle appcast for the current stable release. Do not delete." \
+                  --target main
+          fi
+          gh release upload latest appcast.xml --clobber
