@@ -16,11 +16,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-// Pre-release: one sidecar shape, no migrations. We own this format
-// end-to-end and nobody downstream is depending on a stable schema
-// yet, so when the model changes we just change the writer/reader
-// and the pre-existing files become inert (the loader leaves the
-// stack empty and we re-seed from the default pipeline).
+// Single sidecar shape; no migrations needed yet. We own this format
+// end-to-end and nobody downstream is depending on a stable schema,
+// so when the model changes we just change the writer/reader and the
+// pre-existing files become inert (the loader leaves the stack empty
+// and we re-seed from the default pipeline).
 
 static int sidecar_path(const char *source_path, char *out, size_t out_len)
 {

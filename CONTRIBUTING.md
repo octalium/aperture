@@ -44,8 +44,7 @@ reproducible builds.
 
 aperture uses a Git-Flow-flavored model with two long-lived branches:
 
-- `main` — spec-only until v0; tagged releases land here once development
-  begins shipping
+- `main` — stable, tagged releases land here (dev → main merge on each release)
 - `dev` — integration branch; all feature and fix work merges here first
 
 Topic branches branch **off `dev`** regardless of kind:
