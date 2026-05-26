@@ -1,12 +1,17 @@
 # aperture
 
-Opinionated raw photo processor.
+Raw photo processor.
 
 A focused, non-destructive editor for photographers whose workflow doesn't
 fit the existing FOSS raw options. The scope is deliberately narrow:
 library management, culling, grading, and export — done well. Feature
 parity with darktable, RawTherapee, or commercial suites is explicitly
 not the goal.
+
+## Screenshots
+
+![Library — culling and metadata](docs/screenshots/library.png)
+![Photo — single-image edit](docs/screenshots/photo.png)
 
 ## What it does
 
@@ -34,8 +39,14 @@ exported."
 
 ### Linux
 
-- **Flatpak** (recommended): `flatpak install --user io.github.octalium.aperture.flatpak`
-  (sideload the bundle from the latest [GitHub Release](https://github.com/octalium/aperture/releases)).
+- **Flatpak** (recommended): download `aperture-X.Y.Z-x86_64.flatpak` from
+  the latest [GitHub Release](https://github.com/octalium/aperture/releases),
+  then:
+
+  ```
+  flatpak install --user ./aperture-X.Y.Z-x86_64.flatpak
+  ```
+
   Flathub submission is tracked separately.
 - **Build from source**: see the [Build from source](#build-from-source)
   section below.
