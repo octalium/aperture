@@ -213,7 +213,8 @@ PY
 # isn't set so the developer dev loop stays untouched.
 if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
     echo "==> pinning bundle mtimes to SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
-    find "$APP_OUT" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+    sde_iso=$(date -u -r "$SOURCE_DATE_EPOCH" +%Y-%m-%dT%H:%M:%S)
+    find "$APP_OUT" -exec touch -h -d "$sde_iso" {} +
 fi
 
 echo "==> wrote $APP_OUT (version $VERSION)"
