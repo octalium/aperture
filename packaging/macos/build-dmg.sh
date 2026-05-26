@@ -82,7 +82,8 @@ else
     cp -a "$APP_IN" "$stage/"
     ln -s /Applications "$stage/Applications"
     if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
-        find "$stage" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+        sde_iso=$(date -u -r "$SOURCE_DATE_EPOCH" +%Y-%m-%dT%H:%M:%S)
+        find "$stage" -exec touch -h -d "$sde_iso" {} +
     fi
     hdiutil create \
         -volname "$VOL_NAME" \
