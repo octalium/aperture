@@ -37,5 +37,8 @@ compile_commands.json
 .env
 .env.local
 
+# macOS packaging cache (Sparkle tarball + extracted framework)
+/packaging/macos/.sparkle-cache/
+
 # ImGui's runtime layout file
 imgui.ini

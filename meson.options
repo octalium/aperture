@@ -7,11 +7,11 @@
 # fallback that opens the GitHub releases page on "Update now".
 #
 # Extend `choices` as additional platform updaters land (#418
-# appimage, #419 macos, #420 windows).
+# appimage, #420 windows).
 option(
   'ap_dist',
   type:    'combo',
-  choices: ['none', 'flatpak'],
+  choices: ['none', 'flatpak', 'macos'],
   value:   'none',
   description: 'Distribution channel used to select the ap_updater backend.',
 )
