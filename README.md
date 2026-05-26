@@ -17,14 +17,12 @@ specification only. No tagged releases yet.
 
 ## Install (Linux)
 
-Once tagged releases ship, the easiest paths will be:
-
-- **Flatpak** (primary channel, via Flathub once submission lands).
-- **AppImage** (single-file fallback, attached to each GitHub Release).
-
-Both artifacts are produced by `.github/workflows/release-linux.yml` on
-`v*` tag pushes. The packaging sources live under `packaging/` — see
-`packaging/flatpak/FLATHUB.md` for submission notes.
+Once tagged releases ship, the easiest path will be **Flatpak** (via
+Flathub once submission lands; a `.flatpak` bundle is also attached to
+each GitHub Release for sideloading). The bundle is produced by
+`.github/workflows/release-linux.yml` on `v*` tag pushes. Packaging
+sources live under `packaging/` — see `packaging/flatpak/FLATHUB.md`
+for submission notes.
 
 ## Install (macOS)
 
