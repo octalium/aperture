@@ -12,24 +12,22 @@ extern "C" {
 // Platform-abstraction interface for the install / restart half of
 // the update flow. Each platform's implementation lives in its own
 // TU under src/update/ and is selected at build time. The active
-// updater is reached through ap_updater_get(); the per-platform
-// real implementations land in subsequent PRs (#419 macOS Sparkle,
-// #420 Windows WinSparkle, #421 Flatpak detect).
+// updater is reached through ap_updater_get(); the only platform
+// override at present is the Flatpak backend (see updater_flatpak.c).
 //
-// The default implementation in updater.c is a no-op placeholder
-// that records the latest manifest and falls back to opening the
-// GitHub Releases page via xdg-open / open / start when the user
-// hits "Update now".
+// The default implementation in updater.c records the latest manifest
+// and opens the GitHub Releases page via xdg-open / open / start when
+// the user hits "Update now". Distribution builds without an in-place
+// installer (Flatpak, macOS) route through the default backend.
 typedef struct {
     // Trigger a check for a new version. The default no-op delegates
     // to the app's manifest-fetch worker (src/update/check.{c,h}),
     // which is always submitted from app init / About modal regardless
     // of the active updater. Platform impls may override when they
-    // have a native polling mechanism (e.g. Sparkle's scheduled
-    // appcast fetch); when they do, the override is responsible for
-    // posting results back through ap_updater_set_pending and
-    // (optionally) suppressing the app's manifest fetch for that
-    // session.
+    // have a native polling mechanism; when they do, the override is
+    // responsible for posting results back through
+    // ap_updater_set_pending and (optionally) suppressing the app's
+    // manifest fetch for that session.
     void (*check)(void);
 
     // Apply the pending update and restart, when the platform

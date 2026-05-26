@@ -48,7 +48,7 @@ app:
 		echo "make app requires macOS (got $$(uname -s))" >&2; exit 1; \
 	fi
 	@if [ ! -d $(BUILD_DIR) ]; then \
-		meson setup $(BUILD_DIR) --buildtype=release --prefix=/usr/local -Dap_dist=macos; \
+		meson setup $(BUILD_DIR) --buildtype=release --prefix=/usr/local; \
 	fi
 	meson compile -C $(BUILD_DIR)
 	BUILD_DIR=$(BUILD_DIR) packaging/macos/build-app.sh
