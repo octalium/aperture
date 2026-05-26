@@ -48,7 +48,7 @@ install_data(
 # (notably KDE Plasma's task manager and several GTK launchers). vendored
 # from the scalable SVG; regenerate with packaging/linux/icons/refresh.sh
 # when the SVG changes.
-foreach size : [48, 64, 128, 256]
+foreach size : [16, 32, 48, 64, 128, 256, 512]
   size_str = '@0@x@0@'.format(size)
   install_data(
     'icons' / 'hicolor' / size_str / 'apps' / app_id + '.png',
