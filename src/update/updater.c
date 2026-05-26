@@ -20,9 +20,9 @@ static void default_check(void)
     // keeps no extra state, so this is a no-op.
 }
 
-// Hardcoded compile-time URL above is the only argument; do NOT
-// extend this to interpolate user-controlled strings without
-// shell-quoting first.
+// security: every system() call below is a compile-time string literal
+// concatenated with AP_UPDATE_RELEASES_URL (also compile-time). do NOT
+// interpolate user-controlled strings -- there is no shell quoting here.
 static int open_releases_page(void)
 {
 #if defined(__linux__)
