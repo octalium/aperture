@@ -60,10 +60,17 @@ jobs:
           echo "epoch=$epoch" >>"$GITHUB_OUTPUT"
 
       - name: fetch linuxdeploy
+        # pinned to the latest tagged linuxdeploy release (upstream has
+        # no non-alpha tags; this is the most recent of those as of
+        # 2026-05-26). Bump in step with upstream as needed — the
+        # rolling "continuous" tag is avoided so release builds stay
+        # reproducible.
+        env:
+          LINUXDEPLOY_TAG: '1-alpha-20251107-1'
         run: |
           mkdir -p tools
           curl -fSL -o tools/linuxdeploy \
-              https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+              "https://github.com/linuxdeploy/linuxdeploy/releases/download/${LINUXDEPLOY_TAG}/linuxdeploy-x86_64.AppImage"
           chmod +x tools/linuxdeploy
           # AppImage tools fail under containers without FUSE; extract and
           # invoke the embedded squashfs directly via --appimage-extract.
