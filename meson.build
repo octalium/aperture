@@ -18,6 +18,12 @@ add_project_arguments(
   language: ['c', 'cpp'],
 )
 
+# Distribution channel selects the ap_updater backend; see meson.options.
+ap_dist = get_option('ap_dist')
+if ap_dist == 'flatpak'
+  add_project_arguments('-DAP_DIST_FLATPAK=1', language: ['c', 'cpp'])
+endif
+
 # cheap reproducibility: rewrite the build root in embedded debug info
 # (DW_AT_comp_dir) so identical sources yield identical binaries
 # regardless of where they were built. ninja already compiles aperture

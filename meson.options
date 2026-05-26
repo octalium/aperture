@@ -1,5 +1,17 @@
 # Build-time options for aperture.
+
+# Distribution channel. Packaging builds (Flatpak, AppImage, macOS,
+# Windows) set this so the right ap_updater backend is selected at
+# build time. The default 'none' is correct for source builds and the
+# generic Linux release tarball — those use the cross-platform
+# fallback that opens the GitHub releases page on "Update now".
 #
-# No project-specific options defined yet. Add `option(...)` calls here
-# as configuration knobs are introduced (e.g. sanitizer toggles, vendoring
-# overrides, optional feature gates).
+# Extend `choices` as additional platform updaters land (#418
+# appimage, #419 macos, #420 windows).
+option(
+  'ap_dist',
+  type:    'combo',
+  choices: ['none', 'flatpak'],
+  value:   'none',
+  description: 'Distribution channel used to select the ap_updater backend.',
+)

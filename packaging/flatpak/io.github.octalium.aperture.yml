@@ -77,6 +77,9 @@ modules:
     config-opts:
       - --buildtype=release
       - -Dwrap_mode=nodownload
+      # selects the Flatpak ap_updater backend (xdg-open appstream://
+      # on "Update now"); see meson.options and src/update/updater.c
+      - -Dap_dist=flatpak
     build-options:
       env:
         # pin AppStream release date to the tag's commit time at CI

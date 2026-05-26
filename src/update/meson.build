@@ -4,3 +4,7 @@ aperture_sources += files(
   'settings.c',
   'updater.c',
 )
+
+if ap_dist == 'flatpak'
+  aperture_sources += files('updater_flatpak.c')
+endif
