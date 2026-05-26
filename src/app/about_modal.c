@@ -48,6 +48,9 @@ void draw_about_modal(ap_app *app)
     }
 
     igSeparatorText("Vendored dependencies");
+    // manually kept in sync with dep/*.wrap (vendored) and the
+    // dependency() calls in meson.build (system). update both lists
+    // together whenever a dep is added, removed, or moved.
     igTextDisabled("cimgui, lcms2, libpng, libtiff, tomlc99, blake3, cJSON,");
     igTextDisabled("nativefiledialog-extended.");
     igTextDisabled("System: vulkan, glfw3, libraw, lensfun, sqlite3,");
