@@ -58,7 +58,8 @@ jobs:
           meson setup build \
               --buildtype=release \
               --prefix=/usr/local \
-              -Db_lto=true
+              -Db_lto=true \
+              -Dap_dist=macos
           meson compile -C build
 
       - name: assemble Aperture.app
