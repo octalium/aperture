@@ -114,7 +114,7 @@ iconutil --convert icns --output "$APP_OUT/Contents/Resources/aperture.icns" "$i
 rm -rf "$iconset_dir"
 
 # preserve AppStream metainfo + MIME xml inside the bundle for tooling
-# that scans Resources/ (Sparkle reads metainfo for release notes).
+# that scans Resources/.
 if [ -d "$staged_prefix/share/metainfo" ]; then
     cp -a "$staged_prefix/share/metainfo" "$APP_OUT/Contents/Resources/"
 fi
@@ -132,19 +132,6 @@ echo "==> bundling dylibs via $DYLIBBUNDLER"
     -d "$APP_OUT/Contents/Frameworks" \
     -p "@executable_path/../Frameworks/" \
     -s /opt/homebrew/lib
-
-# Sparkle.framework: fetched on demand by fetch-sparkle.sh (also
-# invoked at meson configure time). cp -a preserves the versioned
-# framework symlinks; codesign and the dyld loader both require the
-# canonical Versions/A/Sparkle layout.
-echo "==> staging Sparkle.framework"
-sparkle_framework=$("$here/fetch-sparkle.sh")
-if [ ! -d "$sparkle_framework" ]; then
-    echo "fetch-sparkle.sh did not produce a framework at $sparkle_framework" >&2
-    exit 1
-fi
-rm -rf "$APP_OUT/Contents/Frameworks/Sparkle.framework"
-cp -a "$sparkle_framework" "$APP_OUT/Contents/Frameworks/Sparkle.framework"
 
 # MoltenVK ships an ICD JSON (MoltenVK_icd.json) plus the libMoltenVK
 # dylib. The Vulkan loader dlopens MoltenVK at runtime via the JSON's

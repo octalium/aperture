@@ -47,15 +47,6 @@
     <key>NSHumanReadableCopyright</key>
     <string>MIT-licensed. See LICENSE.</string>
 
-    <key>SUFeedURL</key>
-    <string>https://github.com/octalium/aperture/releases/download/latest/appcast.xml</string>
-
-    <key>SUPublicEDKey</key>
-    <string>@sparkle_public_ed_key@</string>
-
-    <key>SUEnableAutomaticChecks</key>
-    <true/>
-
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>
