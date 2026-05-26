@@ -4,10 +4,11 @@
 # provides Vulkan loader, libpng, libtiff, libjpeg, sqlite3, and the
 # common desktop stack. Dependencies the runtime does NOT ship
 # (glfw, lensfun, libraw) are built as modules below. The remaining
-# vendored deps (cimgui, lcms2, blake3, cJSON, nativefiledialog,
-# tomlc99) come in via meson wraps under dep/, and their sources are
-# pinned alongside the aperture module so flatpak-builder can build
-# offline.
+# vendored deps that need a fetch (cimgui, lcms2, cJSON,
+# nativefiledialog, tomlc99) come in via meson wraps under dep/, and
+# their sources are pinned alongside the aperture module so
+# flatpak-builder can build offline. In-tree wraps (blake3) need no
+# source entry.
 #
 # Bump runtime-version in lockstep with the freedesktop release we
 # target. 24.08 is the current LTS as of 2026; 25.08 supersedes it

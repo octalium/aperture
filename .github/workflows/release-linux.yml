@@ -60,10 +60,17 @@ jobs:
           echo "epoch=$epoch" >>"$GITHUB_OUTPUT"
 
       - name: fetch linuxdeploy
+        # pinned to the latest tagged linuxdeploy release (upstream has
+        # no non-alpha tags; this is the most recent of those as of
+        # 2026-05-26). Bump in step with upstream as needed — the
+        # rolling "continuous" tag is avoided so release builds stay
+        # reproducible.
+        env:
+          LINUXDEPLOY_TAG: '1-alpha-20251107-1'
         run: |
           mkdir -p tools
           curl -fSL -o tools/linuxdeploy \
-              https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+              "https://github.com/linuxdeploy/linuxdeploy/releases/download/${LINUXDEPLOY_TAG}/linuxdeploy-x86_64.AppImage"
           chmod +x tools/linuxdeploy
           # AppImage tools fail under containers without FUSE; extract and
           # invoke the embedded squashfs directly via --appimage-extract.
@@ -110,7 +117,7 @@ jobs:
     # flatpak/flatpak-github-actions runs flatpak-builder inside the
     # freedesktop SDK container so the runner only needs Docker.
     container:
-      image: bilelmoussaoui/flatpak-github-actions:freedesktop-24.08
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-24.08
       options: --privileged
     steps:
       - name: checkout
@@ -149,7 +156,10 @@ jobs:
         with:
           manifest-path: packaging/flatpak/io.github.octalium.aperture.yml
           bundle: aperture-${{ steps.meta.outputs.version }}-x86_64.flatpak
-          cache-key: flatpak-builder-${{ github.sha }}
+          # key on manifest hash so the cache survives across releases
+          # until the manifest itself changes (the previous github.sha
+          # key cold-started the cache on every tag push).
+          cache-key: flatpak-builder-${{ hashFiles('packaging/flatpak/*.yml') }}
           upload-artifact: false
 
       - name: upload to GitHub Release
