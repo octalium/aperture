@@ -32,6 +32,16 @@
   <launchable type="desktop-id">io.github.octalium.aperture.desktop</launchable>
   <provides>
     <binary>aperture</binary>
+    <mediatype>image/x-canon-cr2</mediatype>
+    <mediatype>image/x-canon-cr3</mediatype>
+    <mediatype>image/x-nikon-nef</mediatype>
+    <mediatype>image/x-sony-arw</mediatype>
+    <mediatype>image/x-fuji-raf</mediatype>
+    <mediatype>image/x-adobe-dng</mediatype>
+    <mediatype>image/x-olympus-orf</mediatype>
+    <mediatype>image/x-panasonic-rw2</mediatype>
+    <mediatype>image/x-pentax-pef</mediatype>
+    <mediatype>image/x-samsung-srw</mediatype>
   </provides>
 
   <url type="homepage">https://github.com/octalium/aperture</url>
