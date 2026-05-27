@@ -32,8 +32,6 @@ typedef struct {
 // + schema if needed).
 int ap_registry_list(ap_registry_entry *out, int max);
 
-// ----- pipelines (app-wide, registry db) -----
-
 #define AP_PIPELINE_NAME_LEN 64
 
 // A pipeline is a named, ordered list of edit-stack entries
@@ -87,8 +85,6 @@ int ap_pipeline_apply_to_stack(int64_t pipeline_id, ap_edit_stack *out);
 // app-wide default. Used by the photo-open + sidecar fallback paths.
 int ap_pipeline_apply_default_to_stack(ap_edit_stack *out);
 
-// ----- app-wide key/value settings (registry db) -----
-
 // Look up a setting by key. On success writes a NUL-terminated string
 // into `out` and returns 0. Returns -1 when missing or on error.
 int ap_settings_get(const char *key, char *out, size_t out_len);
@@ -141,8 +137,6 @@ int         ap_library_setting_get(const ap_library *lib, const char *key,
 int         ap_library_setting_set(ap_library *lib, const char *key,
                                    const char *value);
 
-// ----- photo groups -----
-//
 // Group membership lives in each photo's sidecar (the source of
 // truth). The library builds an in-memory index from the sidecars
 // when it is opened; the calls below read and mutate that index and
@@ -175,8 +169,6 @@ int ap_library_rename_group(ap_library *lib, const char *old_name,
 // Remove `group` from every photo carrying it.
 int ap_library_delete_group(ap_library *lib, const char *group);
 
-// ----- culling state (rating / pick-reject flag / colour label) -----
-//
 // Each photo's culling state lives in its sidecar (the source of
 // truth) and is cached in the photos table for fast filtering. The
 // library builds an in-memory cache on open; the calls below read and
@@ -236,8 +228,6 @@ int ap_library_reload_sorted(ap_library *lib, ap_library_sort sort);
 // the grid. Returns 0 on success, -1 on error.
 int ap_library_rescan(ap_library *lib, ap_library_sort sort);
 
-// ----- thumbnail cache (lifetime-bound to the library) -----
-
 typedef struct ap_thumbnail ap_thumbnail;
 
 // Returns the cached thumbnail for the n-th photo, or NULL if not
@@ -267,8 +257,6 @@ void ap_library_invalidate_thumbnail(ap_library *lib, int index);
 // fresh attempt.
 void ap_library_mark_thumbnail_failed(ap_library *lib, int index);
 
-// ----- edit-render thumbnail blobs (persisted in the library db) -----
-//
 // The `thumbnails` table stores a small JPEG of each photo rendered
 // through its edit stack. These survive across sessions and are the
 // preferred source for grid thumbnails; the camera's embedded
@@ -317,8 +305,6 @@ int  ap_library_apply_metadata_patch(ap_library *lib, int index,
                                      const ap_photo_metadata *patch,
                                      const bool patch_set[AP_META_FIELD_COUNT]);
 
-// ----- export presets (per-library db) -----
-//
 // A preset is a named bundle of ap_export_settings. The library db
 // stores them in the `export_presets` table so they survive across
 // sessions. The settings are serialised as a flat key=value blob

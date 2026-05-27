@@ -23,7 +23,6 @@
 // intensity correction in one pass.
 //
 // Parameter layout
-// ----------------
 // Float params:
 //   SLOT_FOCAL_MM     (0)  Focal length in mm (0 = unset, show hint only)
 //   SLOT_APERTURE     (1)  f-number          (0 = unset, show hint only)

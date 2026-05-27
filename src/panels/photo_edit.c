@@ -44,8 +44,6 @@ static void rebuild_after_change(ap_app *app, ap_photo *photo)
     ap_app_rebuild_photo_graph(app);
 }
 
-// ---- Edits window ---------------------------------------------------
-
 // State for the rename modal. Module-scoped so the popup survives
 // across frames while the user types.
 static int  g_rename_idx = -1;
@@ -116,8 +114,6 @@ static bool draw_rename_modal(ap_app *app, ap_edit_stack *stack)
     }
     return changed;
 }
-
-// ---- Save-as-pipeline / Apply-pipeline popup state ------------------
 
 static bool    g_save_as_open       = false;
 static bool    g_apply_open         = false;
@@ -326,8 +322,6 @@ static void edits_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
     }
 }
 
-// ---- Tools window ---------------------------------------------------
-
 static void tools_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
 {
     if (!igBegin("Tools", NULL, 0)) {
@@ -355,8 +349,6 @@ static void tools_window(ap_app *app, ap_photo *photo, ap_edit_stack *stack)
     if (added) rebuild_after_change(app, photo);
 }
 
-// ---- Image window ---------------------------------------------------
-
 static void image_window(ap_app *app, ap_photo *photo)
 {
     if (!igBegin("Image", NULL, 0)) {
@@ -382,8 +374,6 @@ static void image_window(ap_app *app, ap_photo *photo)
 
     igEnd();
 }
-
-// ---- Histogram window -----------------------------------------------
 
 // GPU-computed 256-bin RGBL histogram of the rendered display image.
 //
@@ -563,8 +553,6 @@ static void histogram_window(ap_photo *photo)
     igEnd();
 }
 
-// ---- per-entry config windows ---------------------------------------
-
 static void config_window(ap_app *app, ap_photo *photo,
                           ap_edit_stack *stack, int idx)
 {
@@ -705,8 +693,6 @@ static void entry_config_windows(ap_app *app, ap_photo *photo,
     }
 }
 
-// ---- Save-as-pipeline modal -----------------------------------------
-
 static void draw_save_as_pipeline_modal(ap_app *app, ap_photo *photo,
                                         const ap_edit_stack *stack)
 {
@@ -818,8 +804,6 @@ static void draw_save_as_pipeline_modal(ap_app *app, ap_photo *photo,
     igEndPopup();
 }
 
-// ---- Apply-pipeline modal -------------------------------------------
-
 #define APPLY_LIST_MAX 64
 
 static void draw_apply_pipeline_modal(ap_app *app, ap_photo *photo,
@@ -900,8 +884,6 @@ static void draw_apply_pipeline_modal(ap_app *app, ap_photo *photo,
 
     igEndPopup();
 }
-
-// ---- panel entry point ----------------------------------------------
 
 static void photo_edit_draw(ap_app *app)
 {

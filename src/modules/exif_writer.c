@@ -9,10 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-// ---------------------------------------------------------------------------
 // Dynamic byte buffer
-// ---------------------------------------------------------------------------
-
 typedef struct {
     uint8_t *data;
     size_t   len;
@@ -57,9 +54,7 @@ static int buf_append_u32le(buf_t *b, uint32_t v)
     return buf_append(b, bytes, 4);
 }
 
-// ---------------------------------------------------------------------------
 // TIFF / EXIF constants
-// ---------------------------------------------------------------------------
 
 // TIFF tag types
 #define TIFF_TYPE_BYTE      1
@@ -97,9 +92,7 @@ static int buf_append_u32le(buf_t *b, uint32_t v)
 #define TAG_GPS_ALT_REF     0x0005
 #define TAG_GPS_ALT         0x0006
 
-// ---------------------------------------------------------------------------
 // IFD entry builder
-// ---------------------------------------------------------------------------
 
 // An IFD entry record before its value is resolved to an offset.
 typedef struct {
@@ -294,9 +287,7 @@ static int ifd_emit(const ifd_builder *b, buf_t *out,
     return 0;
 }
 
-// ---------------------------------------------------------------------------
 // Metadata field parsers
-// ---------------------------------------------------------------------------
 
 // Parse a rational string of the form "n/d" or a plain float.
 // Returns true on success; numer and denom are set to a reduced fraction.
@@ -393,9 +384,7 @@ static int parse_gps_alt(const char *s, double *out)
     return 1;
 }
 
-// ---------------------------------------------------------------------------
 // Main builder
-// ---------------------------------------------------------------------------
 
 int ap_exif_build(const ap_photo_metadata *meta,
                   uint8_t **out, size_t *out_size)
@@ -523,14 +512,12 @@ int ap_exif_build(const ap_photo_metadata *meta,
         return -1;
     }
 
-    // ---------------------------------------------------------------------------
     // Layout pass: compute byte offsets.
     // The TIFF blob layout is:
     //   [0]  TIFF header (8 bytes)
     //   [8]  IFD0 directory + IFD0 vdata
     //   ...  Exif sub-IFD directory + its vdata
     //   ...  GPS sub-IFD directory + its vdata (if any)
-    // ---------------------------------------------------------------------------
 
     // IFD directory size = 2 (count) + N*12 + 4 (next-IFD offset).
     size_t ifd0_dir_size  = 2 + (size_t)ifd0.count  * 12 + 4;

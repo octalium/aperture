@@ -84,7 +84,6 @@ static void transform_render(const ap_module *self, float *params,
     int iw = ctx->image_width;
     int ih = ctx->image_height;
 
-    // ---- Crop, in pixels ------------------------------------------
     igSeparatorText("Crop");
 
     // Interactive overlay: arm the canvas crop tool — draggable
@@ -161,12 +160,10 @@ static void transform_render(const ap_module *self, float *params,
         igTextDisabled("(image dimensions unavailable)");
     }
 
-    // ---- Rotation -------------------------------------------------
     igSeparatorText("Rotation");
     ap_module_slider_reset(self, params, "Angle (deg)", SLOT_ROTATION,
                            -180.0f, 180.0f, "%.1f");
 
-    // ---- Flip -----------------------------------------------------
     igSeparatorText("Flip");
     bool fx = params[SLOT_FLIP_X] != 0.0f;
     bool fy = params[SLOT_FLIP_Y] != 0.0f;
@@ -180,7 +177,6 @@ static void transform_render(const ap_module *self, float *params,
         params[SLOT_FLIP_Y] = fy ? 1.0f : 0.0f;
     }
 
-    // ---- Scale ----------------------------------------------------
     igSeparatorText("Scale");
     ap_module_slider_reset(self, params, "Scale X", SLOT_SCALE_X, 0.25f, 4.0f, "%.2f");
     ap_module_slider_reset(self, params, "Scale Y", SLOT_SCALE_Y, 0.25f, 4.0f, "%.2f");

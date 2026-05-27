@@ -36,8 +36,6 @@ static const char *const sharpen_names[SLOT_COUNT] = {
     "algorithm", "amount", "threshold", "radius",
 };
 
-// --- 3x3 single-pass ----------------------------------------------
-
 typedef struct {
     float amount;
     float threshold;
@@ -55,8 +53,6 @@ static int sharpen_pack_3x3(const ap_module *self, const float *params,
     pc->threshold = params ? params[SLOT_THRESHOLD] : 0.0f;
     return 0;
 }
-
-// --- Gaussian USM, two passes -------------------------------------
 
 typedef struct {
     int   radius;
