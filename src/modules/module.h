@@ -257,6 +257,14 @@ void ap_module_slider_reset(const ap_module *self, float *params,
 void ap_module_render_ctx_push(const ap_module_render_ctx *ctx);
 void ap_module_render_ctx_pop(void);
 
+// Auto-fill a render-ctx string slot from an EXIF-derived value the
+// first time the slot is empty. No-op when `ctx` is NULL, `slot` is out
+// of range, `value` is NULL/empty, or the slot is already non-empty. On
+// an actual write, copies safely (truncates at AP_EDIT_STR_LEN-1 with a
+// NUL terminator) and sets *ctx->request_rebuild.
+void ap_module_str_autofill_from_exif(const ap_module_render_ctx *ctx,
+                                      int slot, const char *value);
+
 // Resolved per-stage view of which shader + push layout + pack_push to
 // use. For modules with no variants, mirrors the legacy single-shader
 // fields. For variant-bearing modules, returns the picked variant.

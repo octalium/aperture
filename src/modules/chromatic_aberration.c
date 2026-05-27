@@ -267,11 +267,8 @@ static void ca_render(const ap_module *self, float *params,
 
     char exif_cam[AP_META_VALUE_LEN * 2 + 2];
     build_exif_cam(fm, exif_cam, sizeof(exif_cam));
-    if (!ctx->str_params[STR_CAMERA][0] && exif_cam[0]) {
-        strncpy(ctx->str_params[STR_CAMERA], exif_cam, AP_EDIT_STR_LEN - 1);
-        ctx->str_params[STR_CAMERA][AP_EDIT_STR_LEN - 1] = '\0';
-        *ctx->request_rebuild = true;
-    }
+    ap_module_str_autofill_from_exif(ctx, STR_CAMERA, exif_cam);
+
     igInputText("Camera", ctx->str_params[STR_CAMERA], AP_EDIT_STR_LEN, 0, NULL, NULL);
     if (igIsItemDeactivatedAfterEdit()) {
         *ctx->request_rebuild    = true;
@@ -284,11 +281,8 @@ static void ca_render(const ap_module *self, float *params,
 
     char exif_lens[AP_META_VALUE_LEN * 2 + 2];
     build_exif_lens(fm, exif_lens, sizeof(exif_lens));
-    if (!ctx->str_params[STR_LENS][0] && exif_lens[0]) {
-        strncpy(ctx->str_params[STR_LENS], exif_lens, AP_EDIT_STR_LEN - 1);
-        ctx->str_params[STR_LENS][AP_EDIT_STR_LEN - 1] = '\0';
-        *ctx->request_rebuild = true;
-    }
+    ap_module_str_autofill_from_exif(ctx, STR_LENS, exif_lens);
+
     igInputText("Lens", ctx->str_params[STR_LENS], AP_EDIT_STR_LEN, 0, NULL, NULL);
     if (igIsItemDeactivatedAfterEdit()) {
         *ctx->request_rebuild    = true;

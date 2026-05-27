@@ -3,6 +3,7 @@
 #include "cimgui.h"
 #include "edit/stack.h"
 
+#include <stdio.h>
 #include <string.h>
 
 extern const ap_module module_raw_passthrough;
@@ -115,6 +116,20 @@ void ap_module_render_ctx_push(const ap_module_render_ctx *ctx)
 void ap_module_render_ctx_pop(void)
 {
     g_render_ctx = NULL;
+}
+
+void ap_module_str_autofill_from_exif(const ap_module_render_ctx *ctx,
+                                      int slot, const char *value)
+{
+    if (!ctx || !ctx->str_params || !ctx->request_rebuild) return;
+    if (slot < 0 || slot >= AP_EDIT_STR_SLOTS) return;
+    if (!value || !value[0]) return;
+    char *dst = ctx->str_params[slot];
+    if (dst[0]) return;
+    // snprintf truncates safely and always NUL-terminates, sidestepping
+    // the strncpy footgun when value is longer than AP_EDIT_STR_LEN-1.
+    snprintf(dst, AP_EDIT_STR_LEN, "%s", value);
+    *ctx->request_rebuild = true;
 }
 
 void ap_module_slider_reset(const ap_module *self, float *params,
