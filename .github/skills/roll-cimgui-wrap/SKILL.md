@@ -3,7 +3,7 @@ name: roll-cimgui-wrap
 description: Bump the pinned cimgui revision in dep/cimgui.wrap to a newer upstream commit. Use this when adopting an upstream cimgui change (new ImGui API, bug fix, etc.) or as a scheduled wrap maintenance pass. Walks through the pin update, verifies the recurring quirks that have bitten us before (IMGUI_DISABLE_OBSOLETE_FUNCTIONS preservation, ImGuiInputTextFlags_EnterReturnsTrue correctness), and the manual smoke test that catches regressions the build alone won't.
 ---
 
-`dep/cimgui.wrap` tracks the `docking_inter` branch of github.com/cimgui/cimgui — a rolling branch with no upstream tags. We pin a specific commit SHA so builds are reproducible and we can verify the new revision before adopting it. This skill is the deterministic recipe for bumping that pin.
+`dep/cimgui.wrap` tracks the `docking_inter` branch of our fork at github.com/octalium/cimgui (a mirror of cimgui/cimgui's `docking_inter` — a rolling branch with no upstream tags). We pin a specific commit SHA so builds are reproducible and we can verify the new revision before adopting it. The fork insulates us from upstream history rewrites or branch deletion; upstream sync is manual / on-demand. This skill is the deterministic recipe for bumping that pin.
 
 > Aperture's meson uses `subproject_dir: 'dep'` (set in `meson.build`), so fetched subproject sources land under `dep/<n>/`, not the default `subprojects/<name>/`. The recipe below assumes that layout.
 
@@ -22,9 +22,16 @@ description: Bump the pinned cimgui revision in dep/cimgui.wrap to a newer upstr
 
 ### 1. Pick the new SHA
 
+First, fast-forward the fork's `docking_inter` from upstream so the SHA you choose is present on `octalium/cimgui` (the wrap fetches from the fork). On the GitHub UI the fork's "Sync fork" button does this; from the CLI:
+
 ```
-cd /tmp && git clone --depth 200 https://github.com/cimgui/cimgui.git
+cd /tmp && git clone https://github.com/octalium/cimgui.git
 cd cimgui
+git remote add upstream https://github.com/cimgui/cimgui.git
+git fetch upstream docking_inter
+git checkout docking_inter
+git merge --ff-only upstream/docking_inter
+git push origin docking_inter
 git log --oneline origin/docking_inter | head -20
 ```
 
@@ -36,15 +43,20 @@ Edit `dep/cimgui.wrap`. Change the `revision` line to the new SHA, and update th
 
 ```
 [wrap-git]
-url = https://github.com/cimgui/cimgui.git
-# pinned to docking_inter HEAD as of YYYY-MM-DD (branch is rolling; no upstream tags on it)
+url = https://github.com/octalium/cimgui.git
+# pinned to docking_inter on the octalium/cimgui fork as of YYYY-MM-DD.
+# the fork mirrors cimgui/cimgui's docking_inter so we own history and are
+# insulated from upstream rewrites or branch deletion. upstream sync is
+# manual / on-demand: when we want newer upstream commits, fast-forward the
+# fork's docking_inter from cimgui/cimgui and bump `revision` here.
 revision = <new-sha>
-depth = 1
+# do not re-add `depth = 1` without rethinking pinning: a shallow clone fetches only
+# branch HEAD and silently defeats `revision`, so fresh checkouts drift off the pin.
 clone-recursive = true
 patch_directory = cimgui
 ```
 
-Preserve **every other line** verbatim. `patch_directory = cimgui` is load-bearing — it tells meson to apply the patches in `dep/cimgui/` (currently the meson.build that builds cimgui) over the upstream checkout.
+Preserve **every other line** verbatim. `patch_directory = cimgui` is load-bearing — it tells meson to apply the patches in `dep/cimgui/` (currently the meson.build that builds cimgui) over the upstream checkout. Never re-add `depth = 1` — it silently defeats the pin (see #502).
 
 ### 3. Re-fetch and build
 
