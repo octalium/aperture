@@ -2,7 +2,8 @@
 url = https://github.com/cktan/tomlc99.git
 # pinned to upstream master HEAD as of 2026-05-24 (no upstream tags exist)
 revision = 29076dfd095bbbbd50a3c1b2760d29f4b83e74ac
-depth = 1
+# do not re-add `depth = 1` without rethinking pinning: a shallow clone fetches only
+# branch HEAD and silently defeats `revision`, so fresh checkouts drift off the pin.
 patch_directory = tomlc99
 
 [provide]
