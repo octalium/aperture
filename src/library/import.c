@@ -90,6 +90,11 @@ void ap_import_settings_save(ap_library *lib, const ap_import_settings *s)
 
 // ----- filename formatting ------------------------------------------
 
+// Worst-case substitution length. {ORIG} expands to the source stem,
+// which import_one caps at AP_IMPORT_STEM_LEN bytes; the date/time
+// tokens fit trivially. Keep these two in lockstep.
+#define AP_IMPORT_REP_LEN AP_IMPORT_STEM_LEN
+
 // Expand the rename pattern. `stem` is the source basename without its
 // extension; the extension is appended by the caller.
 static void format_name(const char *pattern, const char *stem,
@@ -111,7 +116,7 @@ static void format_name(const char *pattern, const char *stem,
         }
         char tok[16];
         size_t tlen = (size_t)(end - p - 1);
-        char rep[64];
+        char rep[AP_IMPORT_REP_LEN];
         rep[0] = '\0';
         if (tlen < sizeof(tok)) {
             memcpy(tok, p + 1, tlen);
@@ -333,7 +338,7 @@ static import_one_result import_one(const char *src, const char *dest_dir,
         ext = "";
     }
 
-    char   stem[256];
+    char   stem[AP_IMPORT_STEM_LEN];
     size_t stem_len = ext[0] ? (size_t)(ext - base) : strlen(base);
     if (stem_len >= sizeof(stem)) {
         stem_len = sizeof(stem) - 1;
