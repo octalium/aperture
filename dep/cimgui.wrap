@@ -1,6 +1,10 @@
 [wrap-git]
-url = https://github.com/cimgui/cimgui.git
-# pinned to docking_inter HEAD as of 2026-05-24 (branch is rolling; no upstream tags on it)
+url = https://github.com/octalium/cimgui.git
+# pinned to docking_inter on the octalium/cimgui fork as of 2026-05-27.
+# the fork mirrors cimgui/cimgui's docking_inter so we own history and are
+# insulated from upstream rewrites or branch deletion. upstream sync is
+# manual / on-demand: when we want newer upstream commits, fast-forward the
+# fork's docking_inter from cimgui/cimgui and bump `revision` here.
 revision = 07fde25e7aff0b2b3eb536dd162d5ead162609d8
 # do not re-add `depth = 1` without rethinking pinning: a shallow clone fetches only
 # branch HEAD and silently defeats `revision`, so fresh checkouts drift off the pin.
