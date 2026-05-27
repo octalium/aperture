@@ -11,6 +11,11 @@ extern "C" {
 
 #define AP_IMPORT_SUBDIR_LEN  64
 #define AP_IMPORT_PATTERN_LEN 256
+// Reserved size, including the trailing NUL, for a source file's
+// basename stem (filename minus extension) during an import. Sized to
+// accommodate the long descriptive basenames that some camera bodies
+// and pre-organized libraries produce.
+#define AP_IMPORT_STEM_LEN    256
 
 // Filename handling for copied files.
 typedef enum {
