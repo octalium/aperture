@@ -14,8 +14,6 @@
 // CMT1 child near file start for the bodies we have shipped tests for.
 #define EXIF_READ_BYTES (256u * 1024u)
 
-// ----- byte readers --------------------------------------------------
-
 static uint16_t rd_u16(const uint8_t *p, bool le)
 {
     return le ? (uint16_t)(p[0] | (p[1] << 8))
@@ -33,8 +31,6 @@ static uint32_t rd_u32(const uint8_t *p, bool le)
                            ((uint32_t)p[2] <<  8) |
                             (uint32_t)p[3]);
 }
-
-// ----- TIFF IFD walk -------------------------------------------------
 
 // EXIF tags of interest.
 #define TAG_MAKE               0x010F
@@ -230,8 +226,6 @@ static void parse_tiff(exif_ctx *ctx)
     }
 }
 
-// ----- CR3 (ISO BMFF) ------------------------------------------------
-
 // CR3 wraps EXIF inside a `CMT1` box that contains a TIFF blob. The
 // path is moov.uuid(85c0b687...).CMT1. We scan the file head for the
 // `CMT1` four-byte marker — the box header (size + name) sits right
@@ -273,8 +267,6 @@ static bool looks_like_bmff(const uint8_t *buf, size_t len)
     if (len < 12) return false;
     return buf[4] == 'f' && buf[5] == 't' && buf[6] == 'y' && buf[7] == 'p';
 }
-
-// ----- public --------------------------------------------------------
 
 int ap_exif_read_buf(const unsigned char *buf, size_t len,
                      ap_exif_fields *out)

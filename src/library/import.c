@@ -23,8 +23,6 @@
 
 #define BLAKE3_HEX_LEN (BLAKE3_OUT_LEN * 2 + 1)
 
-// ----- settings -----------------------------------------------------
-
 #define KEY_SUBDIR    "import.subdir"
 #define KEY_NAMING    "import.naming"
 #define KEY_PATTERN   "import.pattern"
@@ -88,8 +86,6 @@ void ap_import_settings_save(ap_library *lib, const ap_import_settings *s)
     ap_library_setting_set(lib, KEY_STRICT_ID, num);
 }
 
-// ----- filename formatting ------------------------------------------
-
 // Worst-case substitution length. {ORIG} expands to the source stem,
 // which import_one caps at AP_IMPORT_STEM_LEN bytes; the date/time
 // tokens fit trivially. Keep these two in lockstep.
@@ -139,8 +135,6 @@ static void format_name(const char *pattern, const char *stem,
     out[o] = '\0';
 }
 
-// ----- BLAKE3 helpers -----------------------------------------------
-
 // Encode `len` bytes from `src` as lowercase hex into `dst`, which must
 // be at least 2*len+1 bytes long.
 static void hex_encode(const uint8_t *src, size_t len, char *dst)
@@ -152,8 +146,6 @@ static void hex_encode(const uint8_t *src, size_t len, char *dst)
     }
     dst[2 * len] = '\0';
 }
-
-// ----- file copy + stream hash ------------------------------------
 
 // Copy `src` to `dst`, streaming through BLAKE3 as data flows. On
 // success writes the lowercase hex digest into `out_hex` (must be at
@@ -248,8 +240,6 @@ static bool same_file(const char *a, const char *b)
     return realpath(a, ra) && realpath(b, rb) && strcmp(ra, rb) == 0;
 }
 
-// ----- SQLite dedupe helpers ----------------------------------------
-
 // Upsert the dedupe columns for `rel_path` in `db`. The import runs
 // before the post-import library reopen has scanned the new files
 // into the photos table, so a plain UPDATE would silently affect
@@ -311,8 +301,6 @@ static int db_find_identity(sqlite3 *db, const char *identity,
     sqlite3_finalize(st);
     return found;
 }
-
-// ----- per-file import ----------------------------------------------
 
 typedef enum {
     IMPORT_ONE_IMPORTED,
@@ -502,8 +490,6 @@ static import_one_result import_one(const char *src, const char *dest_dir,
 
     return renamed ? IMPORT_ONE_RENAMED : IMPORT_ONE_IMPORTED;
 }
-
-// ----- recursive walk -----------------------------------------------
 
 typedef struct {
     char  **paths;

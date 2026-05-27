@@ -65,8 +65,7 @@ struct ap_library {
     int  group_count;
 };
 
-// ----- registry: <app_root>/aperture.db, libraries(id, path, created_at) -----
-
+// registry: <app_root>/aperture.db, libraries(id, path, created_at)
 static const char *REGISTRY_SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS libraries ("
     "    id         TEXT PRIMARY KEY,"
@@ -791,8 +790,6 @@ int ap_registry_list(ap_registry_entry *out, int max)
     sqlite3_close(reg);
     return n;
 }
-
-// ----- per-library db: photos table -----
 
 // Tables are created first so backfill_culling_columns can ALTER an
 // existing photos table to add the rating / flag / color columns before

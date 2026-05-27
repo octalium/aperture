@@ -26,7 +26,6 @@
 // calibration and Manual otherwise.
 //
 // Parameter layout
-// ----------------
 // Float params:
 //   SLOT_MODE      (0)  0 = Auto, 1 = Manual
 //   SLOT_FOCAL_MM  (1)  Focal length in mm; 0 = take from EXIF
