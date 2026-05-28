@@ -5,10 +5,10 @@
 # common desktop stack. Dependencies the runtime does NOT ship
 # (glfw, lensfun, libraw) are built as modules below. The remaining
 # vendored deps that need a fetch (cimgui, lcms2, cJSON,
-# nativefiledialog, tomlc99) come in via meson wraps under dep/, and
-# their sources are pinned alongside the aperture module so
-# flatpak-builder can build offline. In-tree wraps (blake3) need no
-# source entry.
+# nativefiledialog, tomlc99) live as git submodules under
+# dep/<name>/upstream/; their sources are pinned alongside the
+# aperture module so flatpak-builder can build offline. In-tree
+# vendored copies (blake3) need no source entry.
 #
 # Bump runtime-version in lockstep with the freedesktop release we
 # target. 24.08 is the current LTS as of 2026; 25.08 supersedes it
@@ -93,46 +93,40 @@ modules:
         # off main.
         branch: main
 
-      # vendored wrap sources placed where meson expects them
-      # (subproject_dir = dep/). meson runs with --wrap-mode=nodownload
-      # so it must find each subproject already extracted.
-
-      - type: archive
-        url: https://github.com/mm2/Little-CMS/archive/refs/tags/lcms2.19.tar.gz
-        sha256: 6acc3eb5fac194acc85331194133ad1d4a60419dad16b3bc225a7d27380a5b3a
-        dest: dep/lcms2
+      # vendored submodule sources placed where each shim subproject's
+      # meson.build expects them (dep/<name>/upstream/). The commit
+      # for each is the SHA the .gitmodules / outer-tree gitlink pins;
+      # bump in lockstep when the submodule pins change.
 
       - type: git
         url: https://github.com/cimgui/cimgui.git
         commit: 07fde25e7aff0b2b3eb536dd162d5ead162609d8
-        dest: dep/cimgui
+        dest: dep/cimgui/upstream
 
       - type: git
-        url: https://github.com/btzy/nativefiledialog-extended.git
-        tag: v1.3.0
-        # wrap base name is "nativefiledialog" (file: dep/nativefiledialog.wrap)
-        dest: dep/nativefiledialog
+        url: https://github.com/ocornut/imgui.git
+        commit: b61e56346a92cfcaf1f43a545ca37b0b32239654
+        dest: dep/cimgui/upstream/imgui
 
       - type: git
         url: https://github.com/cktan/tomlc99.git
         commit: 29076dfd095bbbbd50a3c1b2760d29f4b83e74ac
-        dest: dep/tomlc99
+        dest: dep/tomlc99/upstream
+
+      - type: git
+        url: https://github.com/mm2/Little-CMS.git
+        tag: lcms2.19
+        dest: dep/lcms2/upstream
 
       - type: git
         url: https://github.com/DaveGamble/cJSON.git
         tag: v1.7.19
-        dest: dep/cJSON
+        dest: dep/cJSON/upstream
 
-      # meson's --wrap-mode=nodownload skips patch_directory overlay,
-      # so we replicate it manually for every wrap that relies on one.
-      # All five vendored wraps (cimgui, cJSON, lcms2, nativefiledialog,
-      # tomlc99) ship our meson.build via dep/packagefiles/<name>/ and
-      # would otherwise fail dependency resolution in order of first
-      # use in the root meson.build. Runs during source extraction,
-      # before meson setup. The trailing /. copies hidden files too.
-      - type: shell
-        commands:
-          - 'for d in cimgui cJSON lcms2 nativefiledialog tomlc99; do cp -r dep/packagefiles/$d/. dep/$d/; done'
+      - type: git
+        url: https://github.com/btzy/nativefiledialog-extended.git
+        tag: v1.3.0
+        dest: dep/nativefiledialog/upstream
 
 cleanup:
   - /include

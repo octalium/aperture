@@ -19,6 +19,8 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: install system dependencies
         run: |
@@ -46,13 +48,8 @@ jobs:
         with:
           path: |
             dep/packagecache
-            dep/cJSON
-            dep/cimgui
-            dep/lcms2
             dep/libpng-1.6.58
-            dep/nativefiledialog-extended-1.3.0
             dep/tiff-4.7.1
-            dep/tomlc99
           key: meson-wraps-${{ runner.os }}-${{ hashFiles('dep/*.wrap') }}
 
       - name: configure
