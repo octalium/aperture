@@ -1,14 +1,13 @@
 # Flatpak manifest for aperture.
 #
-# Builds against the freedesktop runtime (24.08 LTS) which already
-# provides Vulkan loader, libpng, libtiff, libjpeg, sqlite3, and the
-# common desktop stack. Dependencies the runtime does NOT ship
-# (glfw, lensfun, libraw) are built as modules below. The remaining
-# vendored deps that need a fetch (cimgui, lcms2, cJSON,
-# nativefiledialog, tomlc99, mbedtls) live as git submodules under
-# dep/<name>/upstream/; their sources are pinned alongside the
-# aperture module so flatpak-builder can build offline. In-tree
-# vendored copies (blake3) need no source entry.
+# Builds against the freedesktop runtime (24.08 LTS) which provides
+# the Vulkan loader, libpng, libtiff, and the common desktop stack.
+# The one dep the runtime does NOT ship that we don't vendor —
+# lensfun — is built as a module below. Everything else is vendored
+# from the aperture tree: git submodules at dep/<name>/upstream/ for
+# cimgui, lcms2, cJSON, nativefiledialog, tomlc99, glfw, libraw,
+# libjpeg-turbo, vulkan-headers, and mbedtls; in-tree direct copies
+# for blake3 and sqlite3 (no source entry needed for those).
 #
 # Bump runtime-version in lockstep with the freedesktop release we
 # target. 24.08 is the current LTS as of 2026; 25.08 supersedes it
@@ -37,19 +36,6 @@ finish-args:
   - --talk-name=org.freedesktop.portal.FileChooser
 
 modules:
-  - name: glfw
-    buildsystem: cmake-ninja
-    config-opts:
-      - -DCMAKE_BUILD_TYPE=Release
-      - -DBUILD_SHARED_LIBS=ON
-      - -DGLFW_BUILD_EXAMPLES=OFF
-      - -DGLFW_BUILD_TESTS=OFF
-      - -DGLFW_BUILD_DOCS=OFF
-    sources:
-      - type: archive
-        url: https://github.com/glfw/glfw/releases/download/3.4/glfw-3.4.zip
-        sha256: b5ec004b2712fd08e8861dc271428f048775200a2df719ccf575143ba749a3e9
-
   - name: lensfun
     buildsystem: cmake-ninja
     config-opts:
@@ -62,17 +48,6 @@ modules:
       - type: archive
         url: https://github.com/lensfun/lensfun/archive/v0.3.4.tar.gz
         sha256: dafb39c08ef24a0e2abd00d05d7341b1bf1f0c38bfcd5a4c69cf5f0ecb6db112
-
-  - name: libraw
-    buildsystem: autotools
-    config-opts:
-      - --disable-static
-      - --enable-shared
-      - --disable-examples
-    sources:
-      - type: archive
-        url: https://www.libraw.org/data/LibRaw-0.21.4.tar.gz
-        sha256: 6be43f19397e43214ff56aab056bf3ff4925ca14012ce5a1538a172406a09e63
 
   - name: aperture
     buildsystem: meson
@@ -134,6 +109,26 @@ modules:
         url: https://github.com/Mbed-TLS/mbedtls.git
         tag: v3.6.4
         dest: dep/mbedtls/upstream
+
+      - type: git
+        url: https://github.com/KhronosGroup/Vulkan-Headers.git
+        tag: vulkan-sdk-1.4.350.0
+        dest: dep/vulkan-headers/upstream
+
+      - type: git
+        url: https://github.com/glfw/glfw.git
+        tag: '3.4'
+        dest: dep/glfw/upstream
+
+      - type: git
+        url: https://github.com/libjpeg-turbo/libjpeg-turbo.git
+        tag: 3.1.4.1
+        dest: dep/libjpeg-turbo/upstream
+
+      - type: git
+        url: https://github.com/LibRaw/LibRaw.git
+        tag: 0.22.1
+        dest: dep/libraw/upstream
 
 cleanup:
   - /include
