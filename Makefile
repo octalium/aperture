@@ -6,7 +6,13 @@ BUILD_DIR    ?= build
 PREFIX       ?= /usr/local
 BUILDTYPE    ?= release
 
-.PHONY: help build setup compile install test clean flatpak app macos
+.PHONY: help build setup compile install test clean flatpak app macos dep-overlays
+
+# submodules whose meson build description lives in dep/packagefiles/<name>/
+# rather than upstream. linked into the submodule worktree so meson finds
+# them at the conventional path; symlinks are untracked (the submodule
+# worktree belongs to its own repo) and re-created here on demand.
+DEP_OVERLAYS := cimgui tomlc99 lcms2 cJSON nativefiledialog
 
 help:
 	@echo "common targets:"
@@ -20,7 +26,12 @@ help:
 	@echo ""
 	@echo "variables: BUILD_DIR (=$(BUILD_DIR)), PREFIX (=$(PREFIX)), BUILDTYPE (=$(BUILDTYPE))"
 
-$(BUILD_DIR)/build.ninja:
+dep-overlays:
+	@for name in $(DEP_OVERLAYS); do \
+		ln -sfn ../packagefiles/$$name/meson.build dep/$$name/meson.build; \
+	done
+
+$(BUILD_DIR)/build.ninja: dep-overlays
 	meson setup $(BUILD_DIR) --buildtype=$(BUILDTYPE) --prefix=$(PREFIX)
 
 setup: $(BUILD_DIR)/build.ninja

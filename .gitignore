@@ -16,12 +16,10 @@ compile_commands.json
 .cache/
 .ccls-cache/
 
-# Meson subprojects (lives in dep/): track .wrap files and our overlay
-# files in packagefiles/, ignore fetched-source subdirectories and the
-# transient .wraplock (revisit if we start pinning revisions explicitly).
-/dep/*/
-!/dep/*.wrap
-!/dep/packagefiles/
+# Meson subprojects (lives in dep/): submodules and overlays are tracked;
+# the wrapdb fetches (libpng-*, tiff-*) and meson's transient cache are not.
+/dep/libpng-*/
+/dep/tiff-*/
 /dep/packagecache/
 /dep/.wraplock
 

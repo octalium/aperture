@@ -1,8 +1,0 @@
-[wrap-git]
-url = https://github.com/DaveGamble/cJSON.git
-revision = v1.7.19
-depth = 1
-patch_directory = cJSON
-
-[provide]
-cjson = cjson_dep

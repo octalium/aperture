@@ -10,16 +10,34 @@ aperture is C + Vulkan + Dear ImGui, built with [Meson](https://mesonbuild.com/)
 ### System dependencies
 
 See [README.md](README.md#distro-dependencies) for per-distro package
-lists. Wrap policy (which deps are vendored, which are pulled from the
-system) is documented in [`dep/README.md`](dep/README.md).
+lists. Vendoring policy (which deps are submodules, which are wraps,
+which come from the system) is documented in [`dep/README.md`](dep/README.md).
+
+### After clone
+
+Most vendored deps under `dep/` are git submodules. Either clone with
+`git clone --recursive`, or — for an existing clone — run:
+
+```
+git submodule update --init --recursive
+```
+
+The `--recursive` is required: `dep/cimgui` itself has Dear ImGui as a
+nested submodule.
 
 ### Build + run
 
 ```
-meson setup build
-meson compile -C build
+make build
 ./build/aperture
 ```
+
+`make build` (and `make test`) routes through a small `dep-overlays`
+target that stages our overlay `meson.build` files into the
+corresponding submodule worktrees as symlinks — meson finds them at the
+conventional subproject path that way. Running `meson setup build`
+directly works too, but only after `make dep-overlays` has been run at
+least once after a fresh clone (or `git submodule update --init`).
 
 For a release build with LTO, stripping, and reproducibility flags:
 

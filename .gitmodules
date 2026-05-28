@@ -1,0 +1,15 @@
+[submodule "dep/cimgui"]
+	path = dep/cimgui
+	url = https://github.com/cimgui/cimgui.git
+[submodule "dep/tomlc99"]
+	path = dep/tomlc99
+	url = https://github.com/cktan/tomlc99.git
+[submodule "dep/lcms2"]
+	path = dep/lcms2
+	url = https://github.com/mm2/Little-CMS.git
+[submodule "dep/cJSON"]
+	path = dep/cJSON
+	url = https://github.com/DaveGamble/cJSON.git
+[submodule "dep/nativefiledialog"]
+	path = dep/nativefiledialog
+	url = https://github.com/btzy/nativefiledialog-extended.git
