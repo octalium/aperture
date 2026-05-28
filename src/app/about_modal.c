@@ -52,9 +52,9 @@ void draw_about_modal(ap_app *app)
     // dependency() calls in meson.build (system). update both lists
     // together whenever a dep is added, removed, or moved.
     igTextDisabled("cimgui, lcms2, libpng, libtiff, tomlc99, blake3, cJSON,");
-    igTextDisabled("nativefiledialog-extended.");
+    igTextDisabled("nativefiledialog-extended, mbedtls (linux only).");
     igTextDisabled("System: vulkan, glfw3, libraw, lensfun, sqlite3,");
-    igTextDisabled("libjpeg, libcurl.");
+    igTextDisabled("libjpeg.");
 
     igSeparator();
 

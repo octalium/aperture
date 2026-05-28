@@ -13,3 +13,6 @@
 [submodule "dep/nativefiledialog/upstream"]
 	path = dep/nativefiledialog/upstream
 	url = https://github.com/btzy/nativefiledialog-extended.git
+[submodule "dep/mbedtls/upstream"]
+	path = dep/mbedtls/upstream
+	url = https://github.com/Mbed-TLS/mbedtls.git

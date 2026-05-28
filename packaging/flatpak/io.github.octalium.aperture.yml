@@ -5,7 +5,7 @@
 # common desktop stack. Dependencies the runtime does NOT ship
 # (glfw, lensfun, libraw) are built as modules below. The remaining
 # vendored deps that need a fetch (cimgui, lcms2, cJSON,
-# nativefiledialog, tomlc99) live as git submodules under
+# nativefiledialog, tomlc99, mbedtls) live as git submodules under
 # dep/<name>/upstream/; their sources are pinned alongside the
 # aperture module so flatpak-builder can build offline. In-tree
 # vendored copies (blake3) need no source entry.
@@ -127,6 +127,13 @@ modules:
         url: https://github.com/btzy/nativefiledialog-extended.git
         tag: v1.3.0
         dest: dep/nativefiledialog/upstream
+
+      # mbedtls's own framework/ submodule is omitted — it ships
+      # test scripts only; the library build does not reference it.
+      - type: git
+        url: https://github.com/Mbed-TLS/mbedtls.git
+        tag: v3.6.4
+        dest: dep/mbedtls/upstream
 
 cleanup:
   - /include

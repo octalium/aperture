@@ -2,15 +2,15 @@
 
 #include "core/log.h"
 #include "core/version.h"
-
-#include <curl/curl.h>
+#include "net/http.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define AP_UPDATE_MANIFEST_MAX_BYTES (256u * 1024u)
-#define AP_UPDATE_FETCH_TIMEOUT_S    15L
+#define AP_UPDATE_FETCH_TIMEOUT_S    15
+#define AP_UPDATE_MAX_REDIRECTS      5
 
 typedef struct {
     char  *buf;
@@ -19,28 +19,27 @@ typedef struct {
     bool   overflow;
 } fetch_buf;
 
-static size_t fetch_write(char *data, size_t size, size_t nmemb, void *userp)
+static size_t fetch_write(const char *data, size_t len, void *userp)
 {
     fetch_buf *b = (fetch_buf *)userp;
-    size_t add = size * nmemb;
     if (b->overflow) return 0;
-    if (b->len + add + 1 > AP_UPDATE_MANIFEST_MAX_BYTES) {
+    if (b->len + len + 1 > AP_UPDATE_MANIFEST_MAX_BYTES) {
         b->overflow = true;
         return 0;
     }
-    if (b->len + add + 1 > b->cap) {
+    if (b->len + len + 1 > b->cap) {
         size_t cap = b->cap ? b->cap : 4096;
-        while (cap < b->len + add + 1) cap *= 2;
+        while (cap < b->len + len + 1) cap *= 2;
         if (cap > AP_UPDATE_MANIFEST_MAX_BYTES) cap = AP_UPDATE_MANIFEST_MAX_BYTES;
         char *p = realloc(b->buf, cap);
         if (!p) return 0;
         b->buf = p;
         b->cap = cap;
     }
-    memcpy(b->buf + b->len, data, add);
-    b->len += add;
+    memcpy(b->buf + b->len, data, len);
+    b->len += len;
     b->buf[b->len] = '\0';
-    return add;
+    return len;
 }
 
 void ap_update_check_run(ap_work_item *self)
@@ -50,40 +49,30 @@ void ap_update_check_run(ap_work_item *self)
     j->newer = false;
     j->error[0] = '\0';
 
-    CURL *curl = curl_easy_init();
-    if (!curl) {
-        snprintf(j->error, sizeof(j->error), "curl init failed");
-        return;
-    }
-
     fetch_buf buf = {0};
     char user_agent[128];
     snprintf(user_agent, sizeof(user_agent),
              "aperture/%s update-check", j->current_version);
 
-    curl_easy_setopt(curl, CURLOPT_URL,             j->url);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION,  1L);
-    curl_easy_setopt(curl, CURLOPT_MAXREDIRS,       5L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT,         AP_UPDATE_FETCH_TIMEOUT_S);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT,  AP_UPDATE_FETCH_TIMEOUT_S);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT,       user_agent);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,   fetch_write);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA,       &buf);
+    ap_http_request req = {
+        .url           = j->url,
+        .user_agent    = user_agent,
+        .timeout_s     = AP_UPDATE_FETCH_TIMEOUT_S,
+        .max_redirects = AP_UPDATE_MAX_REDIRECTS,
+        .write_fn      = fetch_write,
+        .write_user    = &buf,
+    };
+    ap_http_response resp;
+    ap_http_get(&req, &resp);
 
-    CURLcode rc = curl_easy_perform(curl);
-    long http_status = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
-    curl_easy_cleanup(curl);
-
-    if (rc != CURLE_OK) {
-        snprintf(j->error, sizeof(j->error),
-                 "fetch failed: %s", curl_easy_strerror(rc));
+    if (!resp.ok) {
+        snprintf(j->error, sizeof(j->error), "fetch failed: %s", resp.error);
         free(buf.buf);
         return;
     }
-    if (http_status < 200 || http_status >= 300) {
+    if (resp.http_status < 200 || resp.http_status >= 300) {
         snprintf(j->error, sizeof(j->error),
-                 "fetch returned HTTP %ld", http_status);
+                 "fetch returned HTTP %ld", resp.http_status);
         free(buf.buf);
         return;
     }
