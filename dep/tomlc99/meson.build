@@ -6,13 +6,13 @@ project('tomlc99', 'c',
 )
 
 tomlc99_lib = static_library('tomlc99',
-  'toml.c',
-  include_directories: include_directories('.'),
+  'upstream/toml.c',
+  include_directories: include_directories('upstream'),
 )
 
 tomlc99_dep = declare_dependency(
   link_with: tomlc99_lib,
-  include_directories: include_directories('.'),
+  include_directories: include_directories('upstream'),
 )
 
 meson.override_dependency('tomlc99', tomlc99_dep)

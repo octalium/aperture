@@ -2,13 +2,12 @@
 
 Vendored dependencies live here in one of three shapes:
 
-- **git submodule** — upstream cloned under `dep/<name>/`, pinned to a
-  specific commit. Most deps. Build description is our own overlay in
-  `dep/packagefiles/<name>/meson.build` when the upstream doesn't ship
-  meson; the submodule's source tree is read-only from our perspective.
-  The overlay is symlinked into the submodule worktree as
-  `dep/<name>/meson.build` (untracked) by the `dep-overlays` Makefile
-  target so meson finds it at the conventional subproject path.
+- **git submodule** — most deps. The upstream is a submodule at
+  `dep/<name>/upstream/`, pinned to a specific commit. The shim
+  directory `dep/<name>/` (committed in this repo) holds our overlay
+  `meson.build`, which references sources at `upstream/...`. Meson
+  finds the subproject at `dep/<name>/` natively — no wraps, no
+  symlinks, no glue.
 - **wrapdb wrap** — `<name>.wrap` here; meson fetches the source tarball
   and a wrapdb-maintained build patch on demand. Used where the wrapdb
   overlay is mature and writing our own would be net-burden for no gain
@@ -56,23 +55,21 @@ The submodules need to be initialised:
 git submodule update --init --recursive
 ```
 
-`--recursive` is required: `dep/cimgui` has Dear ImGui as a nested
-submodule.
+`--recursive` is required: `dep/cimgui/upstream/` has Dear ImGui as a
+nested submodule.
 
 ## Adding a submodule
 
-1. `git submodule add <upstream-url> dep/<name>` and check out the
-   intended pin: `(cd dep/<name> && git checkout <ref>)`.
-2. If the upstream build doesn't already expose the dep, add an overlay
-   `dep/packagefiles/<name>/meson.build`. The overlay must reference
-   the source files at the paths they live in within the submodule.
-3. Add `<name>` to the `DEP_OVERLAYS` list in the root `Makefile` so
-   the symlink staging picks it up.
-4. Reference it from the root `meson.build` — `dependency()` for
+1. `git submodule add <upstream-url> dep/<name>/upstream` and check out
+   the intended pin: `(cd dep/<name>/upstream && git checkout <ref>)`.
+2. Write `dep/<name>/meson.build` if the upstream doesn't ship one we
+   can use directly. Source paths are relative to `dep/<name>/`, so
+   reference upstream sources as `upstream/...`.
+3. Reference it from the root `meson.build` — `dependency()` for
    fallback deps, `subproject()` for force-vendored ones. If the
    exposed dep name differs from the subproject directory name, add an
    explicit `fallback:` argument (see `nativefiledialog-extended`).
-5. Update the policy table above.
+4. Update the policy table above.
 
 ## Adding a wrap
 

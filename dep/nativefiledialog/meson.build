@@ -14,27 +14,27 @@ if host_machine.system() == 'darwin'
 endif
 
 cpp     = meson.get_compiler('cpp')
-nfd_inc = include_directories('src/include')
+nfd_inc = include_directories('upstream/src/include')
 
 sys      = host_machine.system()
 nfd_src  = []
 nfd_deps = []
 
 if sys == 'windows'
-  nfd_src  = files('src/nfd_win.cpp')
+  nfd_src  = files('upstream/src/nfd_win.cpp')
   nfd_deps = [
     cpp.find_library('ole32'),
     cpp.find_library('uuid'),
     cpp.find_library('shell32'),
   ]
 elif sys == 'darwin'
-  nfd_src  = files('src/nfd_cocoa.m')
+  nfd_src  = files('upstream/src/nfd_cocoa.m')
   nfd_deps = [
     dependency('appleframeworks', modules: ['AppKit', 'Foundation', 'UniformTypeIdentifiers']),
   ]
 else
   # Linux / *BSD — the xdg-desktop-portal backend: D-Bus only, no GTK.
-  nfd_src  = files('src/nfd_portal.cpp')
+  nfd_src  = files('upstream/src/nfd_portal.cpp')
   nfd_deps = [dependency('dbus-1')]
 endif
 

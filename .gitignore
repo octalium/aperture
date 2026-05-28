@@ -16,8 +16,9 @@ compile_commands.json
 .cache/
 .ccls-cache/
 
-# Meson subprojects (lives in dep/): submodules and overlays are tracked;
-# the wrapdb fetches (libpng-*, tiff-*) and meson's transient cache are not.
+# Meson subprojects (lives in dep/): submodule shim dirs (dep/<name>/) are
+# tracked along with their committed overlay meson.build; only the wrapdb
+# fetches (libpng-*, tiff-*) and meson's transient cache are ignored.
 /dep/libpng-*/
 /dep/tiff-*/
 /dep/packagecache/
