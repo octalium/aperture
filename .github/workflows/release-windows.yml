@@ -23,8 +23,11 @@ jobs:
   windows-zip:
     name: portable .zip (x64)
     runs-on: windows-2022
+    # ilammy/msvc-dev-cmd resets VCPKG_ROOT to the VS-bundled vcpkg (which
+    # ships in manifest mode and refuses classic-mode `vcpkg install
+    # <port>`). Each step that needs vcpkg re-pins VCPKG_ROOT in its own
+    # `env:` block so the override sticks after msvc-dev-cmd runs.
     env:
-      VCPKG_ROOT:        ${{ github.workspace }}\vcpkg
       VCPKG_DEFAULT_TRIPLET: x64-windows
     steps:
       - name: checkout
@@ -69,13 +72,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ${{ env.VCPKG_ROOT }}\installed
-            ${{ env.VCPKG_ROOT }}\packages
+            ${{ github.workspace }}\vcpkg\installed
+            ${{ github.workspace }}\vcpkg\packages
           key: vcpkg-windows-x64-lensfun-v1
 
       - name: bootstrap vcpkg + install lensfun
         shell: pwsh
         env:
+          VCPKG_ROOT: ${{ github.workspace }}\vcpkg
           VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-bin-cache
         run: |
           New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
@@ -84,6 +88,7 @@ jobs:
       - name: meson setup
         shell: pwsh
         env:
+          VCPKG_ROOT: ${{ github.workspace }}\vcpkg
           SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
         run: |
           $pcPath = "$env:VCPKG_ROOT\installed\x64-windows\lib\pkgconfig"
@@ -96,12 +101,14 @@ jobs:
       - name: meson compile
         shell: pwsh
         env:
+          VCPKG_ROOT: ${{ github.workspace }}\vcpkg
           SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
         run: meson compile -C build
 
       - name: package portable zip
         shell: pwsh
         env:
+          VCPKG_ROOT: ${{ github.workspace }}\vcpkg
           SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
         run: |
           .\packaging\windows\build-zip.ps1 -Version ${{ steps.meta.outputs.version }}

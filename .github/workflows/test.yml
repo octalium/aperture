@@ -73,8 +73,10 @@ jobs:
   build-windows:
     name: meson compile (windows-2022)
     runs-on: windows-2022
+    # ilammy/msvc-dev-cmd resets VCPKG_ROOT to the VS-bundled vcpkg
+    # (manifest-mode, rejects classic installs). Each subsequent step
+    # re-pins VCPKG_ROOT in its own env block so the override sticks.
     env:
-      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
       VCPKG_DEFAULT_TRIPLET: x64-windows
     steps:
       - name: checkout
@@ -99,20 +101,26 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ${{ env.VCPKG_ROOT }}\installed
-            ${{ env.VCPKG_ROOT }}\packages
+            ${{ github.workspace }}\vcpkg\installed
+            ${{ github.workspace }}\vcpkg\packages
           key: vcpkg-windows-x64-lensfun-v1
 
       - name: bootstrap vcpkg + install lensfun
         shell: pwsh
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}\vcpkg
         run: .\packaging\windows\setup-deps.ps1 -VcpkgRoot $env:VCPKG_ROOT
 
       - name: meson setup
         shell: pwsh
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}\vcpkg
         run: |
           $pcPath = "$env:VCPKG_ROOT\installed\x64-windows\lib\pkgconfig"
           meson setup build --buildtype=debug --pkg-config-path "$pcPath"
 
       - name: meson compile
         shell: pwsh
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}\vcpkg
         run: meson compile -C build
