@@ -38,7 +38,8 @@ meson compile -C build
 On Windows, run from a Developer PowerShell for VS 2022 and use the
 vcpkg-aware setup documented in
 [`packaging/windows/README.md`](packaging/windows/README.md). `make
-windows` wraps the full configure + compile + portable-zip flow.
+windows` wraps the full configure + compile + WiX MSI build in one
+step (requires `dotnet tool install --global wix`).
 
 For a release build with LTO, stripping, and reproducibility flags:
 

@@ -1,13 +1,14 @@
 # Tagged-release Windows build.
 #
-# Trigger: push of a v* tag. Produces a portable x64 .zip containing
-# aperture.exe plus runtime DLLs (lensfun + glib chain via vcpkg;
+# Trigger: push of a v* tag. Produces an x64 .msi installer (WiX v4)
+# bundling aperture.exe + runtime DLLs (lensfun + glib chain via vcpkg;
 # everything else built from source) and attaches it to the GitHub
 # Release for the tag.
 #
-# Installer (MSI / NSIS) and code-signing are intentionally out of
-# scope; revisit when there's appetite. `vulkan-1.dll` is loaded from
-# the user's GPU driver at runtime — we do not bundle it.
+# Code-signing is intentionally out of scope; first-run users see the
+# SmartScreen "unknown publisher" warning until there's appetite for a
+# paid signing cert. `vulkan-1.dll` is loaded from the user's GPU
+# driver at runtime — we do not bundle it.
 
 name: release-windows
 
@@ -20,13 +21,13 @@ permissions:
   contents: write
 
 jobs:
-  windows-zip:
-    name: portable .zip (x64)
+  windows-msi:
+    name: .msi (x64)
     runs-on: windows-2022
-    # ilammy/msvc-dev-cmd resets VCPKG_ROOT to the VS-bundled vcpkg (which
-    # ships in manifest mode and refuses classic-mode `vcpkg install
-    # <port>`). Each step that needs vcpkg re-pins VCPKG_ROOT in its own
-    # `env:` block so the override sticks after msvc-dev-cmd runs.
+    # ilammy/msvc-dev-cmd resets VCPKG_ROOT to the VS-bundled vcpkg
+    # (manifest mode, rejects classic-mode `vcpkg install <port>`).
+    # Each step that needs vcpkg re-pins VCPKG_ROOT in its own env
+    # block so the override sticks past msvc-dev-cmd.
     env:
       VCPKG_DEFAULT_TRIPLET: x64-windows
     steps:
@@ -61,6 +62,15 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+
+      # WiX v4 ships as a dotnet global tool. install up-front so the
+      # packaging step has it on PATH. UI extension is required for the
+      # WixUI_Minimal wizard the .wxs references.
+      - name: install WiX v4 toolset
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix
+          wix extension add --global WixToolset.UI.wixext
 
       # cache the vcpkg install root keyed on the vcpkg port version we
       # pin. when we add a manifest (vcpkg.json) the cache key should
@@ -105,23 +115,23 @@ jobs:
           SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
         run: meson compile -C build
 
-      - name: package portable zip
+      - name: build MSI installer
         shell: pwsh
         env:
           VCPKG_ROOT: ${{ github.workspace }}\vcpkg
           SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
         run: |
-          .\packaging\windows\build-zip.ps1 -Version ${{ steps.meta.outputs.version }}
+          .\packaging\windows\build-msi.ps1 -Version ${{ steps.meta.outputs.version }}
 
       - name: list artifacts
         shell: pwsh
-        run: Get-ChildItem out\aperture-*-windows-x64.zip | Format-List
+        run: Get-ChildItem out\aperture-*-windows-x64.msi | Format-List
 
-      - name: upload .zip to GitHub Release
+      - name: upload .msi to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            out/aperture-*-windows-x64.zip
+            out/aperture-*-windows-x64.msi
           fail_on_unmatched_files: true
           draft: false
           prerelease: ${{ contains(steps.meta.outputs.tag, '-') }}

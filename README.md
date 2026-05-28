@@ -63,16 +63,18 @@ exported."
 
 ### Windows
 
-- **Portable .zip from Releases** (x64, Windows 10 1809+): download
-  `aperture-X.Y.Z-windows-x64.zip` from the latest
-  [GitHub Release](https://github.com/octalium/aperture/releases),
-  unzip anywhere, run `aperture.exe`. A Vulkan-capable GPU + current
-  driver is the only system requirement; `vulkan-1.dll` ships with
-  every modern GPU driver.
+- **.msi from Releases** (x64, Windows 10 1809+): download
+  `aperture-X.Y.Z-windows-x64.msi` from the latest
+  [GitHub Release](https://github.com/octalium/aperture/releases) and
+  double-click to install. Adds a **Start Menu → aperture** shortcut
+  and an Add/Remove Programs entry; uninstall removes everything the
+  installer placed. The .msi is unsigned, so SmartScreen shows an
+  "unknown publisher" prompt on first run — click **More info → Run
+  anyway**. A Vulkan-capable GPU + current driver is the only system
+  requirement; `vulkan-1.dll` ships with every modern GPU driver.
 - **Build from source**: see [`packaging/windows/README.md`](packaging/windows/README.md).
 
-Library and config live under `%APPDATA%\aperture`. Installer (MSI) is
-tracked separately.
+Library and config live under `%APPDATA%\aperture`.
 
 ## Build from source
 

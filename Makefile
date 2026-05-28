@@ -16,7 +16,7 @@ help:
 	@echo "  make flatpak          build a .flatpak bundle (needs flatpak-builder + flathub remote)"
 	@echo "  make app              build Aperture.app (macOS host only; needs dylibbundler)"
 	@echo "  make macos            build Aperture.app + .dmg (macOS host only; needs create-dmg)"
-	@echo "  make windows          build portable .zip (Windows host only; needs MSVC + vcpkg)"
+	@echo "  make windows          build .msi installer (Windows host only; needs MSVC + vcpkg + WiX v4)"
 	@echo "  make clean            remove $(BUILD_DIR)"
 	@echo ""
 	@echo "variables: BUILD_DIR (=$(BUILD_DIR)), PREFIX (=$(PREFIX)), BUILDTYPE (=$(BUILDTYPE))"
@@ -73,7 +73,7 @@ windows:
 		meson setup $(BUILD_DIR) --buildtype=$(BUILDTYPE) \
 			--pkg-config-path "$${VCPKG_ROOT:-dep/vcpkg}/installed/x64-windows/lib/pkgconfig" && \
 		meson compile -C $(BUILD_DIR) && \
-		"$$PS" -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build-zip.ps1 -BuildDir $(BUILD_DIR)
+		"$$PS" -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build-msi.ps1 -BuildDir $(BUILD_DIR)
 
 clean:
 	rm -rf $(BUILD_DIR)
