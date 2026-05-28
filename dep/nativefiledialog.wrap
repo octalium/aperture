@@ -1,8 +1,0 @@
-[wrap-git]
-url = https://github.com/btzy/nativefiledialog-extended.git
-revision = v1.3.0
-depth = 1
-patch_directory = nativefiledialog
-
-[provide]
-nativefiledialog-extended = nfd_dep

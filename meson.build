@@ -66,7 +66,8 @@ libcurl_dep = dependency('libcurl')
 lcms2_dep   = subproject('lcms2').get_variable('lcms2_dep')
 blake3_dep  = subproject('blake3').get_variable('blake3_dep')
 cjson_dep   = subproject('cJSON').get_variable('cjson_dep')
-nfd_dep     = dependency('nativefiledialog-extended')
+nfd_dep     = dependency('nativefiledialog-extended',
+  fallback: ['nativefiledialog', 'nfd_dep'])
 threads_dep = dependency('threads')
 
 aperture_inc = include_directories('src')

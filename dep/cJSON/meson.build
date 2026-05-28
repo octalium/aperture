@@ -6,13 +6,13 @@ project('cjson', 'c',
 )
 
 cjson_lib = static_library('cjson',
-  'cJSON.c',
-  include_directories: include_directories('.'),
+  'upstream/cJSON.c',
+  include_directories: include_directories('upstream'),
 )
 
 cjson_dep = declare_dependency(
   link_with: cjson_lib,
-  include_directories: include_directories('.'),
+  include_directories: include_directories('upstream'),
 )
 
 meson.override_dependency('cjson', cjson_dep)

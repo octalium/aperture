@@ -9,9 +9,9 @@ vulkan_dep = dependency('vulkan')
 glfw_dep   = dependency('glfw3')
 
 cimgui_inc = include_directories(
-  '.',
-  'imgui',
-  'imgui/backends',
+  'upstream',
+  'upstream/imgui',
+  'upstream/imgui/backends',
 )
 
 cimgui_cpp_args = [
@@ -25,14 +25,14 @@ cimgui_cpp_args = [
 
 cimgui_lib = static_library('cimgui',
   [
-    'cimgui.cpp',
-    'imgui/imgui.cpp',
-    'imgui/imgui_demo.cpp',
-    'imgui/imgui_draw.cpp',
-    'imgui/imgui_tables.cpp',
-    'imgui/imgui_widgets.cpp',
-    'imgui/backends/imgui_impl_glfw.cpp',
-    'imgui/backends/imgui_impl_vulkan.cpp',
+    'upstream/cimgui.cpp',
+    'upstream/imgui/imgui.cpp',
+    'upstream/imgui/imgui_demo.cpp',
+    'upstream/imgui/imgui_draw.cpp',
+    'upstream/imgui/imgui_tables.cpp',
+    'upstream/imgui/imgui_widgets.cpp',
+    'upstream/imgui/backends/imgui_impl_glfw.cpp',
+    'upstream/imgui/backends/imgui_impl_vulkan.cpp',
   ],
   cpp_args: cimgui_cpp_args,
   include_directories: cimgui_inc,

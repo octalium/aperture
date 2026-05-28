@@ -10,8 +10,20 @@ aperture is C + Vulkan + Dear ImGui, built with [Meson](https://mesonbuild.com/)
 ### System dependencies
 
 See [README.md](README.md#distro-dependencies) for per-distro package
-lists. Wrap policy (which deps are vendored, which are pulled from the
-system) is documented in [`dep/README.md`](dep/README.md).
+lists. Vendoring policy (which deps are submodules, which are wraps,
+which come from the system) is documented in [`dep/README.md`](dep/README.md).
+
+### After clone
+
+Most vendored deps under `dep/` are git submodules. Either clone with
+`git clone --recursive`, or — for an existing clone — run:
+
+```
+git submodule update --init --recursive
+```
+
+`--recursive` is required: `dep/cimgui/upstream/` itself has Dear ImGui
+as a nested submodule.
 
 ### Build + run
 
@@ -20,6 +32,8 @@ meson setup build
 meson compile -C build
 ./build/aperture
 ```
+
+`make build` is an equivalent shortcut.
 
 For a release build with LTO, stripping, and reproducibility flags:
 

@@ -1,0 +1,15 @@
+[submodule "dep/cimgui/upstream"]
+	path = dep/cimgui/upstream
+	url = https://github.com/cimgui/cimgui.git
+[submodule "dep/tomlc99/upstream"]
+	path = dep/tomlc99/upstream
+	url = https://github.com/cktan/tomlc99.git
+[submodule "dep/lcms2/upstream"]
+	path = dep/lcms2/upstream
+	url = https://github.com/mm2/Little-CMS.git
+[submodule "dep/cJSON/upstream"]
+	path = dep/cJSON/upstream
+	url = https://github.com/DaveGamble/cJSON.git
+[submodule "dep/nativefiledialog/upstream"]
+	path = dep/nativefiledialog/upstream
+	url = https://github.com/btzy/nativefiledialog-extended.git
