@@ -33,12 +33,20 @@ jobs:
           echo "deb [signed-by=/etc/apt/keyrings/lunarg.asc] https://packages.lunarg.com/vulkan jammy main" \
               | sudo tee /etc/apt/sources.list.d/lunarg-vulkan-jammy.list >/dev/null
           sudo apt-get update
+          # x11 + wayland dev headers come transitively from libglfw3-dev
+          # historically, but with glfw built from source via the shim
+          # subproject we need to pull them explicitly. libwayland-bin
+          # ships wayland-scanner, which the wayland-backend custom_targets
+          # in dep/glfw/meson.build invoke at configure time.
           sudo apt-get install -y --no-install-recommends \
               build-essential ninja-build pkg-config python3-pip \
               shaderc libvulkan-dev libglfw3-dev \
               libraw-dev liblensfun-dev libsqlite3-dev libjpeg-dev \
               libtiff-dev libpng-dev libcurl4-openssl-dev \
-              libdbus-1-dev
+              libdbus-1-dev \
+              libxrandr-dev libxinerama-dev libxcursor-dev \
+              libxi-dev libxext-dev libxkbcommon-dev \
+              libwayland-dev libwayland-bin
           glslc --version
           # ubuntu-22.04's apt meson is 0.61; the project requires >=1.3.
           python3 -m pip install --upgrade 'meson>=1.3.0'

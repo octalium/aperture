@@ -47,15 +47,15 @@ if cc.has_argument(repro_flag)
   add_global_arguments(repro_flag, language: ['c', 'cpp'])
 endif
 
-vulkan_dep  = dependency('vulkan')
-glfw_dep    = dependency('glfw3')
+vulkan_dep  = subproject('vulkan-headers').get_variable('vulkan_dep')
+glfw_dep    = subproject('glfw').get_variable('glfw_dep')
 cimgui_dep  = dependency('cimgui')
-libraw_dep  = dependency('libraw')
+libjpeg_dep = subproject('libjpeg-turbo').get_variable('libjpeg_dep')
+libraw_dep  = subproject('libraw').get_variable('libraw_dep')
 # Debian / Ubuntu: sudo apt install liblensfun-dev
 lensfun_dep = dependency('lensfun')
-sqlite3_dep = dependency('sqlite3')
+sqlite3_dep = subproject('sqlite3').get_variable('sqlite3_dep')
 tomlc99_dep = dependency('tomlc99')
-libjpeg_dep = dependency('libjpeg')
 libtiff_dep = dependency('libtiff-4')
 libpng_dep  = dependency('libpng')
 # Built from the wrap unconditionally — a system liblcms2, if present,

@@ -16,3 +16,15 @@
 [submodule "dep/mbedtls/upstream"]
 	path = dep/mbedtls/upstream
 	url = https://github.com/Mbed-TLS/mbedtls.git
+[submodule "dep/vulkan-headers/upstream"]
+	path = dep/vulkan-headers/upstream
+	url = https://github.com/KhronosGroup/Vulkan-Headers.git
+[submodule "dep/glfw/upstream"]
+	path = dep/glfw/upstream
+	url = https://github.com/glfw/glfw.git
+[submodule "dep/libjpeg-turbo/upstream"]
+	path = dep/libjpeg-turbo/upstream
+	url = https://github.com/libjpeg-turbo/libjpeg-turbo.git
+[submodule "dep/libraw/upstream"]
+	path = dep/libraw/upstream
+	url = https://github.com/LibRaw/LibRaw.git
