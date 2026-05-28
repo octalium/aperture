@@ -54,7 +54,7 @@ libjpeg_dep = subproject('libjpeg-turbo').get_variable('libjpeg_dep')
 libraw_dep  = subproject('libraw').get_variable('libraw_dep')
 # Debian / Ubuntu: sudo apt install liblensfun-dev
 lensfun_dep = dependency('lensfun')
-sqlite3_dep = dependency('sqlite3')
+sqlite3_dep = subproject('sqlite3').get_variable('sqlite3_dep')
 tomlc99_dep = dependency('tomlc99')
 libtiff_dep = dependency('libtiff-4')
 libpng_dep  = dependency('libpng')
