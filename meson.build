@@ -58,8 +58,6 @@ tomlc99_dep = dependency('tomlc99')
 libjpeg_dep = dependency('libjpeg')
 libtiff_dep = dependency('libtiff-4')
 libpng_dep  = dependency('libpng')
-# Debian/Ubuntu: libcurl4-openssl-dev. Fedora: libcurl-devel. Arch: curl.
-libcurl_dep = dependency('libcurl')
 # Built from the wrap unconditionally — a system liblcms2, if present,
 # would otherwise be picked ahead of it; vendoring keeps the colour
 # engine version deterministic across machines.
@@ -69,6 +67,18 @@ cjson_dep   = subproject('cJSON').get_variable('cjson_dep')
 nfd_dep     = dependency('nativefiledialog-extended',
   fallback: ['nativefiledialog', 'nfd_dep'])
 threads_dep = dependency('threads')
+
+# HTTP for the update checker. Windows uses WinHTTP (system),
+# macOS uses NSURLSession via Foundation (system), Linux uses a
+# vendored mbedTLS + a small HTTPS GET shim in src/net/.
+http_deps = []
+if host_machine.system() == 'windows'
+  http_deps += cc.find_library('winhttp')
+elif host_machine.system() == 'darwin'
+  http_deps += dependency('Foundation')
+else
+  http_deps += subproject('mbedtls').get_variable('mbedtls_dep')
+endif
 
 aperture_inc = include_directories('src')
 aperture_sources = []
@@ -96,11 +106,10 @@ aperture_deps = [
   lcms2_dep,
   blake3_dep,
   cjson_dep,
-  libcurl_dep,
   nfd_dep,
   threads_dep,
   shaders_dep,
-]
+] + http_deps
 
 aperture_exe = executable(
   'aperture',
