@@ -1,0 +1,120 @@
+# Tagged-release Windows build.
+#
+# Trigger: push of a v* tag. Produces a portable x64 .zip containing
+# aperture.exe plus runtime DLLs (lensfun + glib chain via vcpkg;
+# everything else built from source) and attaches it to the GitHub
+# Release for the tag.
+#
+# Installer (MSI / NSIS) and code-signing are intentionally out of
+# scope; revisit when there's appetite. `vulkan-1.dll` is loaded from
+# the user's GPU driver at runtime — we do not bundle it.
+
+name: release-windows
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  windows-zip:
+    name: portable .zip (x64)
+    runs-on: windows-2022
+    env:
+      VCPKG_ROOT:        ${{ github.workspace }}\vcpkg
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: derive version + epoch from tag
+        id: meta
+        shell: bash
+        run: |
+          tag=${GITHUB_REF#refs/tags/}
+          version=${tag#v}
+          epoch=$(git -C "$GITHUB_WORKSPACE" log -1 --pretty=%ct "$tag")
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "epoch=$epoch" >>"$GITHUB_OUTPUT"
+
+      - name: set up python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: install meson + ninja
+        run: pip install --upgrade 'meson>=1.3.0' ninja
+
+      # windows-2022 already exposes MSVC, but enter-vsdevenv ensures
+      # cl.exe and the matching CRT are on PATH for the meson invocations.
+      - name: enter VS dev env
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # cache the vcpkg install root keyed on the vcpkg port version we
+      # pin. when we add a manifest (vcpkg.json) the cache key should
+      # switch to hashFiles('vcpkg.json'); for now the only port is
+      # lensfun, so a lensfun-rev-bump means a cache-bump on this
+      # workflow too.
+      - name: cache vcpkg installed
+        id: cache-vcpkg
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.VCPKG_ROOT }}\installed
+            ${{ env.VCPKG_ROOT }}\packages
+          key: vcpkg-windows-x64-lensfun-v1
+
+      - name: bootstrap vcpkg + install lensfun
+        shell: pwsh
+        env:
+          VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-bin-cache
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          .\packaging\windows\setup-deps.ps1 -VcpkgRoot $env:VCPKG_ROOT
+
+      - name: meson setup
+        shell: pwsh
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
+        run: |
+          $pcPath = "$env:VCPKG_ROOT\installed\x64-windows\lib\pkgconfig"
+          meson setup build `
+              --buildtype=release `
+              --pkg-config-path "$pcPath" `
+              -Db_lto=true `
+              -Dstrip=true
+
+      - name: meson compile
+        shell: pwsh
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
+        run: meson compile -C build
+
+      - name: package portable zip
+        shell: pwsh
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
+        run: |
+          .\packaging\windows\build-zip.ps1 -Version ${{ steps.meta.outputs.version }}
+
+      - name: list artifacts
+        shell: pwsh
+        run: Get-ChildItem out\aperture-*-windows-x64.zip | Format-List
+
+      - name: upload .zip to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out/aperture-*-windows-x64.zip
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: ${{ contains(steps.meta.outputs.tag, '-') }}

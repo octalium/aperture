@@ -63,8 +63,16 @@ exported."
 
 ### Windows
 
-Tracked in [#375](https://github.com/octalium/aperture/issues/375); not
-yet available.
+- **Portable .zip from Releases** (x64, Windows 10 1809+): download
+  `aperture-X.Y.Z-windows-x64.zip` from the latest
+  [GitHub Release](https://github.com/octalium/aperture/releases),
+  unzip anywhere, run `aperture.exe`. A Vulkan-capable GPU + current
+  driver is the only system requirement; `vulkan-1.dll` ships with
+  every modern GPU driver.
+- **Build from source**: see [`packaging/windows/README.md`](packaging/windows/README.md).
+
+Library and config live under `%APPDATA%\aperture`. Installer (MSI) is
+tracked separately.
 
 ## Build from source
 
@@ -125,6 +133,12 @@ entry, icon, and MIME types are picked up.
 ### macOS
 
 See [`packaging/macos/README.md`](packaging/macos/README.md).
+
+### Windows
+
+See [`packaging/windows/README.md`](packaging/windows/README.md). Native
+MSVC + meson; vcpkg supplies lensfun, everything else builds from the
+submoduled `dep/` tree.
 
 ### Cache refresh (system installs only)
 

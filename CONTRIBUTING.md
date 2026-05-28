@@ -35,6 +35,11 @@ meson compile -C build
 
 `make build` is an equivalent shortcut.
 
+On Windows, run from a Developer PowerShell for VS 2022 and use the
+vcpkg-aware setup documented in
+[`packaging/windows/README.md`](packaging/windows/README.md). `make
+windows` wraps the full configure + compile + portable-zip flow.
+
 For a release build with LTO, stripping, and reproducibility flags:
 
 ```

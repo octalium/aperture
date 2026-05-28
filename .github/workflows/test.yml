@@ -65,3 +65,54 @@ jobs:
 
       - name: test
         run: meson test -C build --print-errorlogs
+
+  # Smoke-build Windows on every PR so regressions surface before a tag
+  # push runs the full release-windows.yml. We only compile + link here;
+  # the test suite is gated to Linux until the vendored dep tree settles
+  # (cross-platform meson test is a follow-up under #442).
+  build-windows:
+    name: meson compile (windows-2022)
+    runs-on: windows-2022
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: set up python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: install meson + ninja
+        run: pip install --upgrade 'meson>=1.3.0' ninja
+
+      - name: enter VS dev env
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: cache vcpkg installed
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.VCPKG_ROOT }}\installed
+            ${{ env.VCPKG_ROOT }}\packages
+          key: vcpkg-windows-x64-lensfun-v1
+
+      - name: bootstrap vcpkg + install lensfun
+        shell: pwsh
+        run: .\packaging\windows\setup-deps.ps1 -VcpkgRoot $env:VCPKG_ROOT
+
+      - name: meson setup
+        shell: pwsh
+        run: |
+          $pcPath = "$env:VCPKG_ROOT\installed\x64-windows\lib\pkgconfig"
+          meson setup build --buildtype=debug --pkg-config-path "$pcPath"
+
+      - name: meson compile
+        shell: pwsh
+        run: meson compile -C build

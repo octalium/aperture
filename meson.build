@@ -18,6 +18,21 @@ if host_machine.system() == 'darwin'
   add_languages('objc', native: false)
 endif
 
+# MSVC quality-of-life: shrink windows.h (skip GDI / cryptography /
+# winsock1) and suppress the deprecation warnings on POSIX-named
+# stdlib functions (snprintf, strdup, getenv...) that aperture uses
+# everywhere. nothing here is functional — these only affect MSVC's
+# warning surface and windows.h transitive include cost.
+if host_machine.system() == 'windows'
+  add_project_arguments(
+    '-DWIN32_LEAN_AND_MEAN',
+    '-DNOMINMAX',
+    '-D_CRT_SECURE_NO_WARNINGS',
+    '-D_CRT_NONSTDC_NO_WARNINGS',
+    language: ['c', 'cpp'],
+  )
+endif
+
 add_project_arguments(
   '-DAPERTURE_VERSION="@0@"'.format(meson.project_version()),
   '-DAP_VERSION_STRING="@0@"'.format(meson.project_version()),
