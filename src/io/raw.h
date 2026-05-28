@@ -1,6 +1,7 @@
 #ifndef APERTURE_IO_RAW_H
 #define APERTURE_IO_RAW_H
 
+#include "io/raw_exts.h"
 #include "photo/metadata.h"
 
 #include <stdbool.h>
@@ -74,9 +75,8 @@ int  ap_raw_capture_time(const char *path, time_t *out);
 // no usable lens-model string; `out` is set to "" in that case.
 int  ap_raw_lens_model(const char *path, char *out, size_t out_len);
 
-// True when `path` (or a bare filename) ends in a supported raw-file
-// extension. The single source of truth for which formats the app
-// treats as raw photos.
-bool ap_raw_is_raw_path(const char *path);
+// ap_raw_is_raw_path lives in io/raw_exts.h (static inline) so the
+// extension list has a single source of truth shared with the library
+// test stub.
 
 #endif
