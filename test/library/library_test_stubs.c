@@ -2,35 +2,17 @@
 // doesn't exercise — keeps the test binary off the heavy GPU /
 // raw / encoder dependency surface.
 
-#define _GNU_SOURCE
+// ap_raw_is_raw_path is supplied as a static inline by io/raw_exts.h
+// (pulled in transitively via io/raw.h), so the test sees the same
+// extension list as production with no manual mirroring.
 
 #include "io/raw.h"
 #include "output/export.h"
 #include "photo/thumbnail.h"
 
-#include <stdbool.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
-
-// only raw-extension check is reachable from library.c during scan.
-// mirrors src/io/raw.c so the test sees the same set of extensions.
-bool ap_raw_is_raw_path(const char *path)
-{
-    static const char *const RAW_EXTENSIONS[] = {
-        ".nef", ".cr2", ".cr3", ".raf", ".arw",
-        ".dng", ".orf", ".rw2", ".pef", ".srw",
-        NULL,
-    };
-    if (!path) return false;
-    const char *dot = strrchr(path, '.');
-    if (!dot) return false;
-    for (int i = 0; RAW_EXTENSIONS[i]; i++) {
-        if (strcasecmp(dot, RAW_EXTENSIONS[i]) == 0) return true;
-    }
-    return false;
-}
 
 // library does not actually allocate thumbnails in these tests — every
 // thumbs[] slot stays NULL. ap_thumbnail_destroy(NULL) is a no-op.
