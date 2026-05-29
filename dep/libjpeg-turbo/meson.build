@@ -58,7 +58,12 @@ else
   jconfigint_data.set('THREAD_LOCAL', '__thread')
 endif
 
-if cc.compiles('int main(void){return __builtin_ctzl(1L);}',
+# cc.links, not cc.compiles: MSVC's frontend accepts __builtin_ctzl
+# syntactically but emits an unresolved external at link (LNK2019), so
+# only set HAVE_BUILTIN_CTZL when the builtin actually links. on MSVC
+# this stays unset and jconfigint.h auto-selects _BitScanForward64 from
+# HAVE_INTRIN_H + SIZEOF_SIZE_T instead.
+if cc.links('int main(void){return __builtin_ctzl(1L);}',
     name: 'has __builtin_ctzl')
   jconfigint_data.set('HAVE_BUILTIN_CTZL', 1)
 endif
