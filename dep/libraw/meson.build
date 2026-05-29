@@ -119,6 +119,14 @@ libraw_cpp_args = [
   '-DUSE_LCMS2',
 ]
 
+# building libraw as a static lib, so its headers must not annotate the
+# C API with __declspec(dllimport) — MSVC rejects defining a dllimport
+# function (C2491), unlike gcc which ignores the mismatch. LIBRAW_NODLL
+# forces DllDef empty. exposed on the dep too so consumers see the same
+# unannotated declarations the static lib was compiled with.
+libraw_public_args = ['-DLIBRAW_NODLL']
+libraw_cpp_args   += libraw_public_args
+
 libraw_lib = static_library('raw', libraw_sources,
   cpp_args: libraw_cpp_args,
   include_directories: libraw_build_inc,
@@ -128,6 +136,7 @@ libraw_lib = static_library('raw', libraw_sources,
 
 libraw_dep = declare_dependency(
   link_with: libraw_lib,
+  compile_args: libraw_public_args,
   include_directories: libraw_public_inc,
   dependencies: [libjpeg_dep, lcms2_dep],
 )
