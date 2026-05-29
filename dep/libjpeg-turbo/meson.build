@@ -167,9 +167,13 @@ jpeg_lib = static_library('jpeg',
   install: false,
 )
 
+# jpeglib.h includes the generated jconfig.h, so consumers (e.g. libtiff's
+# tif_jpeg.c) need the subproject build root on their include path and the
+# generated headers tracked as sources for correct build ordering.
 libjpeg_dep = declare_dependency(
   link_with: jpeg_lib,
-  include_directories: jpeg_public_inc,
+  sources: [jconfig_h, jconfigint_h, jversion_h],
+  include_directories: [jpeg_public_inc, include_directories('.')],
 )
 
 meson.override_dependency('libjpeg', libjpeg_dep)
