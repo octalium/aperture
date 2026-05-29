@@ -126,49 +126,40 @@ jobs:
         # and exported $VULKAN_SDK; don't re-fetch it.
         run: .\packaging\windows\setup-deps.ps1 -VcpkgRoot $env:VCPKG_ROOT -SkipVulkanSdk
 
-      # sccache speeds incremental MSVC compiles on warm caches. install
-      # via scoop (fast, no admin), point meson at it through
-      # CC_LD/CXX_LD wrappers (sccache wraps cl.exe transparently).
-      - name: install sccache
-        run: |
-          scoop install sccache
-
-      - name: cache sccache store
+      # cache meson's build/ so ninja's incremental graph survives across
+      # runs; only sources / build files changed since the last run are
+      # recompiled. key rotates on any meson.build or source change so a
+      # stale object never masks a real rebuild.
+      - name: cache meson build
         uses: actions/cache@v4
         with:
-          path: ${{ github.workspace }}\.sccache
-          key: sccache-windows-${{ github.sha }}
+          path: ${{ github.workspace }}\build
+          key: meson-build-windows-${{ hashFiles('**/meson.build', 'meson_options.txt', 'src/**', 'dep/**/meson.build') }}
           restore-keys: |
-            sccache-windows-
+            meson-build-windows-
 
       - name: meson setup
         shell: pwsh
         env:
-          VCPKG_ROOT:       ${{ github.workspace }}\vcpkg
-          SCCACHE_DIR:      ${{ github.workspace }}\.sccache
-          SCCACHE_CACHE_SIZE: 2G
-          CC:  sccache cl
-          CXX: sccache cl
+          VCPKG_ROOT: ${{ github.workspace }}\vcpkg
         run: |
           # extend the linker library search path so MSVC finds vulkan-1.lib
           # under $VULKAN_SDK\Lib. msvc-dev-cmd already populated LIB
           # with the VS + Windows SDK paths; we append to it.
           $env:LIB = "$env:VULKAN_SDK\Lib;$env:LIB"
           $pcPath = "$env:VCPKG_ROOT\installed\x64-windows\lib\pkgconfig"
-          meson setup build --buildtype=debug --pkg-config-path "$pcPath"
+          # --reconfigure so a restored build/ picks up flag changes; no-op
+          # on a cold cache where build/ doesn't yet exist.
+          if (Test-Path build) {
+              meson setup build --buildtype=debug --pkg-config-path "$pcPath" --reconfigure
+          } else {
+              meson setup build --buildtype=debug --pkg-config-path "$pcPath"
+          }
 
       - name: meson compile
         shell: pwsh
         env:
-          VCPKG_ROOT:  ${{ github.workspace }}\vcpkg
-          SCCACHE_DIR: ${{ github.workspace }}\.sccache
+          VCPKG_ROOT: ${{ github.workspace }}\vcpkg
         run: |
           $env:LIB = "$env:VULKAN_SDK\Lib;$env:LIB"
           meson compile -C build
-
-      - name: sccache stats
-        shell: pwsh
-        if: always()
-        env:
-          SCCACHE_DIR: ${{ github.workspace }}\.sccache
-        run: sccache --show-stats

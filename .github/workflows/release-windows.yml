@@ -101,28 +101,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
           .\packaging\windows\setup-deps.ps1 -VcpkgRoot $env:VCPKG_ROOT -SkipVulkanSdk
 
-      # sccache speeds incremental MSVC compiles on warm caches.
-      - name: install sccache
-        run: |
-          scoop install sccache
-
-      - name: cache sccache store
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}\.sccache
-          key: sccache-windows-release-${{ github.sha }}
-          restore-keys: |
-            sccache-windows-release-
-            sccache-windows-
-
       - name: meson setup
         shell: pwsh
         env:
-          VCPKG_ROOT:         ${{ github.workspace }}\vcpkg
-          SCCACHE_DIR:        ${{ github.workspace }}\.sccache
-          SCCACHE_CACHE_SIZE: 2G
-          CC:  sccache cl
-          CXX: sccache cl
+          VCPKG_ROOT:        ${{ github.workspace }}\vcpkg
           SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
         run: |
           # extend LIB with $VULKAN_SDK\Lib so cc.find_library('vulkan-1')
@@ -139,19 +121,11 @@ jobs:
       - name: meson compile
         shell: pwsh
         env:
-          VCPKG_ROOT:  ${{ github.workspace }}\vcpkg
-          SCCACHE_DIR: ${{ github.workspace }}\.sccache
+          VCPKG_ROOT:        ${{ github.workspace }}\vcpkg
           SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
         run: |
           $env:LIB = "$env:VULKAN_SDK\Lib;$env:LIB"
           meson compile -C build
-
-      - name: sccache stats
-        shell: pwsh
-        if: always()
-        env:
-          SCCACHE_DIR: ${{ github.workspace }}\.sccache
-        run: sccache --show-stats
 
       - name: build MSI installer
         shell: pwsh
