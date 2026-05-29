@@ -7,6 +7,10 @@
 #   - vcpkg (cloned + bootstrapped under $env:VCPKG_ROOT, default
 #     $repo\dep\vcpkg) if not already present.
 #   - vcpkg install lensfun (pulls in glib + intl + iconv chain).
+#   - vcpkg install pkgconf — meson needs a pkg-config binary on PATH
+#     to read vcpkg's .pc files, and the toolchain ships none. its
+#     tools dir is prepended to PATH for this session and appended to
+#     $GITHUB_PATH under Actions so later workflow steps see it too.
 #   - LunarG Vulkan SDK (silent install) if VULKAN_SDK is not already
 #     set. Supplies `vulkan-1.lib` at $env:VULKAN_SDK\Lib for MSVC's
 #     `cc.find_library('vulkan-1')` at link time. The runtime DLL
@@ -76,6 +80,32 @@ Write-Step "installing lensfun ($Triplet)"
 if ($LASTEXITCODE -ne 0) {
     throw "vcpkg install lensfun failed (exit $LASTEXITCODE)"
 }
+
+# pkgconf provides the pkg-config binary meson needs to read vcpkg's
+# .pc files. installs as pkgconf.exe; meson 1.3+ resolves it by name.
+Write-Step "installing pkgconf ($Triplet)"
+& $vcpkgExe install "pkgconf:$Triplet"
+if ($LASTEXITCODE -ne 0) {
+    throw "vcpkg install pkgconf failed (exit $LASTEXITCODE)"
+}
+
+$pkgconfDir = Join-Path $VcpkgRoot "installed\$Triplet\tools\pkgconf"
+$pkgconfExe = Join-Path $pkgconfDir 'pkgconf.exe'
+if (-not (Test-Path $pkgconfExe)) {
+    throw "pkgconf.exe not found at $pkgconfDir after install"
+}
+$env:PATH = "$pkgconfDir;$env:PATH"
+# meson resolves the binary named by PKG_CONFIG before searching PATH;
+# point it straight at pkgconf so detection can't miss.
+$env:PKG_CONFIG = $pkgconfExe
+if ($env:GITHUB_PATH) {
+    # persist for subsequent workflow steps (separate sessions)
+    Add-Content -Path $env:GITHUB_PATH -Value $pkgconfDir
+}
+if ($env:GITHUB_ENV) {
+    Add-Content -Path $env:GITHUB_ENV -Value "PKG_CONFIG=$pkgconfExe"
+}
+Write-Step "pkgconf on PATH: $pkgconfDir"
 
 if (-not $SkipVulkanSdk) {
     if ($env:VULKAN_SDK -and (Test-Path (Join-Path $env:VULKAN_SDK 'Lib\vulkan-1.lib'))) {
