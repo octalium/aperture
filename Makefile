@@ -59,7 +59,9 @@ macos: app
 
 # windows host detection covers both MSYS/MINGW (uname reports MINGW*/
 # MSYS*) and POSIX-on-Windows toolchains. cross-builds from Linux are
-# out of scope (#434); native MSVC runner only.
+# out of scope (#434); native MSVC runner only. The whole flow runs
+# inside packaging/windows/make-windows.ps1 so env vars set by
+# setup-deps (notably VULKAN_SDK) carry through to meson + build-msi.
 windows:
 	@case "$$(uname -s)" in \
 		MINGW*|MSYS*|CYGWIN*|Windows_NT) ;; \
@@ -69,11 +71,8 @@ windows:
 		echo "make windows needs pwsh or powershell on PATH" >&2; exit 1; \
 	fi
 	@PS=$$(command -v pwsh || command -v powershell); \
-		"$$PS" -NoProfile -ExecutionPolicy Bypass -File packaging/windows/setup-deps.ps1 && \
-		meson setup $(BUILD_DIR) --buildtype=$(BUILDTYPE) \
-			--pkg-config-path "$${VCPKG_ROOT:-dep/vcpkg}/installed/x64-windows/lib/pkgconfig" && \
-		meson compile -C $(BUILD_DIR) && \
-		"$$PS" -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build-msi.ps1 -BuildDir $(BUILD_DIR)
+		"$$PS" -NoProfile -ExecutionPolicy Bypass -File packaging/windows/make-windows.ps1 \
+			-BuildDir "$(BUILD_DIR)" -BuildType "$(BUILDTYPE)"
 
 clean:
 	rm -rf $(BUILD_DIR)

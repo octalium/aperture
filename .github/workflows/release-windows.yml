@@ -72,6 +72,14 @@ jobs:
           dotnet tool install --global wix
           wix extension add --global WixToolset.UI.wixext
 
+      # LunarG Vulkan SDK supplies vulkan-1.lib for link-time;
+      # the runtime DLL is driver-provided on user machines.
+      - name: install Vulkan SDK
+        uses: humbletim/install-vulkan-sdk@v1.2
+        with:
+          version: 1.4.309.0
+          cache:   true
+
       # vcpkg cache key tracks setup-deps.ps1's content: any port
       # add / lensfun version bump / triplet change re-hashes the file
       # and rotates the cache key automatically.
@@ -91,7 +99,7 @@ jobs:
           VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-bin-cache
         run: |
           New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
-          .\packaging\windows\setup-deps.ps1 -VcpkgRoot $env:VCPKG_ROOT
+          .\packaging\windows\setup-deps.ps1 -VcpkgRoot $env:VCPKG_ROOT -SkipVulkanSdk
 
       # sccache speeds incremental MSVC compiles on warm caches.
       - name: install sccache
@@ -117,6 +125,10 @@ jobs:
           CXX: sccache cl
           SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
         run: |
+          # extend LIB with $VULKAN_SDK\Lib so cc.find_library('vulkan-1')
+          # resolves at link time. msvc-dev-cmd already populated LIB
+          # with VS + Windows SDK paths.
+          $env:LIB = "$env:VULKAN_SDK\Lib;$env:LIB"
           $pcPath = "$env:VCPKG_ROOT\installed\x64-windows\lib\pkgconfig"
           meson setup build `
               --buildtype=release `
@@ -130,7 +142,9 @@ jobs:
           VCPKG_ROOT:  ${{ github.workspace }}\vcpkg
           SCCACHE_DIR: ${{ github.workspace }}\.sccache
           SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
-        run: meson compile -C build
+        run: |
+          $env:LIB = "$env:VULKAN_SDK\Lib;$env:LIB"
+          meson compile -C build
 
       - name: sccache stats
         shell: pwsh

@@ -97,6 +97,16 @@ jobs:
         with:
           arch: x64
 
+      # LunarG Vulkan SDK supplies vulkan-1.lib (the import library) so
+      # dep/vulkan-headers/meson.build's `cc.find_library('vulkan-1')`
+      # resolves at link time. The runtime DLL is driver-provided on
+      # end-user machines — the SDK is dev-only.
+      - name: install Vulkan SDK
+        uses: humbletim/install-vulkan-sdk@v1.2
+        with:
+          version: 1.4.309.0
+          cache:   true
+
       # vcpkg cache key tracks setup-deps.ps1's content: any port
       # add / lensfun version bump / triplet change re-hashes the file
       # and rotates the cache key automatically.
@@ -112,7 +122,9 @@ jobs:
         shell: pwsh
         env:
           VCPKG_ROOT: ${{ github.workspace }}\vcpkg
-        run: .\packaging\windows\setup-deps.ps1 -VcpkgRoot $env:VCPKG_ROOT
+        # -SkipVulkanSdk: the action above already installed the SDK
+        # and exported $VULKAN_SDK; don't re-fetch it.
+        run: .\packaging\windows\setup-deps.ps1 -VcpkgRoot $env:VCPKG_ROOT -SkipVulkanSdk
 
       # sccache speeds incremental MSVC compiles on warm caches. install
       # via scoop (fast, no admin), point meson at it through
@@ -138,6 +150,10 @@ jobs:
           CC:  sccache cl
           CXX: sccache cl
         run: |
+          # extend the linker library search path so MSVC finds vulkan-1.lib
+          # under $VULKAN_SDK\Lib. msvc-dev-cmd already populated LIB
+          # with the VS + Windows SDK paths; we append to it.
+          $env:LIB = "$env:VULKAN_SDK\Lib;$env:LIB"
           $pcPath = "$env:VCPKG_ROOT\installed\x64-windows\lib\pkgconfig"
           meson setup build --buildtype=debug --pkg-config-path "$pcPath"
 
@@ -146,7 +162,9 @@ jobs:
         env:
           VCPKG_ROOT:  ${{ github.workspace }}\vcpkg
           SCCACHE_DIR: ${{ github.workspace }}\.sccache
-        run: meson compile -C build
+        run: |
+          $env:LIB = "$env:VULKAN_SDK\Lib;$env:LIB"
+          meson compile -C build
 
       - name: sccache stats
         shell: pwsh

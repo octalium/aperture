@@ -14,6 +14,11 @@ built from source via the submoduled `dep/` tree. `vulkan-1.dll` is
 - Git (for `git clone` of vcpkg and the dep submodules).
 - WiX Toolset v4: `dotnet tool install --global wix` then
   `wix extension add --global WixToolset.UI.wixext`.
+- LunarG [Vulkan SDK](https://vulkan.lunarg.com/sdk/home#windows) for
+  the import library (`vulkan-1.lib`) MSVC links against. The runtime
+  loader DLL (`vulkan-1.dll`) ships with end-user GPU drivers; the SDK
+  is dev-only. `setup-deps.ps1` installs it silently if
+  `$env:VULKAN_SDK` is not already set.
 
 CI mirrors the same setup on `windows-2022` runners.
 
