@@ -3,8 +3,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
-#include <string.h>
-#include <strings.h>
+#include "../core/compat.h"
 
 // Single source of truth for the file extensions Aperture treats as raw
 // photos. Production code reaches it through `io/raw.h`; the library
