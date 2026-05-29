@@ -72,11 +72,9 @@ jobs:
           dotnet tool install --global wix
           wix extension add --global WixToolset.UI.wixext
 
-      # cache the vcpkg install root keyed on the vcpkg port version we
-      # pin. when we add a manifest (vcpkg.json) the cache key should
-      # switch to hashFiles('vcpkg.json'); for now the only port is
-      # lensfun, so a lensfun-rev-bump means a cache-bump on this
-      # workflow too.
+      # vcpkg cache key tracks setup-deps.ps1's content: any port
+      # add / lensfun version bump / triplet change re-hashes the file
+      # and rotates the cache key automatically.
       - name: cache vcpkg installed
         id: cache-vcpkg
         uses: actions/cache@v4
@@ -84,7 +82,7 @@ jobs:
           path: |
             ${{ github.workspace }}\vcpkg\installed
             ${{ github.workspace }}\vcpkg\packages
-          key: vcpkg-windows-x64-lensfun-v1
+          key: vcpkg-windows-x64-${{ hashFiles('packaging/windows/setup-deps.ps1') }}
 
       - name: bootstrap vcpkg + install lensfun
         shell: pwsh
@@ -95,10 +93,28 @@ jobs:
           New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
           .\packaging\windows\setup-deps.ps1 -VcpkgRoot $env:VCPKG_ROOT
 
+      # sccache speeds incremental MSVC compiles on warm caches.
+      - name: install sccache
+        run: |
+          scoop install sccache
+
+      - name: cache sccache store
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}\.sccache
+          key: sccache-windows-release-${{ github.sha }}
+          restore-keys: |
+            sccache-windows-release-
+            sccache-windows-
+
       - name: meson setup
         shell: pwsh
         env:
-          VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+          VCPKG_ROOT:         ${{ github.workspace }}\vcpkg
+          SCCACHE_DIR:        ${{ github.workspace }}\.sccache
+          SCCACHE_CACHE_SIZE: 2G
+          CC:  sccache cl
+          CXX: sccache cl
           SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
         run: |
           $pcPath = "$env:VCPKG_ROOT\installed\x64-windows\lib\pkgconfig"
@@ -111,9 +127,17 @@ jobs:
       - name: meson compile
         shell: pwsh
         env:
-          VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+          VCPKG_ROOT:  ${{ github.workspace }}\vcpkg
+          SCCACHE_DIR: ${{ github.workspace }}\.sccache
           SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
         run: meson compile -C build
+
+      - name: sccache stats
+        shell: pwsh
+        if: always()
+        env:
+          SCCACHE_DIR: ${{ github.workspace }}\.sccache
+        run: sccache --show-stats
 
       - name: build MSI installer
         shell: pwsh

@@ -97,13 +97,16 @@ jobs:
         with:
           arch: x64
 
+      # vcpkg cache key tracks setup-deps.ps1's content: any port
+      # add / lensfun version bump / triplet change re-hashes the file
+      # and rotates the cache key automatically.
       - name: cache vcpkg installed
         uses: actions/cache@v4
         with:
           path: |
             ${{ github.workspace }}\vcpkg\installed
             ${{ github.workspace }}\vcpkg\packages
-          key: vcpkg-windows-x64-lensfun-v1
+          key: vcpkg-windows-x64-${{ hashFiles('packaging/windows/setup-deps.ps1') }}
 
       - name: bootstrap vcpkg + install lensfun
         shell: pwsh
@@ -111,10 +114,29 @@ jobs:
           VCPKG_ROOT: ${{ github.workspace }}\vcpkg
         run: .\packaging\windows\setup-deps.ps1 -VcpkgRoot $env:VCPKG_ROOT
 
+      # sccache speeds incremental MSVC compiles on warm caches. install
+      # via scoop (fast, no admin), point meson at it through
+      # CC_LD/CXX_LD wrappers (sccache wraps cl.exe transparently).
+      - name: install sccache
+        run: |
+          scoop install sccache
+
+      - name: cache sccache store
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}\.sccache
+          key: sccache-windows-${{ github.sha }}
+          restore-keys: |
+            sccache-windows-
+
       - name: meson setup
         shell: pwsh
         env:
-          VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+          VCPKG_ROOT:       ${{ github.workspace }}\vcpkg
+          SCCACHE_DIR:      ${{ github.workspace }}\.sccache
+          SCCACHE_CACHE_SIZE: 2G
+          CC:  sccache cl
+          CXX: sccache cl
         run: |
           $pcPath = "$env:VCPKG_ROOT\installed\x64-windows\lib\pkgconfig"
           meson setup build --buildtype=debug --pkg-config-path "$pcPath"
@@ -122,5 +144,13 @@ jobs:
       - name: meson compile
         shell: pwsh
         env:
-          VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+          VCPKG_ROOT:  ${{ github.workspace }}\vcpkg
+          SCCACHE_DIR: ${{ github.workspace }}\.sccache
         run: meson compile -C build
+
+      - name: sccache stats
+        shell: pwsh
+        if: always()
+        env:
+          SCCACHE_DIR: ${{ github.workspace }}\.sccache
+        run: sccache --show-stats
