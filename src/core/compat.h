@@ -42,10 +42,22 @@
 // POSIX mkdir takes a mode; MSVC's _mkdir does not. drop the mode so
 // existing mkdir(path, 0755) call-sites compile unchanged.
 #define mkdir(path, mode) _mkdir(path)
+#define rmdir(path) _rmdir(path)
 
 // <utime.h> / utime are spelled with underscores on MSVC.
 #define utime(p, t) _utime((p), (t))
 #define utimbuf     _utimbuf
+
+// POSIX setenv/unsetenv onto MSVC's _putenv_s. setenv always overwrites
+// here (the overwrite flag is dropped); aperture's call-sites pass 1.
+// unsetenv clears the variable by setting it empty.
+static inline int ap_setenv(const char *name, const char *value, int overwrite)
+{
+    (void)overwrite;
+    return _putenv_s(name, value);
+}
+#define setenv(n, v, o) ap_setenv((n), (v), (o))
+#define unsetenv(n)     _putenv_s((n), "")
 
 // MSVC's <sys/stat.h> omits the S_IS* test macros even though it
 // defines the underlying mode bits.

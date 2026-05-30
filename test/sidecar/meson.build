@@ -11,7 +11,7 @@ sidecar_test = executable(
     '../../src/core/log.c',
     '../../src/core/fs.c',
     '../support/aptest_modules.c',
-  ),
+  ) + ap_dir_src,
   include_directories: [aperture_inc, aptest_inc],
   dependencies: [tomlc99_dep] + platform_deps,
 )
