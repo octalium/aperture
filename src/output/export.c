@@ -2,6 +2,7 @@
 
 #include "output/export.h"
 
+#include "core/compat.h"
 #include "core/log.h"
 #include "library/library.h"
 

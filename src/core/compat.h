@@ -52,6 +52,21 @@
 #include <time.h>
 #define timegm(tm) _mkgmtime(tm)
 
+// reentrant time conversions. MSVC has gmtime_s/localtime_s but with
+// reversed arguments and an errno_t return; wrap them to present the
+// POSIX gmtime_r/localtime_r signature (struct tm * on success, NULL on
+// failure).
+static inline struct tm *ap_gmtime_r(const time_t *t, struct tm *out)
+{
+    return gmtime_s(out, t) == 0 ? out : NULL;
+}
+static inline struct tm *ap_localtime_r(const time_t *t, struct tm *out)
+{
+    return localtime_s(out, t) == 0 ? out : NULL;
+}
+#define gmtime_r(t, out)    ap_gmtime_r((t), (out))
+#define localtime_r(t, out) ap_localtime_r((t), (out))
+
 // POSIX setenv/unsetenv onto MSVC's _putenv_s. setenv always overwrites
 // here (the overwrite flag is dropped); aperture's call-sites pass 1.
 // unsetenv clears the variable by setting it empty.
