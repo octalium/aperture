@@ -18,7 +18,7 @@ struct ap_dir {
     char            name[MAX_PATH * 4];  // worst-case UTF-8 expansion
 };
 
-static int g_last_open_errno;
+static _Thread_local int g_last_open_errno;
 
 // convert a UTF-8 path into a heap UTF-16 string with `\*` appended so
 // FindFirstFileW enumerates the directory's contents. returns NULL on
@@ -44,11 +44,14 @@ static wchar_t *make_search_glob(const char *path)
     return glob;
 }
 
-static void store_name(ap_dir *d)
+// convert the current entry's UTF-16 name into d->name. returns false if
+// the conversion fails, so the caller can skip the entry rather than emit
+// an empty name (which would alias the parent directory in path joins).
+static bool store_name(ap_dir *d)
 {
     int n = WideCharToMultiByte(CP_UTF8, 0, d->data.cFileName, -1,
                                 d->name, (int)sizeof(d->name), NULL, NULL);
-    if (n <= 0) d->name[0] = '\0';
+    return n > 0;
 }
 
 ap_dir *ap_dir_open(const char *path)
@@ -89,14 +92,16 @@ int ap_dir_open_errno(void)
 const char *ap_dir_read(ap_dir *d)
 {
     if (!d) return NULL;
-    if (d->have_pending) {
-        d->have_pending = false;
-        store_name(d);
-        return d->name;
+    for (;;) {
+        if (d->have_pending) {
+            d->have_pending = false;
+        } else if (!FindNextFileW(d->h, &d->data)) {
+            return NULL;
+        }
+        // skip any entry whose name can't be represented in UTF-8 rather
+        // than handing back an empty string.
+        if (store_name(d)) return d->name;
     }
-    if (!FindNextFileW(d->h, &d->data)) return NULL;
-    store_name(d);
-    return d->name;
 }
 
 void ap_dir_close(ap_dir *d)

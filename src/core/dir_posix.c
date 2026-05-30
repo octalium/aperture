@@ -8,7 +8,7 @@ struct ap_dir {
     DIR *d;
 };
 
-static int g_last_open_errno;
+static _Thread_local int g_last_open_errno;
 
 ap_dir *ap_dir_open(const char *path)
 {
