@@ -2,6 +2,8 @@
 
 #include "sidecar.h"
 
+#include "core/compat.h"
+#include "core/fs.h"
 #include "core/log.h"
 #include "edit/stack_toml.h"
 #include "modules/module.h"
@@ -9,12 +11,9 @@
 #include <toml.h>
 
 #include <errno.h>
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 // Single sidecar shape; no migrations needed yet. We own this format
 // end-to-end and nobody downstream is depending on a stable schema,
@@ -341,7 +340,7 @@ int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
     fclose(f);
     f = NULL;
 
-    if (rename(tmp_path, path) != 0) {
+    if (ap_rename_replace(tmp_path, path) != 0) {
         AP_ERROR("sidecar: rename(%s -> %s): %s", tmp_path, path, strerror(errno));
         unlink(tmp_path);
         return -1;

@@ -31,6 +31,10 @@ if host_machine.system() == 'windows'
     '-D_CRT_NONSTDC_NO_WARNINGS',
     language: ['c', 'cpp'],
   )
+  # MSVC gates <stdatomic.h> (used by src/app/jobs.h) behind this flag;
+  # without it the C11 atomics header errors out. C-only — the C++ TUs
+  # never touch C atomics.
+  add_project_arguments('/experimental:c11atomics', language: 'c')
 endif
 
 add_project_arguments(
@@ -95,6 +99,14 @@ else
   http_deps += subproject('mbedtls').get_variable('mbedtls_dep')
 endif
 
+# Windows-only system libraries for the OS-portability surface in
+# src/core: bcrypt backs ap_random_bytes (BCryptGenRandom). dirent /
+# thread backends use only kernel32, already in the default link set.
+platform_deps = []
+if host_machine.system() == 'windows'
+  platform_deps += cc.find_library('bcrypt')
+endif
+
 aperture_inc = include_directories('src')
 aperture_sources = []
 
@@ -124,7 +136,7 @@ aperture_deps = [
   nfd_dep,
   threads_dep,
   shaders_dep,
-] + http_deps
+] + http_deps + platform_deps
 
 aperture_exe = executable(
   'aperture',

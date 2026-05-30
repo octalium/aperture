@@ -1,6 +1,11 @@
-#include "imgui.h"
-#include "backends/imgui_impl_glfw.h"
-#include "backends/imgui_impl_vulkan.h"
+// angle brackets, not quotes: this file lives in src/ui/ next to
+// aperture's own ui/imgui.h C wrapper, and MSVC's quote-include rule
+// searches the including file's directory first — which would resolve
+// "imgui.h" to the wrapper instead of the upstream Dear ImGui header.
+// angle brackets force the -I (cimgui) search path on every compiler.
+#include <imgui.h>
+#include <backends/imgui_impl_glfw.h>
+#include <backends/imgui_impl_vulkan.h>
 
 #include <vulkan/vulkan.h>
 

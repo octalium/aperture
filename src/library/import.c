@@ -2,6 +2,8 @@
 
 #include "library/import.h"
 
+#include "core/compat.h"
+#include "core/dir.h"
 #include "core/log.h"
 #include "io/exif.h"
 #include "io/raw.h"
@@ -9,7 +11,6 @@
 #include <blake3.h>
 #include <sqlite3.h>
 
-#include <dirent.h>
 #include <stdbool.h>
 #include <errno.h>
 #include <limits.h>
@@ -18,8 +19,6 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
-#include <unistd.h>
-#include <utime.h>
 
 #define BLAKE3_HEX_LEN (BLAKE3_OUT_LEN * 2 + 1)
 
@@ -525,19 +524,19 @@ static int cmp_str(const void *a, const void *b)
 
 static void import_collect(const char *src_dir, raw_list *list)
 {
-    DIR *d = opendir(src_dir);
+    ap_dir *d = ap_dir_open(src_dir);
     if (!d) {
-        AP_WARN("import: opendir(%s): %s", src_dir, strerror(errno));
+        AP_WARN("import: opendir(%s): %s", src_dir, strerror(ap_dir_open_errno()));
         return;
     }
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        if (ent->d_name[0] == '.') {
+    const char *ename;
+    while ((ename = ap_dir_read(d)) != NULL) {
+        if (ename[0] == '.') {
             continue;
         }
         char child[PATH_MAX];
         if (snprintf(child, sizeof(child), "%s/%s",
-                     src_dir, ent->d_name) >= (int)sizeof(child)) {
+                     src_dir, ename) >= (int)sizeof(child)) {
             continue;
         }
         struct stat st;
@@ -546,11 +545,11 @@ static void import_collect(const char *src_dir, raw_list *list)
         }
         if (S_ISDIR(st.st_mode)) {
             import_collect(child, list);
-        } else if (S_ISREG(st.st_mode) && ap_raw_is_raw_path(ent->d_name)) {
+        } else if (S_ISREG(st.st_mode) && ap_raw_is_raw_path(ename)) {
             raw_list_push(list, child);
         }
     }
-    closedir(d);
+    ap_dir_close(d);
 }
 
 int ap_import_run_into(const char *lib_root, const char *db_path,

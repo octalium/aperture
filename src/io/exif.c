@@ -2,6 +2,7 @@
 
 #include "io/exif.h"
 
+#include "core/compat.h"
 #include "core/log.h"
 
 #include <stdint.h>

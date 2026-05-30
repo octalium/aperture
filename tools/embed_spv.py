@@ -36,9 +36,14 @@ def main(argv: list[str]) -> int:
         chunk = ", ".join(f"0x{w:08x}" for w in words[i:i + per_line])
         lines.append(f"    {chunk},")
 
+    # emit the size as a macro rather than a `static const size_t`: MSVC's
+    # C mode does not treat a const-qualified variable as a constant
+    # expression, so feeding one into the static-const module tables
+    # fails with C2099. sizeof inside a macro is a constant expression on
+    # every compiler.
     lines += [
         "};",
-        f"static const size_t {name}_size = sizeof({name});",
+        f"#define {name}_size (sizeof({name}))",
         "",
     ]
 

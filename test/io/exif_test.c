@@ -4,6 +4,7 @@
 #define _GNU_SOURCE
 
 #include "aptest.h"
+#include "core/compat.h"
 #include "io/exif.h"
 
 #include <stdint.h>

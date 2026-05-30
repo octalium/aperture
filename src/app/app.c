@@ -19,6 +19,8 @@
 #include "update/check.h"
 #include "update/updater.h"
 
+#include "core/compat.h"
+
 #include <errno.h>
 #include <math.h>
 #include <signal.h>
@@ -40,11 +42,18 @@ static void on_signal(int sig)
 
 static void install_signal_handlers(void)
 {
+#ifdef _WIN32
+    // MSVC's CRT has only C signal(); SIGINT / SIGTERM exist and feed
+    // the same polled g_quit_requested flag.
+    signal(SIGINT,  on_signal);
+    signal(SIGTERM, on_signal);
+#else
     struct sigaction sa = {0};
     sa.sa_handler = on_signal;
     sigemptyset(&sa.sa_mask);
     sigaction(SIGINT,  &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
+#endif
 }
 
 // Optional panels remember their open / closed state across sessions

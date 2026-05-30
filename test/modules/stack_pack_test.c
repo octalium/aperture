@@ -8,6 +8,7 @@
 
 #include "aptest.h"
 
+#include "core/memstream.h"
 #include "edit/stack.h"
 #include "edit/stack_toml.h"
 #include "modules/module.h"
@@ -51,13 +52,13 @@ static void assert_entries_equal(const ap_edit_entry *a,
 // failure. caller owns nothing on the heap; the parsed doc is freed here.
 static void round_trip_stack(const ap_edit_stack *in, ap_edit_stack *out)
 {
+    ap_memstream *ms = ap_memstream_open();
+    AP_TEST_ASSERT(ms != NULL, "open_memstream");
+    AP_TEST_ASSERT(ap_edit_stack_write_toml(in, ap_memstream_file(ms)) == 0,
+                   "write_toml failed");
     char  *buf = NULL;
     size_t len = 0;
-    FILE *mf = open_memstream(&buf, &len);
-    AP_TEST_ASSERT(mf != NULL, "open_memstream");
-    AP_TEST_ASSERT(ap_edit_stack_write_toml(in, mf) == 0,
-                   "write_toml failed");
-    fclose(mf);
+    AP_TEST_ASSERT(ap_memstream_close(ms, &buf, &len) == 0, "memstream close");
 
     char errbuf[256] = {0};
     toml_table_t *root = toml_parse(buf, errbuf, sizeof(errbuf));

@@ -18,9 +18,12 @@ library_test = executable(
     '../../src/photo/keywords.c',
     '../../src/photo/metadata.c',
     '../../src/core/log.c',
+    '../../src/core/fs.c',
+    '../../src/core/memstream.c',
+    '../../src/core/random.c',
     '../support/aptest_modules.c',
-  ),
+  ) + ap_dir_src,
   include_directories: [aperture_inc, aptest_inc, library_vulkan_stub_inc],
-  dependencies: [sqlite3_dep, tomlc99_dep],
+  dependencies: [sqlite3_dep, tomlc99_dep] + platform_deps,
 )
 test('library/library', library_test)

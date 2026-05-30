@@ -73,8 +73,6 @@ jobs:
   build-windows:
     name: meson compile (windows-2022)
     runs-on: windows-2022
-    # remove when #529 lands — app layer is not yet MSVC-portable
-    continue-on-error: true
     # ilammy/msvc-dev-cmd resets VCPKG_ROOT to the VS-bundled vcpkg
     # (manifest-mode, rejects classic installs). Each subsequent step
     # re-pins VCPKG_ROOT in its own env block so the override sticks.

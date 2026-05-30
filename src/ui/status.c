@@ -2,7 +2,8 @@
 
 #include "cimgui.h"
 
-#include <pthread.h>
+#include "core/thread.h"
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -33,7 +34,7 @@ typedef struct {
     double       finish_expire;
 } progress_entry;
 
-static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
+static ap_mutex g_mu = AP_MUTEX_INITIALIZER;
 
 static notify_entry   g_notifs[NOTIFY_MAX];
 static int            g_notif_count = 0;
@@ -50,7 +51,7 @@ void ap_status_notify(ap_status_kind kind, const char *fmt, ...)
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
 
-    pthread_mutex_lock(&g_mu);
+    ap_mutex_lock(&g_mu);
     if (g_notif_count == NOTIFY_MAX) {
         memmove(&g_notifs[0], &g_notifs[1],
                 (size_t)(NOTIFY_MAX - 1) * sizeof(g_notifs[0]));
@@ -60,13 +61,13 @@ void ap_status_notify(ap_status_kind kind, const char *fmt, ...)
     e->kind   = kind;
     e->expire = 0.0;  // set to real time in draw (igGetTime is main-thread only)
     snprintf(e->msg, sizeof(e->msg), "%s", buf);
-    pthread_mutex_unlock(&g_mu);
+    ap_mutex_unlock(&g_mu);
 }
 
 ap_status_id ap_status_progress_begin(const char *label, int total)
 {
     ap_status_id id = 0;
-    pthread_mutex_lock(&g_mu);
+    ap_mutex_lock(&g_mu);
     if (g_prog_count < PROGRESS_MAX) {
         progress_entry *e = &g_progress[g_prog_count++];
         id         = g_next_id++;
@@ -78,14 +79,14 @@ ap_status_id ap_status_progress_begin(const char *label, int total)
         e->finished = 0;
         e->finish_expire = 0.0;
     }
-    pthread_mutex_unlock(&g_mu);
+    ap_mutex_unlock(&g_mu);
     return id;
 }
 
 void ap_status_progress_update(ap_status_id id, int done, int total)
 {
     if (!id) return;
-    pthread_mutex_lock(&g_mu);
+    ap_mutex_lock(&g_mu);
     for (int i = 0; i < g_prog_count; i++) {
         if (g_progress[i].id == id) {
             g_progress[i].done = done;
@@ -93,13 +94,13 @@ void ap_status_progress_update(ap_status_id id, int done, int total)
             break;
         }
     }
-    pthread_mutex_unlock(&g_mu);
+    ap_mutex_unlock(&g_mu);
 }
 
 void ap_status_progress_finish(ap_status_id id, int ok)
 {
     if (!id) return;
-    pthread_mutex_lock(&g_mu);
+    ap_mutex_lock(&g_mu);
     for (int i = 0; i < g_prog_count; i++) {
         if (g_progress[i].id == id) {
             g_progress[i].finished    = ok ? 1 : -1;
@@ -107,12 +108,12 @@ void ap_status_progress_finish(ap_status_id id, int ok)
             break;
         }
     }
-    pthread_mutex_unlock(&g_mu);
+    ap_mutex_unlock(&g_mu);
 }
 
 void ap_status_draw(void)
 {
-    pthread_mutex_lock(&g_mu);
+    ap_mutex_lock(&g_mu);
 
     double now = igGetTime();
 
@@ -162,7 +163,7 @@ void ap_status_draw(void)
     memcpy(notifs, g_notifs, (size_t)ncount * sizeof(notifs[0]));
     memcpy(progs,  g_progress, (size_t)pcount * sizeof(progs[0]));
 
-    pthread_mutex_unlock(&g_mu);
+    ap_mutex_unlock(&g_mu);
 
     if (total_count == 0) return;
 

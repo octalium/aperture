@@ -59,13 +59,40 @@ if (-not $VcpkgRoot) {
 Write-Step "vcpkg root: $VcpkgRoot"
 Write-Step "triplet:    $Triplet"
 
-if (-not (Test-Path $VcpkgRoot)) {
-    Write-Step "cloning vcpkg into $VcpkgRoot"
-    git clone --depth=1 https://github.com/microsoft/vcpkg.git $VcpkgRoot
-}
-
 $bootstrap = Join-Path $VcpkgRoot 'bootstrap-vcpkg.bat'
 $vcpkgExe  = Join-Path $VcpkgRoot 'vcpkg.exe'
+
+# The vcpkg tool itself (bootstrap-vcpkg.bat + the cloned tree) is what
+# we need. Guard on its presence, not on $VcpkgRoot existing: CI's
+# `cache vcpkg installed` step restores $VcpkgRoot\installed (and
+# packages) before this runs, creating the directory without the tool.
+# git clone refuses a non-empty target, so move the cached artifacts
+# aside, clone into the clean dir, then move them back.
+if (-not (Test-Path $bootstrap)) {
+    if (-not (Test-Path $VcpkgRoot)) {
+        Write-Step "cloning vcpkg into $VcpkgRoot"
+        git clone --depth=1 https://github.com/microsoft/vcpkg.git $VcpkgRoot
+    } else {
+        Write-Step "vcpkg dir exists without the tool; preserving cached artifacts"
+        $stash = Join-Path ([System.IO.Path]::GetTempPath()) ("vcpkg-stash-" + [System.Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $stash | Out-Null
+        foreach ($keep in @('installed', 'packages')) {
+            $src = Join-Path $VcpkgRoot $keep
+            if (Test-Path $src) { Move-Item -Path $src -Destination (Join-Path $stash $keep) }
+        }
+        Remove-Item -Path $VcpkgRoot -Recurse -Force
+        Write-Step "cloning vcpkg into $VcpkgRoot"
+        git clone --depth=1 https://github.com/microsoft/vcpkg.git $VcpkgRoot
+        if ($LASTEXITCODE -ne 0) {
+            throw "vcpkg clone failed (exit $LASTEXITCODE)"
+        }
+        foreach ($keep in @('installed', 'packages')) {
+            $src = Join-Path $stash $keep
+            if (Test-Path $src) { Move-Item -Path $src -Destination (Join-Path $VcpkgRoot $keep) }
+        }
+        Remove-Item -Path $stash -Recurse -Force
+    }
+}
 
 if (-not (Test-Path $vcpkgExe)) {
     Write-Step "bootstrapping vcpkg"

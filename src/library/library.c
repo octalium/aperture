@@ -16,8 +16,11 @@
 #include <toml.h>
 
 #include "core/compat.h"
+#include "core/dir.h"
+#include "core/fs.h"
+#include "core/memstream.h"
+#include "core/random.h"
 
-#include <dirent.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -25,7 +28,6 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <time.h>
-#include <unistd.h>
 
 #define APERTURE_DB_VERSION "1"
 
@@ -113,17 +115,10 @@ static const char *DEFAULT_PIPELINE_MODULES[] = {
 static int gen_uuid_v4(char buf[37])
 {
     uint8_t b[16];
-    FILE *f = fopen("/dev/urandom", "rb");
-    if (!f) {
-        AP_ERROR("gen_uuid_v4: cannot open /dev/urandom: %s", strerror(errno));
+    if (ap_random_bytes(b, sizeof(b)) != 0) {
+        AP_ERROR("gen_uuid_v4: entropy source unavailable");
         return -1;
     }
-    if (fread(b, 1, 16, f) != 16) {
-        AP_ERROR("gen_uuid_v4: short read from /dev/urandom");
-        fclose(f);
-        return -1;
-    }
-    fclose(f);
 
     // RFC 4122 v4: version in bits 12-15 of time_hi (b[6]),
     //              variant in bits 6-7 of clock_seq_hi (b[8]).
@@ -159,19 +154,21 @@ static int stack_to_toml_string(const ap_edit_stack *stack,
 {
     *out_buf = NULL;
     *out_len = 0;
-    char  *buf = NULL;
-    size_t len = 0;
-    FILE *mf = open_memstream(&buf, &len);
-    if (!mf) {
+    ap_memstream *ms = ap_memstream_open();
+    if (!ms) {
         AP_ERROR("pipeline: open_memstream: %s", strerror(errno));
         return -1;
     }
-    if (ap_edit_stack_write_toml(stack, mf) != 0) {
-        fclose(mf);
-        free(buf);
+    if (ap_edit_stack_write_toml(stack, ap_memstream_file(ms)) != 0) {
+        char *scrap = NULL;
+        size_t scrap_len = 0;
+        ap_memstream_close(ms, &scrap, &scrap_len);
+        free(scrap);
         return -1;
     }
-    if (fclose(mf) != 0) {
+    char  *buf = NULL;
+    size_t len = 0;
+    if (ap_memstream_close(ms, &buf, &len) != 0) {
         free(buf);
         AP_ERROR("pipeline: fclose memstream: %s", strerror(errno));
         return -1;
@@ -1046,21 +1043,21 @@ static int scan_dir(ap_library *lib, sqlite3_stmt *insert_stmt,
                     const char *abs_dir, const char *rel_prefix,
                     int64_t added_at)
 {
-    DIR *d = opendir(abs_dir);
+    ap_dir *d = ap_dir_open(abs_dir);
     if (!d) {
-        AP_WARN("library: opendir(%s): %s", abs_dir, strerror(errno));
+        AP_WARN("library: opendir(%s): %s", abs_dir, strerror(ap_dir_open_errno()));
         return 0;
     }
 
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        if (strcmp(ent->d_name, ".")  == 0 ||
-            strcmp(ent->d_name, "..") == 0) continue;
+    const char *ename;
+    while ((ename = ap_dir_read(d)) != NULL) {
+        if (strcmp(ename, ".")  == 0 ||
+            strcmp(ename, "..") == 0) continue;
 
         char abs_child[4096];
         if (snprintf(abs_child, sizeof(abs_child), "%s/%s",
-                     abs_dir, ent->d_name) >= (int)sizeof(abs_child)) {
-            AP_WARN("library: path too long, skipping %s/%s", abs_dir, ent->d_name);
+                     abs_dir, ename) >= (int)sizeof(abs_child)) {
+            AP_WARN("library: path too long, skipping %s/%s", abs_dir, ename);
             continue;
         }
 
@@ -1070,28 +1067,28 @@ static int scan_dir(ap_library *lib, sqlite3_stmt *insert_stmt,
         if (S_ISDIR(st.st_mode)) {
             char child_rel[2048];
             if (rel_prefix[0] == '\0') {
-                snprintf(child_rel, sizeof(child_rel), "%s", ent->d_name);
+                snprintf(child_rel, sizeof(child_rel), "%s", ename);
             } else {
                 snprintf(child_rel, sizeof(child_rel), "%s/%s",
-                         rel_prefix, ent->d_name);
+                         rel_prefix, ename);
             }
             scan_dir(lib, insert_stmt, abs_child, child_rel, added_at);
             continue;
         }
 
         if (!S_ISREG(st.st_mode)) continue;
-        if (!is_raw_file(ent->d_name)) continue;
+        if (!is_raw_file(ename)) continue;
 
         char rel[2048];
         if (rel_prefix[0] == '\0') {
-            snprintf(rel, sizeof(rel), "%s", ent->d_name);
+            snprintf(rel, sizeof(rel), "%s", ename);
         } else {
-            snprintf(rel, sizeof(rel), "%s/%s", rel_prefix, ent->d_name);
+            snprintf(rel, sizeof(rel), "%s/%s", rel_prefix, ename);
         }
         insert_photo(lib->db, insert_stmt, rel, added_at);
     }
 
-    closedir(d);
+    ap_dir_close(d);
     return 0;
 }
 
@@ -1476,7 +1473,7 @@ static void prune_missing_photos(ap_library *lib)
 // Returns 0 on success, -1 on failure (with a warning logged).
 static int move_file(const char *src_path, const char *dst_path)
 {
-    if (rename(src_path, dst_path) == 0) return 0;
+    if (ap_rename_replace(src_path, dst_path) == 0) return 0;
     if (errno != EXDEV) {
         AP_WARN("library: rename(%s, %s): %s",
                 src_path, dst_path, strerror(errno));
@@ -2382,10 +2379,9 @@ int ap_library_delete_group(ap_library *lib, const char *group)
 // is "key=value\n". Caller owns the returned buffer (free it).
 static char *preset_to_blob(const ap_export_settings *s)
 {
-    char *buf = NULL;
-    size_t len = 0;
-    FILE *mf = open_memstream(&buf, &len);
-    if (!mf) return NULL;
+    ap_memstream *ms = ap_memstream_open();
+    if (!ms) return NULL;
+    FILE *mf = ap_memstream_file(ms);
     fprintf(mf, "format=%d\n",       s->format);
     fprintf(mf, "jpeg_quality=%d\n", s->jpeg_quality);
     fprintf(mf, "png_depth=%d\n",    s->png_depth);
@@ -2397,7 +2393,12 @@ static char *preset_to_blob(const ap_export_settings *s)
     fprintf(mf, "dest_subdir=%s\n",  s->dest_subdir);
     fprintf(mf, "dest_dir=%s\n",     s->dest_dir);
     fprintf(mf, "collision=%d\n",    s->collision);
-    fclose(mf);
+    char  *buf = NULL;
+    size_t len = 0;
+    if (ap_memstream_close(ms, &buf, &len) != 0) {
+        free(buf);
+        return NULL;
+    }
     return buf;
 }
 

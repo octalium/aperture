@@ -16,7 +16,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <unistd.h>
 
 // Library uses ap_app_root_path which is cached on first call. Setting
 // XDG_DATA_HOME (Linux) and HOME (macOS fallback) to a per-test tmpdir
