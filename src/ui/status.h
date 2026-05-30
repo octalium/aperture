@@ -1,6 +1,8 @@
 #ifndef APERTURE_UI_STATUS_H
 #define APERTURE_UI_STATUS_H
 
+#include "core/compat.h"  // AP_PRINTF_FMT
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -19,7 +21,7 @@ typedef unsigned int ap_status_id;
 // Push a transient notification. It fades after a few seconds.
 // Thread-safe: may be called from any thread.
 void ap_status_notify(ap_status_kind kind, const char *fmt, ...)
-    __attribute__((format(printf, 2, 3)));
+    AP_PRINTF_FMT(2, 3);
 
 // Register a new in-flight progress entry. `label` is copied; it is
 // shown next to the progress bar while the operation is running.

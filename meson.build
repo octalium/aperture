@@ -31,6 +31,10 @@ if host_machine.system() == 'windows'
     '-D_CRT_NONSTDC_NO_WARNINGS',
     language: ['c', 'cpp'],
   )
+  # MSVC gates <stdatomic.h> (used by src/app/jobs.h) behind this flag;
+  # without it the C11 atomics header errors out. C-only — the C++ TUs
+  # never touch C atomics.
+  add_project_arguments('/experimental:c11atomics', language: 'c')
 endif
 
 add_project_arguments(

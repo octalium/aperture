@@ -78,4 +78,15 @@ static inline char *ap_realpath(const char *path, char *resolved)
 #include <utime.h>   // utime / utimbuf on POSIX
 #endif
 
+// compile-time printf-format checking on a variadic function. GCC and
+// Clang verify the arguments against the format string; MSVC has no
+// equivalent and the macro expands to nothing there. `fmt` is the
+// 1-based index of the format-string parameter, `args` of the first
+// variadic argument.
+#if defined(__GNUC__) || defined(__clang__)
+#define AP_PRINTF_FMT(fmt, args) __attribute__((format(printf, fmt, args)))
+#else
+#define AP_PRINTF_FMT(fmt, args)
+#endif
+
 #endif
