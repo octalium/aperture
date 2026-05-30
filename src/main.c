@@ -1,4 +1,5 @@
 #include "app/app.h"
+#include "core/compat.h"
 #include "core/log.h"
 #include "library/library.h"
 

@@ -8,7 +8,6 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/stat.h>
 
 static const char *library_display_label(ap_library *lib)
 {

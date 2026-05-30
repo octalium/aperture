@@ -3,17 +3,17 @@
 #include "layout_profiles.h"
 
 #include "app/root.h"
+#include "core/compat.h"
+#include "core/dir.h"
 #include "core/log.h"
 #include "library/library.h"
 #include "ui/imgui.h"
 
-#include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <unistd.h>
 
 // named layout snapshots live under the data root, not the config root.
 // the working layout (imgui.ini) is transient session state — it lives
@@ -160,27 +160,27 @@ int ap_layout_list(char names[][AP_LAYOUT_NAME_LEN], int max)
     char dir[4096];
     if (layouts_dir_path(dir, sizeof(dir)) < 0) return -1;
 
-    DIR *d = opendir(dir);
+    ap_dir *d = ap_dir_open(dir);
     if (!d) {
-        if (errno == ENOENT) return 0;
-        AP_WARN("layouts: opendir(%s): %s", dir, strerror(errno));
+        if (ap_dir_open_errno() == ENOENT) return 0;
+        AP_WARN("layouts: opendir(%s): %s", dir, strerror(ap_dir_open_errno()));
         return -1;
     }
     int n = 0;
-    struct dirent *e;
-    while (n < max && (e = readdir(d)) != NULL) {
-        if (e->d_name[0] == '.') continue;             // skip hidden + .current
-        size_t len = strlen(e->d_name);
+    const char *ename;
+    while (n < max && (ename = ap_dir_read(d)) != NULL) {
+        if (ename[0] == '.') continue;                 // skip hidden + .current
+        size_t len = strlen(ename);
         size_t ext = strlen(LAYOUT_EXT);
         if (len <= ext) continue;
-        if (strcmp(e->d_name + len - ext, LAYOUT_EXT) != 0) continue;
+        if (strcmp(ename + len - ext, LAYOUT_EXT) != 0) continue;
         size_t name_len = len - ext;
         if (name_len + 1 >= AP_LAYOUT_NAME_LEN) continue;
-        memcpy(names[n], e->d_name, name_len);
+        memcpy(names[n], ename, name_len);
         names[n][name_len] = '\0';
         n++;
     }
-    closedir(d);
+    ap_dir_close(d);
     return n;
 }
 
