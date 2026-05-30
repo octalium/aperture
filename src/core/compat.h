@@ -20,6 +20,22 @@
 #define strcasecmp  _stricmp
 #define strncasecmp _strnicmp
 
+// strcasestr (case-insensitive strstr) is a GNU extension with no MSVC
+// equivalent. provide a small portable implementation: scan `haystack`
+// for the first run that matches `needle` case-insensitively.
+static inline char *ap_strcasestr(const char *haystack, const char *needle)
+{
+    if (!*needle) return (char *)haystack;
+    size_t nlen = strlen(needle);
+    for (; *haystack; haystack++) {
+        if (_strnicmp(haystack, needle, nlen) == 0) {
+            return (char *)haystack;
+        }
+    }
+    return NULL;
+}
+#define strcasestr(h, n) ap_strcasestr((h), (n))
+
 // MSVC names these with a leading underscore; map the POSIX spellings
 // onto them so call-sites stay platform-agnostic.
 #define fsync(fd)   _commit(fd)
