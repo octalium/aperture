@@ -4,7 +4,7 @@
 # artifact and attaches it to the GitHub Release for the tag.
 #
 # The Flathub submission is manual and lives outside this workflow —
-# see packaging/flatpak/FLATHUB.md.
+# see pkg/flatpak/FLATHUB.md.
 
 name: release-linux
 
@@ -60,7 +60,7 @@ jobs:
           export tag tarball_url tarball_sha
           python3 - <<'PY'
           import os
-          p = "packaging/flatpak/io.github.octalium.aperture.yml"
+          p = "pkg/flatpak/io.github.octalium.aperture.yml"
           tag = os.environ["tag"]
           tarball_url = os.environ["tarball_url"]
           tarball_sha = os.environ["tarball_sha"]
@@ -84,17 +84,17 @@ jobs:
           open(p, "w").write(src.replace(old, new))
           PY
           sed -i "s|SOURCE_DATE_EPOCH: '0'|SOURCE_DATE_EPOCH: '${epoch}'|" \
-              packaging/flatpak/io.github.octalium.aperture.yml
+              pkg/flatpak/io.github.octalium.aperture.yml
 
       - name: build flatpak bundle
         uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
-          manifest-path: packaging/flatpak/io.github.octalium.aperture.yml
+          manifest-path: pkg/flatpak/io.github.octalium.aperture.yml
           bundle: aperture-${{ steps.meta.outputs.version }}-x86_64.flatpak
           # key on manifest hash so the cache survives across releases
           # until the manifest itself changes (the previous github.sha
           # key cold-started the cache on every tag push).
-          cache-key: flatpak-builder-${{ hashFiles('packaging/flatpak/*.yml') }}
+          cache-key: flatpak-builder-${{ hashFiles('pkg/flatpak/*.yml') }}
           upload-artifact: false
 
       - name: upload to GitHub Release

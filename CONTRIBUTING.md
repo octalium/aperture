@@ -37,7 +37,7 @@ meson compile -C build
 
 On Windows, run from a Developer PowerShell for VS 2022 and use the
 vcpkg-aware setup documented in
-[`packaging/windows/README.md`](packaging/windows/README.md). `make
+[`pkg/windows/README.md`](pkg/windows/README.md). `make
 windows` wraps the full configure + compile + WiX MSI build in one
 step (requires `dotnet tool install --global wix` and the LunarG
 [Vulkan SDK](https://vulkan.lunarg.com/sdk/home#windows); `setup-deps.ps1`
