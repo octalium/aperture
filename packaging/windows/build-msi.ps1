@@ -99,12 +99,19 @@ Get-ChildItem -Path $BuildDir -Filter '*.dll' -Recurse -ErrorAction SilentlyCont
 # WiX UI's WixUILicenseRtf needs an RTF, not plain text. The MIT
 # license is short enough to wrap inline in a minimal RTF document
 # so we don't have to keep a separate hand-authored .rtf in tree.
+#
+# Written under $OutDir, NOT $stageRoot: wix harvests the whole staging
+# tree via the .wxs `Files Include="!(bindpath.Stage)\**"`, so an RTF
+# placed there would ship as an installed payload file. wix reads it by
+# absolute path (-d LicenseRtf=...), so its location is otherwise free.
 Write-Step "rendering LICENSE as RTF"
 $licensePlain = Get-Content (Join-Path $repoRoot 'LICENSE') -Raw
-$licenseEscaped = $licensePlain -replace '\\','\\\\' -replace '\{','\{' -replace '\}','\}'
-$licenseEscaped = $licenseEscaped -replace "`r`n","\par`n" -replace "`n","\par`n"
+$licenseEscaped = $licensePlain -replace '\\','\\' -replace '\{','\{' -replace '\}','\}'
+# single pass: `\r?\n` matches CRLF and bare LF without re-matching the
+# newline the replacement itself emits (a CRLF-then-LF chain would emit \par\par).
+$licenseEscaped = $licenseEscaped -replace "`r?`n","\par`n"
 $licenseRtf = "{\rtf1\ansi\deff0{\fonttbl{\f0\fnil\fcharset0 Segoe UI;}}\fs18`n$licenseEscaped`n}"
-$licenseRtfPath = Join-Path $stageRoot '_license.rtf'
+$licenseRtfPath = Join-Path $OutDir '_license.rtf'
 Set-Content -Path $licenseRtfPath -Value $licenseRtf -Encoding ascii -NoNewline
 
 $wxs = Join-Path $repoRoot 'packaging\windows\wix\aperture.wxs'
@@ -125,9 +132,8 @@ if ($LASTEXITCODE -ne 0) {
     throw "wix build failed (exit $LASTEXITCODE)"
 }
 
-# the bind-time license RTF was a staging artifact — strip it back
-# out of the staging dir for tidiness if a caller inspects what's
-# been packaged.
+# the license RTF was a bind-time UI asset, not installer payload —
+# drop it now that wix has consumed it.
 Remove-Item -Force $licenseRtfPath -ErrorAction SilentlyContinue
 
 Write-Step "done: $msi"
