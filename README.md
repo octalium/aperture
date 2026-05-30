@@ -63,8 +63,18 @@ exported."
 
 ### Windows
 
-Tracked in [#375](https://github.com/octalium/aperture/issues/375); not
-yet available.
+- **.msi from Releases** (x64, Windows 10 1809+): download
+  `aperture-X.Y.Z-windows-x64.msi` from the latest
+  [GitHub Release](https://github.com/octalium/aperture/releases) and
+  double-click to install. Adds a **Start Menu → aperture** shortcut
+  and an Add/Remove Programs entry; uninstall removes everything the
+  installer placed. The .msi is unsigned, so SmartScreen shows an
+  "unknown publisher" prompt on first run — click **More info → Run
+  anyway**. A Vulkan-capable GPU + current driver is the only system
+  requirement; `vulkan-1.dll` ships with every modern GPU driver.
+- **Build from source**: see [`packaging/windows/README.md`](packaging/windows/README.md).
+
+Library and config live under `%APPDATA%\aperture`.
 
 ## Build from source
 
@@ -125,6 +135,12 @@ entry, icon, and MIME types are picked up.
 ### macOS
 
 See [`packaging/macos/README.md`](packaging/macos/README.md).
+
+### Windows
+
+See [`packaging/windows/README.md`](packaging/windows/README.md). Native
+MSVC + meson; vcpkg supplies lensfun, everything else builds from the
+submoduled `dep/` tree.
 
 ### Cache refresh (system installs only)
 

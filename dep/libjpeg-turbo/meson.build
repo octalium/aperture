@@ -58,7 +58,12 @@ else
   jconfigint_data.set('THREAD_LOCAL', '__thread')
 endif
 
-if cc.compiles('int main(void){return __builtin_ctzl(1L);}',
+# cc.links, not cc.compiles: MSVC's frontend accepts __builtin_ctzl
+# syntactically but emits an unresolved external at link (LNK2019), so
+# only set HAVE_BUILTIN_CTZL when the builtin actually links. on MSVC
+# this stays unset and jconfigint.h auto-selects _BitScanForward64 from
+# HAVE_INTRIN_H + SIZEOF_SIZE_T instead.
+if cc.links('int main(void){return __builtin_ctzl(1L);}',
     name: 'has __builtin_ctzl')
   jconfigint_data.set('HAVE_BUILTIN_CTZL', 1)
 endif
@@ -167,9 +172,13 @@ jpeg_lib = static_library('jpeg',
   install: false,
 )
 
+# jpeglib.h includes the generated jconfig.h, so consumers (e.g. libtiff's
+# tif_jpeg.c) need the subproject build root on their include path and the
+# generated headers tracked as sources for correct build ordering.
 libjpeg_dep = declare_dependency(
   link_with: jpeg_lib,
-  include_directories: jpeg_public_inc,
+  sources: [jconfig_h, jconfigint_h, jversion_h],
+  include_directories: [jpeg_public_inc, include_directories('.')],
 )
 
 meson.override_dependency('libjpeg', libjpeg_dep)

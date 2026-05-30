@@ -1,5 +1,6 @@
 #include "raw.h"
 
+#include "core/compat.h"
 #include "core/log.h"
 #include "io/exif.h"
 #include "photo/metadata.h"
@@ -9,8 +10,6 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <strings.h>
 #include <time.h>
 
 // Format `value` as %g into the metadata slot. Suffix appended when

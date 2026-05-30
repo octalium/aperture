@@ -6,7 +6,7 @@ BUILD_DIR    ?= build
 PREFIX       ?= /usr/local
 BUILDTYPE    ?= release
 
-.PHONY: help build setup compile install test clean flatpak app macos
+.PHONY: help build setup compile install test clean flatpak app macos windows
 
 help:
 	@echo "common targets:"
@@ -16,6 +16,7 @@ help:
 	@echo "  make flatpak          build a .flatpak bundle (needs flatpak-builder + flathub remote)"
 	@echo "  make app              build Aperture.app (macOS host only; needs dylibbundler)"
 	@echo "  make macos            build Aperture.app + .dmg (macOS host only; needs create-dmg)"
+	@echo "  make windows          build .msi installer (Windows host only; needs MSVC + vcpkg + WiX v4)"
 	@echo "  make clean            remove $(BUILD_DIR)"
 	@echo ""
 	@echo "variables: BUILD_DIR (=$(BUILD_DIR)), PREFIX (=$(PREFIX)), BUILDTYPE (=$(BUILDTYPE))"
@@ -55,6 +56,23 @@ app:
 
 macos: app
 	packaging/macos/build-dmg.sh
+
+# windows host detection covers both MSYS/MINGW (uname reports MINGW*/
+# MSYS*) and POSIX-on-Windows toolchains. cross-builds from Linux are
+# out of scope (#434); native MSVC runner only. The whole flow runs
+# inside packaging/windows/make-windows.ps1 so env vars set by
+# setup-deps (notably VULKAN_SDK) carry through to meson + build-msi.
+windows:
+	@case "$$(uname -s)" in \
+		MINGW*|MSYS*|CYGWIN*|Windows_NT) ;; \
+		*) echo "make windows requires a Windows host (got $$(uname -s))" >&2; exit 1;; \
+	esac
+	@if ! command -v pwsh >/dev/null 2>&1 && ! command -v powershell >/dev/null 2>&1; then \
+		echo "make windows needs pwsh or powershell on PATH" >&2; exit 1; \
+	fi
+	@PS=$$(command -v pwsh || command -v powershell); \
+		"$$PS" -NoProfile -ExecutionPolicy Bypass -File packaging/windows/make-windows.ps1 \
+			-BuildDir "$(BUILD_DIR)" -BuildType "$(BUILDTYPE)"
 
 clean:
 	rm -rf $(BUILD_DIR)

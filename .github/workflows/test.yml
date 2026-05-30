@@ -65,3 +65,103 @@ jobs:
 
       - name: test
         run: meson test -C build --print-errorlogs
+
+  # Smoke-build Windows on every PR so regressions surface before a tag
+  # push runs the full release-windows.yml. We only compile + link here;
+  # the test suite is gated to Linux until the vendored dep tree settles
+  # (cross-platform meson test is a follow-up under #442).
+  build-windows:
+    name: meson compile (windows-2022)
+    runs-on: windows-2022
+    # remove when #529 lands — app layer is not yet MSVC-portable
+    continue-on-error: true
+    # ilammy/msvc-dev-cmd resets VCPKG_ROOT to the VS-bundled vcpkg
+    # (manifest-mode, rejects classic installs). Each subsequent step
+    # re-pins VCPKG_ROOT in its own env block so the override sticks.
+    env:
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: set up python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: install meson + ninja
+        run: pip install --upgrade 'meson>=1.3.0' ninja
+
+      - name: enter VS dev env
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # LunarG Vulkan SDK supplies vulkan-1.lib (the import library) so
+      # dep/vulkan-headers/meson.build's `cc.find_library('vulkan-1')`
+      # resolves at link time. The runtime DLL is driver-provided on
+      # end-user machines — the SDK is dev-only.
+      - name: install Vulkan SDK
+        uses: humbletim/install-vulkan-sdk@v1.2
+        with:
+          version: 1.4.309.0
+          cache:   true
+
+      # vcpkg cache key tracks setup-deps.ps1's content: any port
+      # add / lensfun version bump / triplet change re-hashes the file
+      # and rotates the cache key automatically.
+      - name: cache vcpkg installed
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}\vcpkg\installed
+            ${{ github.workspace }}\vcpkg\packages
+          key: vcpkg-windows-x64-${{ hashFiles('packaging/windows/setup-deps.ps1') }}
+
+      - name: bootstrap vcpkg + install lensfun
+        shell: pwsh
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+        # -SkipVulkanSdk: the action above already installed the SDK
+        # and exported $VULKAN_SDK; don't re-fetch it.
+        run: .\packaging\windows\setup-deps.ps1 -VcpkgRoot $env:VCPKG_ROOT -SkipVulkanSdk
+
+      # cache meson's build/ so ninja's incremental graph survives across
+      # runs; only sources / build files changed since the last run are
+      # recompiled. key rotates on any meson.build or source change so a
+      # stale object never masks a real rebuild.
+      - name: cache meson build
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}\build
+          key: meson-build-windows-${{ hashFiles('**/meson.build', 'meson_options.txt', 'src/**', 'dep/**/meson.build') }}
+          restore-keys: |
+            meson-build-windows-
+
+      - name: meson setup
+        shell: pwsh
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+        run: |
+          # extend the linker library search path so MSVC finds vulkan-1.lib
+          # under $VULKAN_SDK\Lib. msvc-dev-cmd already populated LIB
+          # with the VS + Windows SDK paths; we append to it.
+          $env:LIB = "$env:VULKAN_SDK\Lib;$env:LIB"
+          $pcPath = "$env:VCPKG_ROOT\installed\x64-windows\lib\pkgconfig"
+          # --reconfigure so a restored build/ picks up flag changes; no-op
+          # on a cold cache where build/ doesn't yet exist.
+          if (Test-Path build) {
+              meson setup build --buildtype=debug --pkg-config-path "$pcPath" --reconfigure
+          } else {
+              meson setup build --buildtype=debug --pkg-config-path "$pcPath"
+          }
+
+      - name: meson compile
+        shell: pwsh
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+        run: |
+          $env:LIB = "$env:VULKAN_SDK\Lib;$env:LIB"
+          meson compile -C build

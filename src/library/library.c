@@ -15,14 +15,14 @@
 #include <sqlite3.h>
 #include <toml.h>
 
+#include "core/compat.h"
+
 #include <dirent.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <strings.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>

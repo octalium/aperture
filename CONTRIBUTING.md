@@ -35,6 +35,14 @@ meson compile -C build
 
 `make build` is an equivalent shortcut.
 
+On Windows, run from a Developer PowerShell for VS 2022 and use the
+vcpkg-aware setup documented in
+[`packaging/windows/README.md`](packaging/windows/README.md). `make
+windows` wraps the full configure + compile + WiX MSI build in one
+step (requires `dotnet tool install --global wix` and the LunarG
+[Vulkan SDK](https://vulkan.lunarg.com/sdk/home#windows); `setup-deps.ps1`
+fetches the SDK silently if it isn't already on the machine).
+
 For a release build with LTO, stripping, and reproducibility flags:
 
 ```

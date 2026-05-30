@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  WiX v4 source for the aperture Windows MSI.
+
+  Per-machine install into %ProgramFiles%\aperture with a Start menu
+  shortcut and Add/Remove Programs entry. Major-upgrade replaces any
+  earlier install (matched by UpgradeCode).
+
+  Payload (aperture.exe + runtime DLLs) is staged into a single
+  directory ahead of `wix build`; everything under that staging dir
+  ships in the .msi, harvested at build time via the Files element
+  with a bindpath. The staging script (`build-msi.ps1`) decides what
+  goes into the staging dir.
+
+  Version + manufacturer + license source come from `wix build`
+  command-line variables (`-d ApertureVersion=...`, etc.). UpgradeCode
+  is a fixed GUID — never change it; that's the identifier MSI uses
+  to recognise the product across versions.
+
+  Vulkan loader (vulkan-1.dll) is intentionally NOT bundled. Modern
+  GPU drivers install it into System32; bundling our own would
+  shadow the driver's. Users without a Vulkan-capable GPU driver
+  will see a loader-missing error on launch, which is the right
+  outcome.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <Package Name="aperture"
+           Manufacturer="$(var.ApertureManufacturer)"
+           Version="$(var.ApertureVersion)"
+           UpgradeCode="d3e2c91a-7a4b-4ce0-9f87-7b1e9d57f1b1"
+           Scope="perMachine"
+           Compressed="yes">
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of aperture is already installed." />
+
+    <ui:WixUI Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+
+    <Property Id="ARPHELPLINK" Value="https://github.com/octalium/aperture" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/octalium/aperture" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="aperture" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApertureMenuFolder" Name="aperture" />
+    </StandardDirectory>
+
+    <Feature Id="ApertureMain" Title="aperture" Level="1">
+      <!-- harvest every file under the staging directory; WiX v4's
+           Files element auto-generates a Component per file and
+           includes them in this Feature. -->
+      <Files Include="!(bindpath.Stage)\**" Directory="INSTALLFOLDER" />
+
+      <ComponentRef Id="ApertureStartMenuShortcut" />
+    </Feature>
+
+    <Component Id="ApertureStartMenuShortcut" Directory="ApertureMenuFolder" Bitness="always64">
+      <Shortcut Id="ApertureStartShortcut"
+                Name="aperture"
+                Description="Raw photo processor"
+                Target="[INSTALLFOLDER]aperture.exe"
+                WorkingDirectory="INSTALLFOLDER" />
+      <!-- shortcut-only component: RemoveFolder cleans the menu dir on
+           uninstall, RegistryValue gives the component a stable keypath
+           that doesn't depend on the file payload. -->
+      <RemoveFolder Id="RemoveApertureMenuFolder" On="uninstall" />
+      <RegistryValue Root="HKCU"
+                     Key="Software\octalium\aperture"
+                     Name="installed"
+                     Type="integer"
+                     Value="1"
+                     KeyPath="yes" />
+    </Component>
+  </Package>
+</Wix>

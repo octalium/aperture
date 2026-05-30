@@ -1,0 +1,151 @@
+# Tagged-release Windows build.
+#
+# Trigger: push of a v* tag. Produces an x64 .msi installer (WiX v4)
+# bundling aperture.exe + runtime DLLs (lensfun + glib chain via vcpkg;
+# everything else built from source) and attaches it to the GitHub
+# Release for the tag.
+#
+# Code-signing is intentionally out of scope; first-run users see the
+# SmartScreen "unknown publisher" warning until there's appetite for a
+# paid signing cert. `vulkan-1.dll` is loaded from the user's GPU
+# driver at runtime — we do not bundle it.
+
+name: release-windows
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  windows-msi:
+    name: .msi (x64)
+    runs-on: windows-2022
+    # remove when #529 lands — app layer is not yet MSVC-portable
+    continue-on-error: true
+    # ilammy/msvc-dev-cmd resets VCPKG_ROOT to the VS-bundled vcpkg
+    # (manifest mode, rejects classic-mode `vcpkg install <port>`).
+    # Each step that needs vcpkg re-pins VCPKG_ROOT in its own env
+    # block so the override sticks past msvc-dev-cmd.
+    env:
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: derive version + epoch from tag
+        id: meta
+        shell: bash
+        run: |
+          tag=${GITHUB_REF#refs/tags/}
+          version=${tag#v}
+          epoch=$(git -C "$GITHUB_WORKSPACE" log -1 --pretty=%ct "$tag")
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "epoch=$epoch" >>"$GITHUB_OUTPUT"
+
+      - name: set up python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: install meson + ninja
+        run: pip install --upgrade 'meson>=1.3.0' ninja
+
+      # windows-2022 already exposes MSVC, but enter-vsdevenv ensures
+      # cl.exe and the matching CRT are on PATH for the meson invocations.
+      - name: enter VS dev env
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # WiX v4 ships as a dotnet global tool. install up-front so the
+      # packaging step has it on PATH. UI extension is required for the
+      # WixUI_Minimal wizard the .wxs references.
+      - name: install WiX v4 toolset
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix
+          wix extension add --global WixToolset.UI.wixext
+
+      # LunarG Vulkan SDK supplies vulkan-1.lib for link-time;
+      # the runtime DLL is driver-provided on user machines.
+      - name: install Vulkan SDK
+        uses: humbletim/install-vulkan-sdk@v1.2
+        with:
+          version: 1.4.309.0
+          cache:   true
+
+      # vcpkg cache key tracks setup-deps.ps1's content: any port
+      # add / lensfun version bump / triplet change re-hashes the file
+      # and rotates the cache key automatically.
+      - name: cache vcpkg installed
+        id: cache-vcpkg
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}\vcpkg\installed
+            ${{ github.workspace }}\vcpkg\packages
+          key: vcpkg-windows-x64-${{ hashFiles('packaging/windows/setup-deps.ps1') }}
+
+      - name: bootstrap vcpkg + install lensfun
+        shell: pwsh
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+          VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-bin-cache
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          .\packaging\windows\setup-deps.ps1 -VcpkgRoot $env:VCPKG_ROOT -SkipVulkanSdk
+
+      - name: meson setup
+        shell: pwsh
+        env:
+          VCPKG_ROOT:        ${{ github.workspace }}\vcpkg
+          SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
+        run: |
+          # extend LIB with $VULKAN_SDK\Lib so cc.find_library('vulkan-1')
+          # resolves at link time. msvc-dev-cmd already populated LIB
+          # with VS + Windows SDK paths.
+          $env:LIB = "$env:VULKAN_SDK\Lib;$env:LIB"
+          $pcPath = "$env:VCPKG_ROOT\installed\x64-windows\lib\pkgconfig"
+          meson setup build `
+              --buildtype=release `
+              --pkg-config-path "$pcPath" `
+              -Db_lto=true `
+              -Dstrip=true
+
+      - name: meson compile
+        shell: pwsh
+        env:
+          VCPKG_ROOT:        ${{ github.workspace }}\vcpkg
+          SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
+        run: |
+          $env:LIB = "$env:VULKAN_SDK\Lib;$env:LIB"
+          meson compile -C build
+
+      - name: build MSI installer
+        shell: pwsh
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+          SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
+        run: |
+          .\packaging\windows\build-msi.ps1 -Version ${{ steps.meta.outputs.version }}
+
+      - name: list artifacts
+        shell: pwsh
+        run: Get-ChildItem out\aperture-*-windows-x64.msi | Format-List
+
+      - name: upload .msi to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out/aperture-*-windows-x64.msi
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: ${{ contains(steps.meta.outputs.tag, '-') }}
