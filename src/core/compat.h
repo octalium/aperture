@@ -56,11 +56,17 @@
 #define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
 #endif
 
-// POSIX realpath(path, NULL) canonicalises and mallocs the result;
-// _fullpath(NULL, path, 0) normalises and mallocs with the same
-// free-with-free() contract (it does not resolve symlinks, which the
-// paths aperture canonicalises never traverse on windows).
-#define realpath(path, resolved) _fullpath((resolved), (path), 0)
+// POSIX realpath: with a NULL output buffer it mallocs the result
+// (free with free()); with a caller buffer it writes up to PATH_MAX
+// bytes. _fullpath has the same two modes but needs the buffer size
+// for the non-NULL case, so wrap it rather than macro-substitute. it
+// normalises without resolving symlinks, which the paths aperture
+// canonicalises never traverse on windows.
+static inline char *ap_realpath(const char *path, char *resolved)
+{
+    return _fullpath(resolved, path, resolved ? _MAX_PATH : 0);
+}
+#define realpath(path, resolved) ap_realpath((path), (resolved))
 
 #ifndef PATH_MAX
 #define PATH_MAX _MAX_PATH
