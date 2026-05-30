@@ -78,7 +78,7 @@ enum {
     MODE_MANUAL = 1,
 };
 
-// tca_model values must match shaders/chromatic_aberration.comp.
+// tca_model values must match src/shaders/chromatic_aberration.comp.
 enum {
     SHADER_TCA_NONE   = 0,
     SHADER_TCA_LINEAR = 1,

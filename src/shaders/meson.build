@@ -1,5 +1,5 @@
 glslc      = find_program('glslc')
-embed_spv  = find_program(meson.project_source_root() / 'tools' / 'embed_spv.py')
+embed_spv  = find_program(meson.current_source_dir() / 'embed_spv.py')
 
 shader_sources = [
   'histogram.comp',
