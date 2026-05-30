@@ -5,8 +5,8 @@
 # MSI build without the Makefile having to thread them.
 #
 # Usage:
-#   PS> .\packaging\windows\make-windows.ps1
-#   PS> .\packaging\windows\make-windows.ps1 -BuildDir build -BuildType release
+#   PS> .\pkg\windows\make-windows.ps1
+#   PS> .\pkg\windows\make-windows.ps1 -BuildDir build -BuildType release
 
 [CmdletBinding()]
 param(
@@ -19,7 +19,7 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 Set-Location $repoRoot
 
-& packaging\windows\setup-deps.ps1
+& pkg\windows\setup-deps.ps1
 if ($LASTEXITCODE -ne 0) {
     throw "setup-deps failed (exit $LASTEXITCODE)"
 }
@@ -38,5 +38,5 @@ if ($LASTEXITCODE -ne 0) { throw "meson setup failed" }
 meson compile -C $BuildDir
 if ($LASTEXITCODE -ne 0) { throw "meson compile failed" }
 
-& packaging\windows\build-msi.ps1 -BuildDir $BuildDir
+& pkg\windows\build-msi.ps1 -BuildDir $BuildDir
 if ($LASTEXITCODE -ne 0) { throw "build-msi failed" }

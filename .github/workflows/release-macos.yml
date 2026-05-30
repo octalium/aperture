@@ -44,7 +44,7 @@ jobs:
               shellcheck
 
       - name: shellcheck packaging scripts
-        run: shellcheck packaging/macos/*.sh
+        run: shellcheck pkg/macos/*.sh
 
       - name: derive version + epoch from tag
         id: meta
@@ -71,13 +71,13 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
           VERSION: ${{ steps.meta.outputs.version }}
-        run: packaging/macos/build-app.sh
+        run: pkg/macos/build-app.sh
 
       - name: package .dmg
         env:
           SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
           VERSION: ${{ steps.meta.outputs.version }}
-        run: packaging/macos/build-dmg.sh
+        run: pkg/macos/build-dmg.sh
 
       - name: list artifacts
         run: |

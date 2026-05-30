@@ -110,13 +110,13 @@ endif
 aperture_inc = include_directories('src')
 aperture_sources = []
 
-subdir('shaders')
+subdir('src/shaders')
 subdir('src')
 
 if host_machine.system() == 'linux'
-  subdir('packaging/linux')
+  subdir('pkg/linux')
 elif host_machine.system() == 'darwin'
-  subdir('packaging/macos')
+  subdir('pkg/macos')
 endif
 
 aperture_deps = [

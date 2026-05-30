@@ -10,8 +10,8 @@ not the goal.
 
 ## Screenshots
 
-![Library — culling and metadata](docs/screenshots/library.png)
-![Photo — single-image edit](docs/screenshots/photo.png)
+![Library — culling and metadata](doc/screenshots/library.png)
+![Photo — single-image edit](doc/screenshots/photo.png)
 
 ## What it does
 
@@ -59,7 +59,7 @@ exported."
   **right-click → Open** to bypass the Gatekeeper "unidentified developer"
   warning (the .dmg is unsigned — there is no Apple Developer ID
   notarization).
-- **Build from source**: see [`packaging/macos/README.md`](packaging/macos/README.md).
+- **Build from source**: see [`pkg/macos/README.md`](pkg/macos/README.md).
 
 ### Windows
 
@@ -72,7 +72,7 @@ exported."
   "unknown publisher" prompt on first run — click **More info → Run
   anyway**. A Vulkan-capable GPU + current driver is the only system
   requirement; `vulkan-1.dll` ships with every modern GPU driver.
-- **Build from source**: see [`packaging/windows/README.md`](packaging/windows/README.md).
+- **Build from source**: see [`pkg/windows/README.md`](pkg/windows/README.md).
 
 Library and config live under `%APPDATA%\aperture`.
 
@@ -134,11 +134,11 @@ entry, icon, and MIME types are picked up.
 
 ### macOS
 
-See [`packaging/macos/README.md`](packaging/macos/README.md).
+See [`pkg/macos/README.md`](pkg/macos/README.md).
 
 ### Windows
 
-See [`packaging/windows/README.md`](packaging/windows/README.md). Native
+See [`pkg/windows/README.md`](pkg/windows/README.md). Native
 MSVC + meson; vcpkg supplies lensfun, everything else builds from the
 submoduled `dep/` tree.
 

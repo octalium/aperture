@@ -61,7 +61,7 @@ if [ ! -x "$aperture_bin" ]; then
     exit 1
 fi
 if [ ! -f "$info_plist" ]; then
-    echo "missing staged Info.plist at $info_plist (packaging/macos/meson.build not invoked?)" >&2
+    echo "missing staged Info.plist at $info_plist (pkg/macos/meson.build not invoked?)" >&2
     exit 1
 fi
 
@@ -92,7 +92,7 @@ chmod +x "$APP_OUT/Contents/MacOS/aperture"
 # 2x the named pixel dimensions. rsvg-convert produces crisp output at
 # arbitrary sizes - sips can't rasterize SVG directly. brew install
 # librsvg ships rsvg-convert.
-src_svg="$repo_root/packaging/linux/icons/hicolor/scalable/apps/io.github.octalium.aperture.svg"
+src_svg="$repo_root/pkg/icons/hicolor/scalable/apps/io.github.octalium.aperture.svg"
 if [ ! -f "$src_svg" ]; then
     echo "error: source icon $src_svg not found" >&2
     exit 1

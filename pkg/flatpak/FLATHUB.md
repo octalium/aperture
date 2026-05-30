@@ -4,7 +4,7 @@ The Flathub submission is a manual, one-time step performed by the
 project owner. This document records the procedure so it can be redone
 or audited later. Day-to-day Flatpak builds (for testing or for the
 GitHub Release) are handled by the manifest at
-`packaging/flatpak/io.github.octalium.aperture.yml` and the
+`pkg/flatpak/io.github.octalium.aperture.yml` and the
 `linux-flatpak` job in `.github/workflows/release-linux.yml`.
 
 ## Prerequisites
@@ -30,7 +30,7 @@ flatpak-builder \
     --install-deps-from=flathub \
     --force-clean \
     --repo=repo \
-    build-dir packaging/flatpak/io.github.octalium.aperture.yml
+    build-dir pkg/flatpak/io.github.octalium.aperture.yml
 
 flatpak build-bundle repo aperture.flatpak io.github.octalium.aperture
 flatpak --user install -y --reinstall aperture.flatpak
@@ -79,13 +79,13 @@ flatpak --user uninstall -y io.github.octalium.aperture
 - Runtime is the freedesktop platform (`24.08` LTS as of writing). Bump
   in lockstep with Flathub guidance when a new LTS is cut.
 - System deps come from the runtime: Vulkan loader, libpng, libtiff,
-  libjpeg, sqlite3. Deps the runtime lacks (glfw, lensfun, libraw) are
-  built as separate modules. Vendored deps that require a fetch
-  (cimgui, lcms2, cJSON, nativefiledialog, tomlc99) come in through
-  meson wraps under `dep/` with `--wrap-mode=nodownload`, and the
-  wrap sources are pinned as `sources:` entries alongside the aperture
-  module so flatpak-builder can build offline. In-tree wraps (blake3)
-  need no `sources:` entry.
+  and the common desktop stack. The only dep built as a separate
+  module is `lensfun`. Vendored submodules under `dep/<name>/upstream/`
+  (cimgui, lcms2, cJSON, nativefiledialog, tomlc99, glfw, libraw,
+  libjpeg-turbo, vulkan-headers, mbedtls) build via meson wraps with
+  `--wrap-mode=nodownload`; their wrap sources are pinned as `sources:`
+  entries on the aperture module so flatpak-builder can build offline.
+  In-tree direct copies (blake3, sqlite3) carry no `sources:` entry.
 - The `aperture` module's `sources:` block defaults to `branch: main`.
   CI rewrites it to `tag: v<version>` before building so the release
   build is bit-for-bit reproducible against the tag.

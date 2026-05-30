@@ -7,7 +7,7 @@
 #      temporary directory (out/msi-stage by default).
 #   2. Render the LICENSE into a minimal RTF the WiX UI extension can
 #      embed in the wizard.
-#   3. Invoke `wix build` (WiX v4) against packaging\windows\wix\aperture.wxs
+#   3. Invoke `wix build` (WiX v4) against pkg\windows\wix\aperture.wxs
 #      with the staging dir as a bindpath, producing the .msi.
 #
 # Output:
@@ -17,8 +17,8 @@
 # bundling our own would shadow the driver-supplied loader.
 #
 # Usage:
-#   PS> .\packaging\windows\build-msi.ps1
-#   PS> .\packaging\windows\build-msi.ps1 -Version 0.1.0 -BuildDir build -VcpkgInstalled C:\vcpkg\installed\x64-windows
+#   PS> .\pkg\windows\build-msi.ps1
+#   PS> .\pkg\windows\build-msi.ps1 -Version 0.1.0 -BuildDir build -VcpkgInstalled C:\vcpkg\installed\x64-windows
 
 [CmdletBinding()]
 param(
@@ -63,7 +63,7 @@ if (-not (Test-Path $exe)) {
 
 $vcpkgBin = Join-Path $VcpkgInstalled 'bin'
 if (-not (Test-Path $vcpkgBin)) {
-    throw "missing $vcpkgBin; run packaging\windows\setup-deps.ps1 first"
+    throw "missing $vcpkgBin; run pkg\windows\setup-deps.ps1 first"
 }
 
 # WiX v4 ships as a dotnet tool; verify before doing payload work so
@@ -114,7 +114,7 @@ $licenseRtf = "{\rtf1\ansi\deff0{\fonttbl{\f0\fnil\fcharset0 Segoe UI;}}\fs18`n$
 $licenseRtfPath = Join-Path $OutDir '_license.rtf'
 Set-Content -Path $licenseRtfPath -Value $licenseRtf -Encoding ascii -NoNewline
 
-$wxs = Join-Path $repoRoot 'packaging\windows\wix\aperture.wxs'
+$wxs = Join-Path $repoRoot 'pkg\windows\wix\aperture.wxs'
 $msi = Join-Path $OutDir "aperture-$Version-windows-x64.msi"
 if (Test-Path $msi) { Remove-Item -Force $msi }
 
