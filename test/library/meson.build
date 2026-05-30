@@ -19,6 +19,7 @@ library_test = executable(
     '../../src/photo/metadata.c',
     '../../src/core/log.c',
     '../../src/core/fs.c',
+    '../../src/core/memstream.c',
     '../../src/core/random.c',
     '../support/aptest_modules.c',
   ) + ap_dir_src,

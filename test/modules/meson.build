@@ -5,6 +5,7 @@ stack_pack_test = executable(
     '../../src/edit/stack.c',
     '../../src/edit/stack_toml.c',
     '../../src/core/log.c',
+    '../../src/core/memstream.c',
     '../support/aptest_modules.c',
   ),
   include_directories: [aperture_inc, aptest_inc],

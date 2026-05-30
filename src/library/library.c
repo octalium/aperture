@@ -18,6 +18,7 @@
 #include "core/compat.h"
 #include "core/dir.h"
 #include "core/fs.h"
+#include "core/memstream.h"
 #include "core/random.h"
 
 #include <errno.h>
@@ -153,19 +154,21 @@ static int stack_to_toml_string(const ap_edit_stack *stack,
 {
     *out_buf = NULL;
     *out_len = 0;
-    char  *buf = NULL;
-    size_t len = 0;
-    FILE *mf = open_memstream(&buf, &len);
-    if (!mf) {
+    ap_memstream *ms = ap_memstream_open();
+    if (!ms) {
         AP_ERROR("pipeline: open_memstream: %s", strerror(errno));
         return -1;
     }
-    if (ap_edit_stack_write_toml(stack, mf) != 0) {
-        fclose(mf);
-        free(buf);
+    if (ap_edit_stack_write_toml(stack, ap_memstream_file(ms)) != 0) {
+        char *scrap = NULL;
+        size_t scrap_len = 0;
+        ap_memstream_close(ms, &scrap, &scrap_len);
+        free(scrap);
         return -1;
     }
-    if (fclose(mf) != 0) {
+    char  *buf = NULL;
+    size_t len = 0;
+    if (ap_memstream_close(ms, &buf, &len) != 0) {
         free(buf);
         AP_ERROR("pipeline: fclose memstream: %s", strerror(errno));
         return -1;
@@ -2376,10 +2379,9 @@ int ap_library_delete_group(ap_library *lib, const char *group)
 // is "key=value\n". Caller owns the returned buffer (free it).
 static char *preset_to_blob(const ap_export_settings *s)
 {
-    char *buf = NULL;
-    size_t len = 0;
-    FILE *mf = open_memstream(&buf, &len);
-    if (!mf) return NULL;
+    ap_memstream *ms = ap_memstream_open();
+    if (!ms) return NULL;
+    FILE *mf = ap_memstream_file(ms);
     fprintf(mf, "format=%d\n",       s->format);
     fprintf(mf, "jpeg_quality=%d\n", s->jpeg_quality);
     fprintf(mf, "png_depth=%d\n",    s->png_depth);
@@ -2391,7 +2393,12 @@ static char *preset_to_blob(const ap_export_settings *s)
     fprintf(mf, "dest_subdir=%s\n",  s->dest_subdir);
     fprintf(mf, "dest_dir=%s\n",     s->dest_dir);
     fprintf(mf, "collision=%d\n",    s->collision);
-    fclose(mf);
+    char  *buf = NULL;
+    size_t len = 0;
+    if (ap_memstream_close(ms, &buf, &len) != 0) {
+        free(buf);
+        return NULL;
+    }
     return buf;
 }
 

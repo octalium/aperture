@@ -48,6 +48,10 @@
 #define utime(p, t) _utime((p), (t))
 #define utimbuf     _utimbuf
 
+// timegm (UTC counterpart of mktime) is GNU; MSVC spells it _mkgmtime.
+#include <time.h>
+#define timegm(tm) _mkgmtime(tm)
+
 // POSIX setenv/unsetenv onto MSVC's _putenv_s. setenv always overwrites
 // here (the overwrite flag is dropped); aperture's call-sites pass 1.
 // unsetenv clears the variable by setting it empty.

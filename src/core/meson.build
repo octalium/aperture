@@ -1,6 +1,7 @@
 aperture_sources += files(
   'fs.c',
   'log.c',
+  'memstream.c',
   'random.c',
   'version.c',
   'worker.c',
