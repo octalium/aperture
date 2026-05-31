@@ -178,9 +178,18 @@ static void handle_thumb_encode_complete(ap_app *app, thumb_encode_job *j)
         && j->idx >= 0 && j->idx < ap_library_photo_count(app->library))
     {
         ap_library_store_thumbnail(app->library, j->idx, j->jpeg, j->jpeg_size);
+        // Reset the cell that actually shows this photo before invalidating
+        // its cached thumbnail. The grid is indexed by display cell, which
+        // differs from the library index under a group/search filter, so
+        // using j->idx here would leave the real cell's descriptor pointing
+        // at the image invalidate_thumbnail destroys below -> the next grid
+        // render samples a freed VkImageView -> VK_ERROR_DEVICE_LOST.
         if (app->grid) {
-            ap_grid_set_thumbnail(app->grid, j->idx,
-                                  VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
+            int cell = cell_for_photo(app, j->idx);
+            if (cell >= 0) {
+                ap_grid_set_thumbnail(app->grid, cell,
+                                      VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
+            }
         }
         ap_library_invalidate_thumbnail(app->library, j->idx);
     }
