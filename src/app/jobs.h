@@ -70,23 +70,16 @@ typedef struct import_job {
     char                db_path[4096];
     char                src_dir[4096];
     ap_import_settings  settings;
-    ap_status_id        status_id;
     ap_import_report    report;
     int                 ok;
-    // Atomic so the worker thread sees a request set from the main
-    // thread without explicit locking. Polled by the progress
-    // callback after each file; the importer breaks the loop on
-    // true and reports report.cancelled.
-    _Atomic int         cancel_requested;
+    // The unified job control block (label / progress / cancel). The
+    // worker polls job->cancel between files via the progress callback;
+    // the main thread flips it through ap_job_request_cancel_by_id.
+    ap_job             *job;
 } import_job;
 
 void submit_import_job(ap_app *app, const char *lib_root, const char *src_dir,
                        const ap_import_settings *settings);
-
-// Signal the in-flight import (if any) to stop. The worker thread
-// notices on its next progress tick (between files) and reports
-// partial results. No-op when no import is running.
-void request_import_cancel(ap_app *app);
 
 void discard_completed_item(ap_app *app, ap_work_item *it);
 void drain_all_workers(ap_app *app);

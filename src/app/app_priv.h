@@ -20,8 +20,6 @@
 #include "edit/viewport.h"
 #include "gpu/canvas.h"
 
-// Defined in src/app/jobs.h; only its address is held by ap_app.
-struct import_job;
 // Defined in src/app/export_coord.h; only its address is held by ap_app.
 typedef struct ap_export_coord ap_export_coord;
 #include "gpu/gpu.h"
@@ -101,11 +99,6 @@ struct ap_app {
     ap_import_settings  import_settings;
     char                import_status[160];
     ap_import_report    import_report;
-    // Borrowed pointer to the in-flight import job, valid only
-    // while import_inflight is true. The job's own cancel flag is
-    // an atomic so the main thread can flip it without locking.
-    // Cleared in handle_import_complete / discard_completed_item.
-    struct import_job  *inflight_import_job;
 
     ap_export_settings       export_settings;
     bool                     export_modal;

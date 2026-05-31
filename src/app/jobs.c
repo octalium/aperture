@@ -71,8 +71,8 @@ void thumb_encode_job_run(ap_work_item *self)
 static bool import_progress_cb(int done, int total, void *userdata)
 {
     import_job *j = (import_job *)userdata;
-    ap_status_progress_update(j->status_id, done, total);
-    return atomic_load(&j->cancel_requested) == 0;
+    ap_job_progress(j->job, done, total);
+    return !ap_job_cancel_requested(j->job);
 }
 
 void import_job_run(ap_work_item *self)
@@ -237,10 +237,12 @@ static void handle_update_check_complete(ap_app *app, ap_update_check_job *j)
 
 static void handle_import_complete(ap_app *app, import_job *j)
 {
-    app->import_inflight     = false;
-    app->inflight_import_job = NULL;
-    app->import_report       = j->report;
-    ap_status_progress_finish(j->status_id, j->ok && !j->report.cancelled);
+    app->import_inflight  = false;
+    app->import_job_id    = 0;
+    app->import_report    = j->report;
+    bool ok = j->ok && !j->report.cancelled;
+    ap_job_finish(j->job, j->report.cancelled ? AP_JOB_CANCELED
+                          : (ok ? AP_JOB_DONE : AP_JOB_FAILED));
 
     if (j->ok) {
         // Incremental rescan instead of a full library reopen: keeps
@@ -271,16 +273,8 @@ static void handle_import_complete(ap_app *app, import_job *j)
                  "Import failed -- see the log.");
         ap_status_notify(AP_STATUS_ERROR, "Import failed -- see the log.");
     }
+    free(j->job);
     free(j);
-}
-
-void request_import_cancel(ap_app *app)
-{
-    if (!app || !app->inflight_import_job) return;
-    // The worker reads this atomic via import_progress_cb after each
-    // file and breaks the loop on next tick. handle_import_complete
-    // clears the borrowed pointer.
-    atomic_store(&app->inflight_import_job->cancel_requested, 1);
 }
 
 void discard_completed_item(ap_app *app, ap_work_item *it)
@@ -313,9 +307,10 @@ void discard_completed_item(ap_app *app, ap_work_item *it)
         free(j);
     } else if (it->run == import_job_run) {
         import_job *j = (import_job *)it;
-        app->import_inflight     = false;
-        app->inflight_import_job = NULL;
-        ap_status_progress_finish(j->status_id, 0);
+        app->import_inflight = false;
+        app->import_job_id   = 0;
+        ap_job_finish(j->job, AP_JOB_CANCELED);
+        free(j->job);
         free(j);
     } else if (it->run == ap_update_check_run) {
         ap_update_check_job *j = (ap_update_check_job *)it;
@@ -452,11 +447,16 @@ void submit_import_job(ap_app *app, const char *lib_root, const char *src_dir,
              "%s/library.db", lib_root);
     snprintf(j->src_dir,  sizeof(j->src_dir),  "%s", src_dir);
     j->settings  = *settings;
-    j->status_id = ap_status_progress_begin("Importing photos...", 0);
+    j->job = ap_job_begin(AP_JOB_KIND_IMPORT, "Importing photos...", 0, NULL);
+    if (!j->job) {
+        AP_ERROR("import: job control block alloc failed");
+        free(j);
+        return;
+    }
 
-    app->import_inflight        = true;
-    app->import_status[0]       = '\0';
-    app->inflight_import_job    = j;
+    app->import_inflight  = true;
+    app->import_status[0] = '\0';
+    app->import_job_id    = j->job->id;
     memset(&app->import_report, 0, sizeof(app->import_report));
     ap_worker_pool_submit(app->workers, &j->base);
 }

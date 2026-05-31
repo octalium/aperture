@@ -1076,7 +1076,11 @@ void ap_app_open_import_modal(ap_app *app)
 
 void ap_app_cancel_import(ap_app *app)
 {
-    request_import_cancel(app);
+    if (!app) return;
+    // id-keyed: the worker notices on its next progress tick (between
+    // files) and reports partial results. No-op if the import already
+    // finished and unlinked its job.
+    ap_job_request_cancel_by_id(app->import_job_id);
 }
 
 bool ap_app_import_inflight(const ap_app *app)
