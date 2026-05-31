@@ -68,6 +68,11 @@ struct ap_app {
     bool             jobs_panel;
     uint64_t         import_job_id;
 
+    // Single-flight guard for background selection-edit jobs: a second
+    // op is rejected while one runs, so two workers never write the same
+    // photo's sidecar concurrently.
+    bool             selection_edit_inflight;
+
     bool             show_panels;
     bool             show_rendered_thumbnails;
 
@@ -178,6 +183,7 @@ void thumb_encode_job_run(ap_work_item *self);
 void photo_open_job_run(ap_work_item *self);
 void export_job_run(ap_work_item *self);
 void import_job_run(ap_work_item *self);
+void selection_edit_job_run(ap_work_item *self);
 
 /* jobs.c public entry points */
 void submit_import_job(ap_app *app, const char *lib_root, const char *src_dir,

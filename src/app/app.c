@@ -1090,26 +1090,15 @@ bool ap_app_import_inflight(const ap_app *app)
 
 int ap_app_apply_pipeline_to_selection(ap_app *app, int64_t pipeline_id)
 {
-    if (!app || !app->library || !app->grid) return -1;
-
-    int wrote = 0;
-    for (int c = 0; c < app->grid_map_count; c++) {
-        if (!ap_grid_is_selected(app->grid, c)) continue;
-        int i = app->grid_map[c];
-        // Skip the open photo: rewriting its sidecar would leave the
-        // in-memory stack stale until the user closes + reopens.
-        if (app->photo && i == app->photo_library_idx) continue;
-        if (ap_library_apply_pipeline_to_photo(app->library, i,
-                                               pipeline_id) == 0) {
-            wrote++;
-            // Drop the cached thumbnail so the grid re-decodes against
-            // the new stack on the next pump cycle. The stored
-            // edit-render blob's freshness check already handles the
-            // sidecar-mtime side.
-            ap_library_invalidate_thumbnail(app->library, i);
-        }
-    }
-    return wrote;
+    // Backgrounded: the per-item op is pure path-based sidecar I/O. The
+    // return value is now the number of photos *queued*; the thumbnail
+    // invalidation + final count notify happen at completion on the main
+    // thread (handle_selection_edit_complete).
+    selection_edit_job *j =
+        build_selection_edit_job(app, AP_SEL_EDIT_PIPELINE, true);
+    if (!j) return (app && app->library && app->grid) ? 0 : -1;
+    j->pipeline_id = pipeline_id;
+    return commit_selection_edit_job(app, j, "Applying pipeline...");
 }
 
 int ap_app_copy_edits(ap_app *app)
@@ -1165,19 +1154,13 @@ int ap_app_sync_edits_to_selection(ap_app *app)
     if (!app || !app->library || !app->grid) return -1;
     if (!app->edit_clipboard_valid) return -1;
 
-    int wrote = 0;
-    for (int c = 0; c < app->grid_map_count; c++) {
-        if (!ap_grid_is_selected(app->grid, c)) continue;
-        int i = app->grid_map[c];
-        if (app->photo && i == app->photo_library_idx) continue;
-        if (ap_library_apply_stack_to_photo(app->library, i,
-                                            &app->edit_clipboard,
-                                            NULL) == 0) {
-            wrote++;
-            ap_library_invalidate_thumbnail(app->library, i);
-        }
-    }
-    return wrote;
+    selection_edit_job *j =
+        build_selection_edit_job(app, AP_SEL_EDIT_STACK, true);
+    if (!j) return 0;
+    // Copy the clipboard stack into the job: it is mutable from the UI,
+    // so the worker must not read app->edit_clipboard directly.
+    j->stack = app->edit_clipboard;
+    return commit_selection_edit_job(app, j, "Syncing edits...");
 }
 
 // Find the index of `name` in a NUL-terminated array. Returns -1
@@ -1198,6 +1181,10 @@ int ap_app_apply_lens_override_to_selection(ap_app *app,
                                             int *out_applied,
                                             int *out_skipped)
 {
+    // Backgrounded: the per-item EXIF match + sidecar attach runs on a
+    // worker. The match is data-dependent, so out_applied reports the
+    // number of photos *queued* and out_skipped is 0 — the final
+    // applied count is surfaced by the completion handler.
     if (out_applied) *out_applied = 0;
     if (out_skipped) *out_skipped = 0;
     if (!app || !app->library || !app->grid) return -1;
@@ -1209,65 +1196,17 @@ int ap_app_apply_lens_override_to_selection(ap_app *app,
                                 lens_mod->str_params_count, "lens_override");
     if (slot < 0) return -1;
 
-    int applied = 0;
-    int skipped = 0;
+    selection_edit_job *j =
+        build_selection_edit_job(app, AP_SEL_EDIT_LENS, true);
+    if (!j) return 0;
+    j->lens_slot = slot;
+    snprintf(j->match_exif_lens, sizeof(j->match_exif_lens),
+             "%s", match_exif_lens);
+    snprintf(j->override_lens, sizeof(j->override_lens), "%s", override_lens);
 
-    for (int c = 0; c < app->grid_map_count; c++) {
-        if (!ap_grid_is_selected(app->grid, c)) continue;
-        int i = app->grid_map[c];
-        if (app->photo && i == app->photo_library_idx) continue;
-
-        char abs[4096];
-        if (ap_library_photo_absolute_path(app->library, i,
-                                           abs, sizeof(abs)) != 0) {
-            skipped++;
-            continue;
-        }
-
-        char peer_lens[AP_META_VALUE_LEN];
-        if (ap_raw_lens_model(abs, peer_lens, sizeof(peer_lens)) != 0) {
-            skipped++;
-            continue;
-        }
-        if (strcmp(peer_lens, match_exif_lens) != 0) {
-            skipped++;
-            continue;
-        }
-
-        ap_edit_stack stack;
-        ap_sidecar_ancillary ancillary;
-        if (ap_sidecar_load_full(abs, &stack, &ancillary) != 0) {
-            // No sidecar / unreadable: nothing to attach an override to.
-            skipped++;
-            continue;
-        }
-
-        int hit = -1;
-        for (int e = 0; e < stack.count; e++) {
-            if (strcmp(stack.entries[e].module_name, "lens_correction") == 0) {
-                hit = e;
-                break;
-            }
-        }
-        if (hit < 0) {
-            skipped++;
-            continue;
-        }
-
-        snprintf(stack.entries[hit].str_params[slot], AP_EDIT_STR_LEN,
-                 "%s", override_lens);
-
-        if (ap_library_apply_stack_to_photo(app->library, i, &stack,
-                                            &ancillary) == 0) {
-            applied++;
-            ap_library_invalidate_thumbnail(app->library, i);
-        } else {
-            skipped++;
-        }
-    }
-
-    if (out_applied) *out_applied = applied;
-    if (out_skipped) *out_skipped = skipped;
+    int queued = commit_selection_edit_job(app, j, "Applying lens override...");
+    if (queued < 0) return -1;
+    if (out_applied) *out_applied = queued;
     return 0;
 }
 
@@ -1278,16 +1217,12 @@ int ap_app_apply_metadata_to_selection(ap_app *app,
     if (!app || !patch || !patch_set) return -1;
     if (!app->library || !app->grid)  return -1;
 
-    int wrote = 0;
-    for (int c = 0; c < app->grid_map_count; c++) {
-        if (!ap_grid_is_selected(app->grid, c)) continue;
-        int i = app->grid_map[c];
-        if (ap_library_apply_metadata_patch(app->library, i,
-                                            patch, patch_set) == 0) {
-            wrote++;
-        }
-    }
-    return wrote;
+    selection_edit_job *j =
+        build_selection_edit_job(app, AP_SEL_EDIT_METADATA, false);
+    if (!j) return 0;
+    j->patch = *patch;
+    memcpy(j->patch_set, patch_set, sizeof(j->patch_set));
+    return commit_selection_edit_job(app, j, "Applying metadata...");
 }
 
 // Culling field to mutate across the selection. Each enumerator

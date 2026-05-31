@@ -78,8 +78,62 @@ typedef struct import_job {
     ap_job             *job;
 } import_job;
 
+// Which worker-safe sidecar op a selection_edit_job runs. Each maps to
+// a pure ap_library_* per-item function (no GPU, no in-memory library
+// cache mutation, no shared db handle).
+typedef enum {
+    AP_SEL_EDIT_PIPELINE = 0,  // apply a pipeline to each photo's stack
+    AP_SEL_EDIT_STACK,         // write a copied edit stack to each photo
+    AP_SEL_EDIT_METADATA,      // merge a metadata patch into each sidecar
+    AP_SEL_EDIT_LENS,          // attach a lens override to matching photos
+} ap_sel_edit_op;
+
+// Background batch over a snapshot of selected library indices. The
+// worker runs the per-item sidecar op + polls cancel + reports progress;
+// the main-thread completion handler invalidates the touched thumbnails
+// (re-validating index + generation first). Library pointer is read
+// only — concurrent library-mutating ops (sort/delete) drain the pool
+// first, so the snapshot's indices and paths stay valid for the run.
+typedef struct {
+    ap_work_item    base;
+    ap_library     *library;       // borrowed; read-only on the worker
+    ap_job         *job;
+    ap_sel_edit_op  op;
+    int            *indices;       // snapshot of selected library indices
+    int             count;
+    _Atomic int     wrote;         // photos successfully written
+    uint64_t        thumb_gen;     // generation captured at submit
+
+    // op payloads (only the active op's fields are meaningful)
+    int64_t         pipeline_id;                 // PIPELINE
+    ap_edit_stack   stack;                       // STACK
+    ap_photo_metadata patch;                     // METADATA
+    bool            patch_set[AP_META_FIELD_COUNT]; // METADATA
+    char            match_exif_lens[AP_META_VALUE_LEN]; // LENS
+    char            override_lens[AP_META_VALUE_LEN];   // LENS
+    int             lens_slot;                          // LENS str-param slot
+} selection_edit_job;
+
 void submit_import_job(ap_app *app, const char *lib_root, const char *src_dir,
                        const ap_import_settings *settings);
+
+// Allocate a selection_edit_job and snapshot the current grid
+// selection's library indices into it. When `skip_open_photo` is true
+// the currently-open photo is excluded (ops that rewrite the edit stack
+// must skip it, else its in-memory stack goes stale). Sets op + library
+// + thumb generation. Returns NULL on no library / empty selection /
+// allocation failure. The job is NOT yet submitted: the caller fills the
+// op-specific payload, then calls commit_selection_edit_job, which
+// begins the ap_job and submits. This two-step keeps the worker from
+// observing partial payload.
+selection_edit_job *build_selection_edit_job(ap_app *app, ap_sel_edit_op op,
+                                             bool skip_open_photo);
+
+// Begin the job's ap_job (label/progress/cancel) and submit it to the
+// worker pool. Takes ownership; on ap_job_begin failure it frees the
+// job and returns -1. Returns the queued photo count on success.
+int commit_selection_edit_job(ap_app *app, selection_edit_job *j,
+                              const char *label);
 
 void discard_completed_item(ap_app *app, ap_work_item *it);
 void drain_all_workers(ap_app *app);
