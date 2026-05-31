@@ -3,7 +3,7 @@ name: build-and-run
 description: Build aperture from source and launch it for development or manual verification. Use this when implementing a feature/fix that needs a clean compile + interactive smoke test, or before opening a PR that touches runtime behavior. Covers Linux distro deps, meson setup, compile, and run; calls out the env vars worth knowing.
 ---
 
-Aperture is a meson + ninja project with several vendored wraps. The build is straightforward; the one thing that bites people is missing system-side deps.
+Aperture is a meson + ninja project. Most dependencies are vendored from source (git submodules under `dep/<name>/upstream/`, a couple of wrapdb wraps, and two in-tree copies); only a small set come from the system. The two things that bite people: forgetting to init the submodules, and missing system-side deps.
 
 ## 1. Install system deps (once per machine)
 
@@ -35,18 +35,28 @@ sudo pacman -S base-devel meson ninja pkgconf shaderc vulkan-headers \
     shared-mime-info appstream
 ```
 
-The remaining deps (`blake3`, `cimgui`, `lcms2`, `libpng`, `libtiff`, `nativefiledialog`, `tomlc99`) are vendored as meson wraps under `dep/*.wrap` and built from source — no system install needed for those.
+Everything else is vendored under `dep/` and built from source — no system install needed: most deps are **git submodules** (`cimgui`, `lcms2`, `cJSON`, `tomlc99`, `nativefiledialog`, `glfw`, `libraw`, `libjpeg-turbo`, `vulkan-headers`, `mbedtls`), `libpng`/`libtiff` are wrapdb wraps, and `blake3`/`sqlite3` are in-tree copies. Several `-dev` packages listed above (glfw, libraw, sqlite, libjpeg, libtiff, libpng) are now supplied from source and aren't strictly required as system packages — installing them is harmless, meson uses the vendored copies regardless. See `dep/README.md` for the full vendoring policy.
 
 Required meson version: **>=1.3.0** (see `meson.build` line 11). If your distro ships an older meson, install via `pip install --user meson` or use a venv.
 
-## 2. Configure + build
+## 2. Fetch vendored sources + configure + build
+
+The vendored deps are git submodules — init them once per clone (a fresh
+checkout without this fails configure with `Include dir
+upstream/include does not exist`):
+
+```
+git submodule update --init --recursive
+```
+
+Then:
 
 ```
 meson setup build --buildtype=debug
 meson compile -C build
 ```
 
-For a release build use `--buildtype=release` instead. The first configure clones + builds the wraps (one-time, takes a few minutes); subsequent builds reuse them.
+For a release build use `--buildtype=release` instead. The first configure builds the vendored deps from source (one-time, takes a few minutes); subsequent builds reuse them.
 
 Useful flags:
 - `meson setup --reconfigure build` — re-run configure after a `meson.build` change without nuking the build dir
@@ -90,9 +100,10 @@ meson install -C build   # no sudo
 
 ## Common failures
 
+- `Include dir upstream/include does not exist` (or any missing `dep/<name>/upstream` path) — submodules not initialized. Run `git submodule update --init --recursive`.
 - `Native dependency 'X' not found` — missing system dep. Reread step 1.
 - `meson version is too old` — install a newer meson per step 1.
-- `cimgui` build error involving `IMGUI_DISABLE_OBSOLETE_FUNCTIONS` — recurring quirk of the cimgui wrap. See the `roll-cimgui-wrap` skill if a roll is in scope; otherwise the existing pin should be fine.
+- `cimgui` build error involving `IMGUI_DISABLE_OBSOLETE_FUNCTIONS` — a known cimgui quirk; the submodule pin in `dep/cimgui/upstream` should build cleanly. Re-pin (`git -C dep/cimgui/upstream checkout <sha>`) only with a deliberate test.
 - Vulkan validation layer errors at runtime that don't reproduce in release — likely a debug-build-only assertion. Read the validation message carefully before chasing.
 
 ---
