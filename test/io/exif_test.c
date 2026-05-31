@@ -348,6 +348,23 @@ static void test_overflowing_ifd(void)
     AP_TEST_ASSERT(rc == -1, "overflowing IFD should fail (got rc=%d)", rc);
 }
 
+static void test_ifd_offset_wrap(void)
+{
+    // Valid TIFF header whose IFD0 offset is 0xFFFFFFFF. The offset+2
+    // bounds check must be done in 64-bit; a 32-bit add wraps to 1,
+    // passes the guard, and reads ~4 GB past the buffer. The parser must
+    // reject it without dereferencing the wild offset.
+    unsigned char buf[16];
+    memset(buf, 0, sizeof(buf));
+    buf[0] = 'I'; buf[1] = 'I';
+    buf[2] = 42; buf[3] = 0;
+    buf[4] = 0xff; buf[5] = 0xff; buf[6] = 0xff; buf[7] = 0xff;
+
+    ap_exif_fields f;
+    int rc = ap_exif_read_buf(buf, sizeof(buf), &f);
+    AP_TEST_ASSERT(rc == -1, "wrapped IFD0 offset must be rejected (got rc=%d)", rc);
+}
+
 static void test_input_immutability(void)
 {
     buf_t b;
@@ -372,6 +389,7 @@ int main(void)
     test_truncated();
     test_malformed_header();
     test_overflowing_ifd();
+    test_ifd_offset_wrap();
     test_input_immutability();
     printf("io/exif: OK\n");
     return 0;
