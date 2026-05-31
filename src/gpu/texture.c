@@ -155,7 +155,10 @@ static ap_texture *create_from_cpu_buffer(ap_gpu *g, const void *pixels,
         .commandBufferCount = 1,
     };
     VkCommandBuffer cmd = VK_NULL_HANDLE;
-    vkAllocateCommandBuffers(g->device, &cba, &cmd);
+    if (vkAllocateCommandBuffers(g->device, &cba, &cmd) != VK_SUCCESS) {
+        AP_ERROR("texture: command buffer allocation failed");
+        goto fail;
+    }
 
     VkCommandBufferBeginInfo cbi = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
