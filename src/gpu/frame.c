@@ -167,10 +167,12 @@ int gpu_frame_render(struct ap_gpu *g, const ap_edit_stack *stack)
         return -1;
     }
 
-    VK_CHECK(vkResetFences(g->device, 1, &f->in_flight));
     VK_CHECK(vkResetCommandBuffer(f->cmd, 0));
 
     if (record_frame(g, f->cmd, image_index, stack) < 0) {
+        // record failed before any submit. in_flight is still signaled
+        // (it's reset just before the submit below), so a retry or
+        // teardown never waits on a fence nothing will signal.
         return -1;
     }
 
