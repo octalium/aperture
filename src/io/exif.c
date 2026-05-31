@@ -185,7 +185,10 @@ static void apply_tag(exif_ctx *ctx, uint16_t tag, uint16_t type,
 static uint32_t walk_ifd(exif_ctx *ctx, uint32_t ifd_off, int depth)
 {
     if (depth > 4) return 0;
-    if (ifd_off + 2 > ctx->len) return 0;
+    // 64-bit compare: ifd_off is attacker-controlled and `ifd_off + 2`
+    // in 32-bit wraps (0xFFFFFFFF -> 1), which would slip past the guard
+    // and read ~4 GB out of bounds at ctx->buf + ifd_off.
+    if ((uint64_t)ifd_off + 2 > ctx->len) return 0;
     uint16_t count = rd_u16(ctx->buf + ifd_off, ctx->le);
     uint32_t entries_off = ifd_off + 2;
     if ((uint64_t)entries_off + (uint64_t)count * 12 + 4 > ctx->len) return 0;
