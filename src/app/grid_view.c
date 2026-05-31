@@ -334,7 +334,10 @@ void draw_selection_overlay(ap_app *app)
     if (!io) return;
     int win_w = (int)io->DisplaySize.x;
     int win_h = (int)io->DisplaySize.y;
-    ImDrawList *dl = igGetForegroundDrawList_ViewportPtr(NULL);
+    // Background draw list: these outlines sit over the Vulkan-rendered
+    // grid but must stay *under* ImGui windows/modals (the foreground
+    // list would paint them over the export modal and other panels).
+    ImDrawList *dl = igGetBackgroundDrawList(NULL);
     if (!dl) return;
 
     int focus = ap_grid_selected(app->grid);
@@ -357,7 +360,9 @@ void draw_marquee_overlay(ap_app *app)
     if (!io) return;
     if (!igIsMouseDragging(ImGuiMouseButton_Left, -1.0f)) return;
 
-    ImDrawList *dl = igGetForegroundDrawList_ViewportPtr(NULL);
+    // Background list (not foreground) so the marquee stays beneath ImGui
+    // windows/modals, consistent with the selection outlines above.
+    ImDrawList *dl = igGetBackgroundDrawList(NULL);
     if (!dl) return;
 
     ImVec2_c tl = { app->marquee_x0 < io->MousePos.x
