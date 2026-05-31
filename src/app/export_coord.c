@@ -203,28 +203,27 @@ void ap_export_coord_shutdown(ap_app *app)
 
     ap_job_request_cancel(c->job);
 
-    // Drain in-flight encodes: wait the pool idle, then drain completed
-    // items through the normal handler so their RGBA buffers free and
-    // the inflight count settles. drain_all_workers routes each export
-    // job to its completion arm, which accounts back to the coordinator.
-    while (c->inflight_encode > 0) {
+    // Wait for every in-flight encode to finish, then drain all the
+    // completed items: the coordinator's encodes free their RGBA buffers
+    // (and settle inflight_encode), any other completed work goes through
+    // its normal discard arm. wait_idle guarantees nothing is still
+    // running before we free the coordinator.
+    if (app->workers) {
         ap_worker_pool_wait_idle(app->workers);
-        ap_work_item *it = ap_worker_pool_poll(app->workers);
-        if (!it) break;
-        // route only export-coord jobs here; others go through discard.
-        if (it->run == export_job_run) {
-            export_job *j = (export_job *)it;
-            if (j->from_coord) ap_export_coord_encode_done(app, j->rgba_bytes);
-            free(j->rgba);
-            free(j);
-        } else {
-            discard_completed_item(app, it);
+        for (;;) {
+            ap_work_item *it = ap_worker_pool_poll(app->workers);
+            if (!it) break;
+            if (it->run == export_job_run && ((export_job *)it)->from_coord) {
+                export_job *j = (export_job *)it;
+                ap_export_coord_encode_done(app, j->rgba_bytes);
+                free(j->rgba);
+                free(j);
+            } else {
+                discard_completed_item(app, it);
+            }
         }
     }
 
-    // c may have been freed by encode_done's caller path; re-fetch.
-    c = app->export_coord;
-    if (!c) return;
     ap_job_finish(c->job, AP_JOB_CANCELED);
     coord_free(app, c);
 }
