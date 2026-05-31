@@ -284,6 +284,7 @@ static int registry_open(sqlite3 **out_db)
         if (reg) sqlite3_close(reg);
         return -1;
     }
+    sqlite3_busy_timeout(reg, 5000);
 
     // Drop the legacy `pipelines.modules` shape *before* re-running
     // CREATE TABLE IF NOT EXISTS so the new schema can build cleanly.
@@ -1589,6 +1590,9 @@ ap_library *ap_library_open(const char *path)
                  db_path, sqlite3_errmsg(lib->db));
         goto fail;
     }
+    // wait on a contended write lock rather than failing immediately;
+    // the import path opens its own handle to this WAL db.
+    sqlite3_busy_timeout(lib->db, 5000);
     sqlite3_exec(lib->db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
     sqlite3_exec(lib->db, "PRAGMA foreign_keys=ON;",  NULL, NULL, NULL);
 
