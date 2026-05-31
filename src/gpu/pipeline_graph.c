@@ -573,6 +573,12 @@ static int assemble_stages(ap_pipeline_graph *graph,
 
         for (int p = 0; p < n_passes; p++) {
             graph_stage *st = &graph->stages[s];
+            // count this stage before allocating any of its resources, so
+            // a mid-build failure (build_stage_lut / create_stage) still
+            // has it cleaned up by ap_pipeline_graph_destroy (whose
+            // per-stage loop is bounded by stage_count and tolerates the
+            // null handles a partial stage leaves).
+            graph->stage_count = s + 1;
             st->module    = m;
             st->entry_idx = chain_entry_idx[c];
             st->skip      = stage_skip;
@@ -620,7 +626,6 @@ static int assemble_stages(ap_pipeline_graph *graph,
         cur_view  = out_view;
         cur_image = out_image;
     }
-    graph->stage_count = s;
     return 0;
 }
 
