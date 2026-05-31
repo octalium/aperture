@@ -30,6 +30,10 @@ ap_worker_pool *ap_worker_pool_create(int n_threads);
 // threads.
 void            ap_worker_pool_destroy(ap_worker_pool *pool);
 
+// Number of worker threads in the pool. Used to size in-flight
+// caps (e.g. the export coordinator's concurrent-encode bound).
+int             ap_worker_pool_thread_count(const ap_worker_pool *pool);
+
 // Submit an item. Thread-safe. Pool takes ownership until poll.
 void            ap_worker_pool_submit(ap_worker_pool *pool, ap_work_item *item);
 
