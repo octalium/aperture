@@ -92,7 +92,10 @@ static int create_lut_image(ap_pipeline_graph *graph, graph_stage *st,
         .commandBufferCount = 1,
     };
     VkCommandBuffer cmd = VK_NULL_HANDLE;
-    vkAllocateCommandBuffers(dev, &cba, &cmd);
+    if (vkAllocateCommandBuffers(dev, &cba, &cmd) != VK_SUCCESS) {
+        AP_ERROR("graph: LUT command buffer alloc failed");
+        goto out;
+    }
     VkCommandBufferBeginInfo begin = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
@@ -155,7 +158,10 @@ static int create_lut_image(ap_pipeline_graph *graph, graph_stage *st,
         .commandBufferInfoCount = 1,
         .pCommandBufferInfos    = &cmd_si,
     };
-    vkQueueSubmit2(graph->gpu->graphics_queue, 1, &submit, VK_NULL_HANDLE);
+    if (vkQueueSubmit2(graph->gpu->graphics_queue, 1, &submit,
+                       VK_NULL_HANDLE) != VK_SUCCESS) {
+        AP_ERROR("graph: LUT staging submit failed");
+    }
     vkQueueWaitIdle(graph->gpu->graphics_queue);
     vkFreeCommandBuffers(dev, graph->gpu->command_pool, 1, &cmd);
     rc = 0;

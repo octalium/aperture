@@ -200,7 +200,9 @@ static ap_texture *create_from_cpu_buffer(ap_gpu *g, const void *pixels,
         .commandBufferInfoCount = 1,
         .pCommandBufferInfos    = &cmd_si,
     };
-    vkQueueSubmit2(g->graphics_queue, 1, &submit, VK_NULL_HANDLE);
+    if (vkQueueSubmit2(g->graphics_queue, 1, &submit, VK_NULL_HANDLE) != VK_SUCCESS) {
+        AP_ERROR("texture: upload submit failed");
+    }
     vkQueueWaitIdle(g->graphics_queue);
 
     vkFreeCommandBuffers(g->device, g->command_pool, 1, &cmd);

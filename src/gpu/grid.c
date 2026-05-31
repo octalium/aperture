@@ -230,7 +230,10 @@ static int create_placeholder(ap_grid *grid)
         .commandBufferCount = 1,
     };
     VkCommandBuffer cmd = VK_NULL_HANDLE;
-    vkAllocateCommandBuffers(dev, &cba, &cmd);
+    if (vkAllocateCommandBuffers(dev, &cba, &cmd) != VK_SUCCESS) {
+        AP_ERROR("grid: placeholder command buffer alloc failed");
+        return -1;
+    }
     VkCommandBufferBeginInfo bi = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
@@ -285,7 +288,10 @@ static int create_placeholder(ap_grid *grid)
         .commandBufferInfoCount = 1,
         .pCommandBufferInfos    = &cmd_si,
     };
-    vkQueueSubmit2(grid->gpu->graphics_queue, 1, &submit, VK_NULL_HANDLE);
+    if (vkQueueSubmit2(grid->gpu->graphics_queue, 1, &submit,
+                       VK_NULL_HANDLE) != VK_SUCCESS) {
+        AP_ERROR("grid: placeholder submit failed");
+    }
     vkQueueWaitIdle(grid->gpu->graphics_queue);
     vkFreeCommandBuffers(dev, grid->gpu->command_pool, 1, &cmd);
 

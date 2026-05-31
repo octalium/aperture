@@ -638,7 +638,10 @@ static int initial_layout_transitions(ap_pipeline_graph *graph)
         .commandBufferCount = 1,
     };
     VkCommandBuffer cmd = VK_NULL_HANDLE;
-    vkAllocateCommandBuffers(graph->gpu->device, &cba, &cmd);
+    if (vkAllocateCommandBuffers(graph->gpu->device, &cba, &cmd) != VK_SUCCESS) {
+        AP_ERROR("graph: layout-transition command buffer alloc failed");
+        return -1;
+    }
 
     VkCommandBufferBeginInfo bi = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -691,7 +694,10 @@ static int initial_layout_transitions(ap_pipeline_graph *graph)
         .commandBufferInfoCount = 1,
         .pCommandBufferInfos    = &cmd_si,
     };
-    vkQueueSubmit2(graph->gpu->graphics_queue, 1, &submit, VK_NULL_HANDLE);
+    if (vkQueueSubmit2(graph->gpu->graphics_queue, 1, &submit,
+                       VK_NULL_HANDLE) != VK_SUCCESS) {
+        AP_ERROR("graph: layout-transition submit failed");
+    }
     vkQueueWaitIdle(graph->gpu->graphics_queue);
     vkFreeCommandBuffers(graph->gpu->device, graph->gpu->command_pool, 1, &cmd);
     return 0;
@@ -1431,7 +1437,10 @@ int ap_pipeline_graph_readback(ap_pipeline_graph *graph,
         .commandBufferCount = 1,
     };
     VkCommandBuffer cmd = VK_NULL_HANDLE;
-    vkAllocateCommandBuffers(graph->gpu->device, &cba, &cmd);
+    if (vkAllocateCommandBuffers(graph->gpu->device, &cba, &cmd) != VK_SUCCESS) {
+        AP_ERROR("readback: command buffer alloc failed");
+        goto out;
+    }
 
     VkCommandBufferBeginInfo bi = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1503,7 +1512,10 @@ int ap_pipeline_graph_readback(ap_pipeline_graph *graph,
         .commandBufferInfoCount = 1,
         .pCommandBufferInfos    = &cmd_si,
     };
-    vkQueueSubmit2(graph->gpu->graphics_queue, 1, &submit, VK_NULL_HANDLE);
+    if (vkQueueSubmit2(graph->gpu->graphics_queue, 1, &submit,
+                       VK_NULL_HANDLE) != VK_SUCCESS) {
+        AP_ERROR("readback: submit failed");
+    }
     vkQueueWaitIdle(graph->gpu->graphics_queue);
     vkFreeCommandBuffers(graph->gpu->device, graph->gpu->command_pool, 1, &cmd);
 
@@ -1584,7 +1596,10 @@ int ap_pipeline_graph_readback_thumb(ap_pipeline_graph *graph,
         .commandBufferCount = 1,
     };
     VkCommandBuffer cmd = VK_NULL_HANDLE;
-    vkAllocateCommandBuffers(graph->gpu->device, &cba, &cmd);
+    if (vkAllocateCommandBuffers(graph->gpu->device, &cba, &cmd) != VK_SUCCESS) {
+        AP_ERROR("readback_thumb: command buffer alloc failed");
+        goto out;
+    }
 
     VkCommandBufferBeginInfo bi = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1738,7 +1753,10 @@ int ap_pipeline_graph_readback_thumb(ap_pipeline_graph *graph,
         .commandBufferInfoCount = 1,
         .pCommandBufferInfos    = &cmd_si,
     };
-    vkQueueSubmit2(graph->gpu->graphics_queue, 1, &submit, VK_NULL_HANDLE);
+    if (vkQueueSubmit2(graph->gpu->graphics_queue, 1, &submit,
+                       VK_NULL_HANDLE) != VK_SUCCESS) {
+        AP_ERROR("readback_thumb: submit failed");
+    }
     vkQueueWaitIdle(graph->gpu->graphics_queue);
     vkFreeCommandBuffers(graph->gpu->device, graph->gpu->command_pool, 1, &cmd);
 
