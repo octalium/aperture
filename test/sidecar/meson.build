@@ -10,6 +10,7 @@ sidecar_test = executable(
     '../../src/photo/metadata.c',
     '../../src/core/log.c',
     '../../src/core/fs.c',
+    '../../src/core/random.c',
     '../support/aptest_modules.c',
   ) + ap_dir_src,
   include_directories: [aperture_inc, aptest_inc],
