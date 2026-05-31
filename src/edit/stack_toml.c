@@ -23,7 +23,9 @@ static int read_int(toml_table_t *t, const char *key, int64_t *out)
     return 0;
 }
 
-static const char *read_string(toml_table_t *t, const char *key)
+// toml_string_in hands the caller an owned, malloc'd copy — the result
+// must be freed.
+static char *read_string(toml_table_t *t, const char *key)
 {
     toml_datum_t v = toml_string_in(t, key);
     return v.ok ? v.u.s : NULL;
@@ -31,22 +33,26 @@ static const char *read_string(toml_table_t *t, const char *key)
 
 static void load_one(toml_table_t *t, ap_edit_stack *stack)
 {
-    const char *module_name = read_string(t, "module");
+    char *module_name = read_string(t, "module");
     if (!module_name) return;
     int idx = ap_edit_stack_add(stack, module_name);
+    const ap_module *m = ap_module_find(module_name);
+    free(module_name);
     if (idx < 0) return;
     ap_edit_entry *e = ap_edit_stack_at(stack, idx);
-    const ap_module *m = ap_module_find(module_name);
 
     int64_t i = 0;
     if (read_int(t, "enabled", &i) == 0) e->enabled = i != 0;
-    const char *display = read_string(t, "name");
+    char *display = read_string(t, "name");
     if (display && *display) {
         snprintf(e->display_name, sizeof(e->display_name), "%s", display);
     }
+    free(display);
 
     if (m && m->params_names) {
-        for (int s = 0; s < m->params_count; s++) {
+        int np = m->params_count;
+        if (np > AP_EDIT_PARAMS_SLOTS) np = AP_EDIT_PARAMS_SLOTS;
+        for (int s = 0; s < np; s++) {
             const char *name = m->params_names[s];
             if (!name) continue;
             double d = 0.0;
