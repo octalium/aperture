@@ -13,6 +13,7 @@
 #include "app.h"
 #include "app/canvas_tool.h"
 #include "app/layout_profiles.h"
+#include "core/job.h"
 #include "core/log.h"
 #include "core/worker.h"
 #include "edit/stack.h"
@@ -21,6 +22,8 @@
 
 // Defined in src/app/jobs.h; only its address is held by ap_app.
 struct import_job;
+// Defined in src/app/export_coord.h; only its address is held by ap_app.
+typedef struct ap_export_coord ap_export_coord;
 #include "gpu/gpu.h"
 #include "gpu/grid.h"
 #include "gpu/pipeline_graph.h"
@@ -58,6 +61,14 @@ struct ap_app {
     uint64_t         photo_load_gen;
     uint64_t         thumb_load_gen;
     int              export_inflight;
+
+    // Main-thread, per-frame export state machine; NULL when idle.
+    ap_export_coord *export_coord;
+
+    // Background Jobs window visibility, and the id of the in-flight
+    // import job for id-keyed cancel from the import modal.
+    bool             jobs_panel;
+    uint64_t         import_job_id;
 
     bool             show_panels;
     bool             show_rendered_thumbnails;

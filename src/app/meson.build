@@ -4,6 +4,7 @@ aperture_sources += files(
   'export_modal.c',
   'grid_view.c',
   'jobs.c',
+  'jobs_panel.c',
   'layout_profiles.c',
   'menubar.c',
   'modals.c',

@@ -2472,6 +2472,7 @@ int ap_app_run_frame(ap_app *app)
     draw_delete_edit_modal(app);
     draw_update_modal(app);
     draw_about_modal(app);
+    draw_jobs_panel(app);
     drive_global_hotkeys(app);
 
     // Full-viewport invisible host window owns the dockspace that
