@@ -1,10 +1,11 @@
 #include "net/http.h"
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "core/winutf8.h"  // ap_utf8_to_wide + windows.h
+
 #include <winhttp.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
 
@@ -12,14 +13,19 @@
 // cert chain validation (WINHTTP_FLAG_SECURE + no override flags).
 // redirects are followed by the stack itself up to the configured cap.
 
+// convert `s` into the fixed buffer `out` (capacity `out_cap` wchars),
+// leaving it empty on conversion failure or when the result would not
+// fit. wraps the shared heap converter to keep one CP_UTF8 code path.
 static void utf8_to_wide(const char *s, wchar_t *out, size_t out_cap)
 {
-    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
-    if (n <= 0 || (size_t)n > out_cap) {
-        if (out_cap) out[0] = L'\0';
-        return;
+    if (!out_cap) return;
+    out[0] = L'\0';
+    wchar_t *w = ap_utf8_to_wide(s);
+    if (!w) return;
+    if (wcslen(w) + 1 <= out_cap) {
+        wcscpy(out, w);
     }
-    MultiByteToWideChar(CP_UTF8, 0, s, -1, out, (int)out_cap);
+    free(w);
 }
 
 static void describe_error(DWORD code, char *out, size_t cap)
