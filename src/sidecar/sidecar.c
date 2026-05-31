@@ -242,18 +242,12 @@ int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
     char path[4096];
     if (sidecar_path(source_path, path, sizeof(path)) < 0) return -1;
 
-    char tmp_path[4096];
-    int n = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
-    if (n < 0 || (size_t)n >= sizeof(tmp_path)) {
-        AP_ERROR("sidecar: tmp path too long");
+    ap_atomic *a = ap_atomic_open(path);
+    if (!a) {
+        AP_ERROR("sidecar: open(%s): %s", path, strerror(errno));
         return -1;
     }
-
-    FILE *f = fopen(tmp_path, "w");
-    if (!f) {
-        AP_ERROR("sidecar: fopen(%s, 'w'): %s", tmp_path, strerror(errno));
-        return -1;
-    }
+    FILE *f = ap_atomic_file(a);
 
     if (fprintf(f,
         "# Aperture per-photo sidecar.\n"
@@ -333,24 +327,15 @@ int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
         }
     }
 
-    if (fflush(f) != 0 || fsync(fileno(f)) != 0) {
-        AP_ERROR("sidecar: fsync(%s): %s", tmp_path, strerror(errno));
-        goto io_fail;
-    }
-    fclose(f);
-    f = NULL;
-
-    if (ap_rename_replace(tmp_path, path) != 0) {
-        AP_ERROR("sidecar: rename(%s -> %s): %s", tmp_path, path, strerror(errno));
-        unlink(tmp_path);
+    if (ap_atomic_commit(a) != 0) {
+        AP_ERROR("sidecar: commit %s", path);
         return -1;
     }
     return 0;
 
 io_fail:
-    if (f) fclose(f);
-    unlink(tmp_path);
-    AP_ERROR("sidecar: write %s: %s", tmp_path,
+    ap_atomic_abort(a);
+    AP_ERROR("sidecar: write %s: %s", path,
              errno ? strerror(errno) : "i/o error");
     return -1;
 }

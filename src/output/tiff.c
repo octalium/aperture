@@ -1,5 +1,6 @@
 #include "tiff.h"
 
+#include "core/fs.h"
 #include "core/log.h"
 
 #include <stddef.h>
@@ -164,9 +165,17 @@ int ap_export_tiff(const uint8_t *rgba_u8, const float *rgba_f32,
     TIFFSetErrorHandler(on_tiff_error);
     TIFFSetWarningHandler(on_tiff_warning);
 
-    TIFF *tif = TIFFOpen(path, "w");
+    // libtiff opens by path, so use the path-based atomic variant: write
+    // a temp beside the target, then durably swap it in.
+    char tmp[4096];
+    if (ap_atomic_temp_path(path, tmp, sizeof(tmp)) != 0) {
+        AP_ERROR("ap_export_tiff: temp path for %s too long", path);
+        return -1;
+    }
+
+    TIFF *tif = TIFFOpen(tmp, "w");
     if (!tif) {
-        AP_ERROR("ap_export_tiff: TIFFOpen(%s) failed", path);
+        AP_ERROR("ap_export_tiff: TIFFOpen(%s) failed", tmp);
         return -1;
     }
 
@@ -174,6 +183,15 @@ int ap_export_tiff(const uint8_t *rgba_u8, const float *rgba_f32,
                         width, height, depth, compress,
                         icc_data, icc_size);
     TIFFClose(tif);
+
+    if (rc == 0) {
+        if (ap_atomic_commit_temp(tmp, path) != 0) {
+            AP_ERROR("ap_export_tiff: commit %s", path);
+            rc = -1;
+        }
+    } else {
+        ap_atomic_discard_temp(tmp);
+    }
 
     if (rc == 0) {
         const char *depth_str  = depth == AP_TIFF_UINT8   ? "uint8"

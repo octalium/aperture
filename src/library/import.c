@@ -4,6 +4,7 @@
 
 #include "core/compat.h"
 #include "core/dir.h"
+#include "core/fs.h"
 #include "core/log.h"
 #include "io/exif.h"
 #include "io/raw.h"
@@ -158,12 +159,16 @@ static int copy_file_hash(const char *src, const char *dst,
         AP_WARN("import: open %s: %s", src, strerror(errno));
         return -1;
     }
-    FILE *out = fopen(dst, "wb");
+    // atomic write: stream into a temp beside dst, then durably swap it
+    // in on success, so a crash mid-copy never leaves a truncated raw at
+    // dst for the library scan to pick up as a valid photo.
+    ap_atomic *out = ap_atomic_open(dst);
     if (!out) {
         AP_WARN("import: create %s: %s", dst, strerror(errno));
         fclose(in);
         return -1;
     }
+    FILE *of = ap_atomic_file(out);
 
     blake3_hasher hasher;
     blake3_hasher_init(&hasher);
@@ -173,7 +178,7 @@ static int copy_file_hash(const char *src, const char *dst,
     int    rc = 0;
     while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
         blake3_hasher_update(&hasher, buf, n);
-        if (fwrite(buf, 1, n, out) != n) {
+        if (fwrite(buf, 1, n, of) != n) {
             AP_ERROR("import: write %s: %s", dst, strerror(errno));
             rc = -1;
             break;
@@ -184,14 +189,15 @@ static int copy_file_hash(const char *src, const char *dst,
         rc = -1;
     }
     fclose(in);
-    if (fclose(out) != 0) {
-        AP_ERROR("import: close %s: %s", dst, strerror(errno));
-        rc = -1;
+    if (rc == 0) {
+        if (ap_atomic_commit(out) != 0) {
+            AP_ERROR("import: commit %s", dst);
+            rc = -1;
+        }
+    } else {
+        ap_atomic_abort(out);
     }
-    if (rc != 0) {
-        unlink(dst);
-        return rc;
-    }
+    if (rc != 0) return rc;
 
     uint8_t digest[BLAKE3_OUT_LEN];
     blake3_hasher_finalize(&hasher, digest, BLAKE3_OUT_LEN);

@@ -1,5 +1,6 @@
 #include "png.h"
 
+#include "core/fs.h"
 #include "core/log.h"
 
 #include <stddef.h>
@@ -39,18 +40,19 @@ int ap_export_png(const uint8_t *rgba, int width, int height,
         return -1;
     }
 
-    FILE *f = fopen(path, "wb");
-    if (!f) {
-        AP_ERROR("ap_export_png: fopen(%s): %m", path);
+    ap_atomic *a = ap_atomic_open(path);
+    if (!a) {
+        AP_ERROR("ap_export_png: open(%s): %m", path);
         return -1;
     }
+    FILE *f = ap_atomic_file(a);
 
     png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING,
                                               NULL,
                                               on_png_error, on_png_warning);
     if (!png) {
         AP_ERROR("ap_export_png: png_create_write_struct failed");
-        fclose(f);
+        ap_atomic_abort(a);
         return -1;
     }
 
@@ -58,7 +60,7 @@ int ap_export_png(const uint8_t *rgba, int width, int height,
     if (!info) {
         AP_ERROR("ap_export_png: png_create_info_struct failed");
         png_destroy_write_struct(&png, NULL);
-        fclose(f);
+        ap_atomic_abort(a);
         return -1;
     }
 
@@ -131,7 +133,11 @@ int ap_export_png(const uint8_t *rgba, int width, int height,
 
 done:
     png_destroy_write_struct(&png, &info);
-    fclose(f);
+    if (rc == 0) {
+        if (ap_atomic_commit(a) != 0) rc = -1;
+    } else {
+        ap_atomic_abort(a);
+    }
     if (rc == 0) {
         const char *depth_str = (depth == AP_PNG_UINT16) ? "uint16" : "uint8";
         AP_INFO("exported png: %s (%dx%d, %s)", path, width, height, depth_str);

@@ -1479,22 +1479,28 @@ static int move_file(const char *src_path, const char *dst_path)
                 src_path, dst_path, strerror(errno));
         return -1;
     }
+    // cross-volume fallback: copy atomically (temp + durable rename) so
+    // an interrupted migration never leaves a truncated db at dst_path.
     FILE *src = fopen(src_path, "rb");
-    FILE *dst = fopen(dst_path, "wb");
+    ap_atomic *dst = ap_atomic_open(dst_path);
     bool ok = src && dst;
     if (ok) {
+        FILE *df = ap_atomic_file(dst);
         char cbuf[65536];
         size_t nr;
         while ((nr = fread(cbuf, 1, sizeof(cbuf), src)) > 0) {
-            if (fwrite(cbuf, 1, nr, dst) != nr) { ok = false; break; }
+            if (fwrite(cbuf, 1, nr, df) != nr) { ok = false; break; }
         }
-        ok = ok && !ferror(src) && !ferror(dst);
+        ok = ok && !ferror(src);
     }
     if (src) fclose(src);
-    if (dst) fclose(dst);
     if (!ok) {
+        if (dst) ap_atomic_abort(dst);
         AP_WARN("library: copy(%s, %s) failed", src_path, dst_path);
-        unlink(dst_path);
+        return -1;
+    }
+    if (ap_atomic_commit(dst) != 0) {
+        AP_WARN("library: commit(%s) failed", dst_path);
         return -1;
     }
     unlink(src_path);
