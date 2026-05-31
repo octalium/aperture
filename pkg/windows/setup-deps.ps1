@@ -26,9 +26,9 @@
 #     `pip install meson ninja` themselves.
 #
 # Usage:
-#   PS> .\packaging\windows\setup-deps.ps1
-#   PS> .\packaging\windows\setup-deps.ps1 -VcpkgRoot C:\src\vcpkg
-#   PS> .\packaging\windows\setup-deps.ps1 -SkipVulkanSdk     # CI uses humbletim/install-vulkan-sdk instead
+#   PS> .\pkg\windows\setup-deps.ps1
+#   PS> .\pkg\windows\setup-deps.ps1 -VcpkgRoot C:\src\vcpkg
+#   PS> .\pkg\windows\setup-deps.ps1 -SkipVulkanSdk     # CI uses humbletim/install-vulkan-sdk instead
 #
 # Exits non-zero on any failure so CI surfaces breakage.
 

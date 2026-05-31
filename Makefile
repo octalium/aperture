@@ -40,7 +40,7 @@ test: setup
 flatpak:
 	flatpak-builder --user --install-deps-from=flathub --force-clean \
 		--repo=$(BUILD_DIR)/flatpak-repo \
-		$(BUILD_DIR)/flatpak packaging/flatpak/io.github.octalium.aperture.yml
+		$(BUILD_DIR)/flatpak pkg/flatpak/io.github.octalium.aperture.yml
 	flatpak build-bundle $(BUILD_DIR)/flatpak-repo \
 		$(BUILD_DIR)/aperture.flatpak io.github.octalium.aperture
 
@@ -52,15 +52,15 @@ app:
 		meson setup $(BUILD_DIR) --buildtype=release --prefix=/usr/local; \
 	fi
 	meson compile -C $(BUILD_DIR)
-	BUILD_DIR=$(BUILD_DIR) packaging/macos/build-app.sh
+	BUILD_DIR=$(BUILD_DIR) pkg/macos/build-app.sh
 
 macos: app
-	packaging/macos/build-dmg.sh
+	pkg/macos/build-dmg.sh
 
 # windows host detection covers both MSYS/MINGW (uname reports MINGW*/
 # MSYS*) and POSIX-on-Windows toolchains. cross-builds from Linux are
 # out of scope (#434); native MSVC runner only. The whole flow runs
-# inside packaging/windows/make-windows.ps1 so env vars set by
+# inside pkg/windows/make-windows.ps1 so env vars set by
 # setup-deps (notably VULKAN_SDK) carry through to meson + build-msi.
 windows:
 	@case "$$(uname -s)" in \
@@ -71,7 +71,7 @@ windows:
 		echo "make windows needs pwsh or powershell on PATH" >&2; exit 1; \
 	fi
 	@PS=$$(command -v pwsh || command -v powershell); \
-		"$$PS" -NoProfile -ExecutionPolicy Bypass -File packaging/windows/make-windows.ps1 \
+		"$$PS" -NoProfile -ExecutionPolicy Bypass -File pkg/windows/make-windows.ps1 \
 			-BuildDir "$(BUILD_DIR)" -BuildType "$(BUILDTYPE)"
 
 clean:

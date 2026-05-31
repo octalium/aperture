@@ -27,7 +27,7 @@ CI mirrors the same setup on `windows-2022` runners.
 From a Developer PowerShell for VS 2022 (so `cl.exe` is on `PATH`):
 
 ```powershell
-.\packaging\windows\setup-deps.ps1
+.\pkg\windows\setup-deps.ps1
 ```
 
 Re-running is safe — vcpkg is incremental. The script prints
@@ -54,7 +54,7 @@ resolve against the vcpkg-installed `.pc` files. Every other
 ## Package
 
 ```powershell
-.\packaging\windows\build-msi.ps1
+.\pkg\windows\build-msi.ps1
 ```
 
 Produces `out\aperture-<version>-windows-x64.msi`. The installer

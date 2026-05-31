@@ -6,7 +6,7 @@ desktop_conf = configuration_data()
 desktop_conf.set('bindir', get_option('prefix') / get_option('bindir'))
 
 desktop_file = configure_file(
-  input: app_id + '.desktop.in',
+  input: files('..' / 'metadata' / (app_id + '.desktop.in')),
   output: app_id + '.desktop',
   configuration: desktop_conf,
   install: true,
@@ -17,7 +17,7 @@ desktop_file = configure_file(
 # when set, keeping the generated metainfo reproducible.
 release_date = run_command(
   find_program('python3'),
-  files('release-date.py'),
+  files('..' / 'metadata' / 'release-date.py'),
   '2026-05-24',
   check: true,
 ).stdout().strip()
@@ -27,7 +27,7 @@ metainfo_conf.set('version', meson.project_version())
 metainfo_conf.set('release_date', release_date)
 
 metainfo_file = configure_file(
-  input: app_id + '.metainfo.xml.in',
+  input: files('..' / 'metadata' / (app_id + '.metainfo.xml.in')),
   output: app_id + '.metainfo.xml',
   configuration: metainfo_conf,
   install: true,
@@ -35,23 +35,23 @@ metainfo_file = configure_file(
 )
 
 install_data(
-  app_id + '.xml',
+  files('..' / 'metadata' / (app_id + '.xml')),
   install_dir: datadir / 'mime' / 'packages',
 )
 
 install_data(
-  'icons' / 'hicolor' / 'scalable' / 'apps' / app_id + '.svg',
+  files('..' / 'icons' / 'hicolor' / 'scalable' / 'apps' / (app_id + '.svg')),
   install_dir: datadir / 'icons' / 'hicolor' / 'scalable' / 'apps',
 )
 
 # rasterized hicolor sizes for desktops/launchers that ignore SVG entries
 # (notably KDE Plasma's task manager and several GTK launchers). vendored
-# from the scalable SVG; regenerate with packaging/linux/icons/refresh.sh
+# from the scalable SVG; regenerate with pkg/icons/refresh.sh
 # when the SVG changes.
 foreach size : [16, 32, 48, 64, 128, 256, 512]
   size_str = '@0@x@0@'.format(size)
   install_data(
-    'icons' / 'hicolor' / size_str / 'apps' / app_id + '.png',
+    files('..' / 'icons' / 'hicolor' / size_str / 'apps' / (app_id + '.png')),
     install_dir: datadir / 'icons' / 'hicolor' / size_str / 'apps',
     install_tag: 'icons',
   )

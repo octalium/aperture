@@ -116,7 +116,7 @@ jobs:
           path: |
             ${{ github.workspace }}\vcpkg\installed
             ${{ github.workspace }}\vcpkg\packages
-          key: vcpkg-windows-x64-${{ hashFiles('packaging/windows/setup-deps.ps1') }}
+          key: vcpkg-windows-x64-${{ hashFiles('pkg/windows/setup-deps.ps1') }}
 
       - name: bootstrap vcpkg + install lensfun
         shell: pwsh
@@ -124,7 +124,7 @@ jobs:
           VCPKG_ROOT: ${{ github.workspace }}\vcpkg
         # -SkipVulkanSdk: the action above already installed the SDK
         # and exported $VULKAN_SDK; don't re-fetch it.
-        run: .\packaging\windows\setup-deps.ps1 -VcpkgRoot $env:VCPKG_ROOT -SkipVulkanSdk
+        run: .\pkg\windows\setup-deps.ps1 -VcpkgRoot $env:VCPKG_ROOT -SkipVulkanSdk
 
       # cache meson's build/ so ninja's incremental graph survives across
       # runs; only sources / build files changed since the last run are

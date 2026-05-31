@@ -44,7 +44,7 @@ Both targets refuse to run on non-Darwin hosts.
 - `Info.plist.in` — configured with `meson.project_version()` at
   `meson install` time. Carries the bundle id
   (`io.github.octalium.aperture`) and `CFBundleDocumentTypes` for the
-  raw formats listed in `packaging/linux/io.github.octalium.aperture.xml`.
+  raw formats listed in `pkg/metadata/io.github.octalium.aperture.xml`.
 - `meson.build` — installs the configured `Info.plist` to
   `$prefix/share/aperture/macos/Info.plist`. Active only when
   `host_machine.system() == 'darwin'`.
