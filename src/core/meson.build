@@ -3,6 +3,7 @@ aperture_sources += files(
   'log.c',
   'memstream.c',
   'random.c',
+  'signal.c',
   'version.c',
   'worker.c',
 )

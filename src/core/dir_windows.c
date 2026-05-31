@@ -1,10 +1,10 @@
 #include "core/dir.h"
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "core/winutf8.h"  // ap_utf8_to_wide + windows.h
 
 #include <errno.h>
 #include <stdlib.h>
+#include <wchar.h>
 
 // readdir yields entry names; FindFirstFileW yields the first match up
 // front and FindNextFileW the rest. we cache the first hit and hand it
@@ -25,16 +25,15 @@ static _Thread_local int g_last_open_errno;
 // allocation or conversion failure.
 static wchar_t *make_search_glob(const char *path)
 {
-    int wlen = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
-    if (wlen <= 0) return NULL;
-    // room for the path, a separator, '*' and the terminator.
-    wchar_t *glob = malloc((size_t)(wlen + 2) * sizeof(wchar_t));
-    if (!glob) return NULL;
-    if (MultiByteToWideChar(CP_UTF8, 0, path, -1, glob, wlen) <= 0) {
-        free(glob);
+    wchar_t *wide = ap_utf8_to_wide(path);
+    if (!wide) return NULL;
+    size_t n = wcslen(wide);  // length without the terminator
+    // grow to fit a separator, '*' and the terminator past the path.
+    wchar_t *glob = realloc(wide, (n + 3) * sizeof(wchar_t));
+    if (!glob) {
+        free(wide);
         return NULL;
     }
-    size_t n = (size_t)wlen - 1;  // index of the terminator
     wchar_t last = n ? glob[n - 1] : L'\0';
     if (last != L'\\' && last != L'/') {
         glob[n++] = L'\\';
