@@ -6,15 +6,18 @@ BUILD_DIR    ?= build
 PREFIX       ?= /usr/local
 BUILDTYPE    ?= release
 
-.PHONY: help build setup compile install test clean flatpak app macos windows
+# bare `make` builds aperture for the current platform.
+.DEFAULT_GOAL := build
+
+.PHONY: help build setup compile install uninstall test clean linux flatpak app macos windows
 
 help:
 	@echo "common targets:"
-	@echo "  make build            configure (if needed) + compile aperture"
+	@echo "  make                  build aperture for the current platform (default)"
 	@echo "  make install          install into \$$PREFIX (default $(PREFIX))"
+	@echo "  make uninstall        remove a prior 'make install' (system prefix)"
 	@echo "  make test             build + run the test suite (meson test)"
-	@echo "  make flatpak          build a .flatpak bundle (needs flatpak-builder + flathub remote)"
-	@echo "  make app              build Aperture.app (macOS host only; needs dylibbundler)"
+	@echo "  make linux            build a .flatpak bundle (Linux distributable)"
 	@echo "  make macos            build Aperture.app + .dmg (macOS host only; needs create-dmg)"
 	@echo "  make windows          build .msi installer (Windows host only; needs MSVC + vcpkg + WiX v4)"
 	@echo "  make clean            remove $(BUILD_DIR)"
@@ -34,8 +37,21 @@ build: compile
 install: compile
 	meson install -C $(BUILD_DIR)
 
+# meson's generated uninstall target removes whatever the last install
+# logged. it doesn't prune created directories — a meson limitation, not
+# ours.
+uninstall:
+	@if [ ! -d $(BUILD_DIR) ]; then \
+		echo "no $(BUILD_DIR)/ — nothing to uninstall (run 'make install' first)" >&2; exit 1; \
+	fi
+	ninja -C $(BUILD_DIR) uninstall
+
 test: setup
 	meson test -C $(BUILD_DIR)
+
+# Linux distributable: a Flatpak bundle. AppImage is intentionally not
+# built — Flatpak is aperture's Linux channel (#434).
+linux: flatpak
 
 flatpak:
 	flatpak-builder --user --install-deps-from=flathub --force-clean \
