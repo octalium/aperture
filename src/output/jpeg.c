@@ -1,5 +1,6 @@
 #include "jpeg.h"
 
+#include "core/fs.h"
 #include "core/log.h"
 #include "output/jpeg_error.h"
 
@@ -56,11 +57,12 @@ int ap_export_jpeg(const uint8_t *rgba, int width, int height,
     if (quality < 0)   quality = 0;
     if (quality > 100) quality = 100;
 
-    FILE *f = fopen(path, "wb");
-    if (!f) {
-        AP_ERROR("ap_export_jpeg: fopen(%s): %m", path);
+    ap_atomic *a = ap_atomic_open(path);
+    if (!a) {
+        AP_ERROR("ap_export_jpeg: open(%s): %m", path);
         return -1;
     }
+    FILE *f = ap_atomic_file(a);
 
     struct jpeg_compress_struct cinfo = {0};
     ap_jpeg_error err;
@@ -76,7 +78,11 @@ int ap_export_jpeg(const uint8_t *rgba, int width, int height,
 
 done:
     jpeg_destroy_compress(&cinfo);
-    fclose(f);
+    if (rc == 0) {
+        if (ap_atomic_commit(a) != 0) rc = -1;
+    } else {
+        ap_atomic_abort(a);
+    }
     if (rc == 0) {
         AP_INFO("exported jpeg: %s (%dx%d, q=%d)", path, width, height, quality);
     }
