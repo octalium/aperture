@@ -47,6 +47,11 @@ typedef struct {
     char         out_path[4096];
     ap_status_id status_id;
     int          ok;
+    // When true, the export coordinator owns this encode: completion
+    // accounts rgba_bytes back to it (and drives no standalone status
+    // bar — the coordinator's job owns the progress surface).
+    bool         from_coord;
+    size_t       rgba_bytes;
 } export_job;
 
 typedef struct {

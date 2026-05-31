@@ -2,6 +2,7 @@
 
 #include "jobs.h"
 
+#include "export_coord.h"
 #include "library/import.h"
 #include "output/export.h"
 #include "output/jpeg.h"
@@ -159,6 +160,16 @@ static void handle_photo_open_complete(ap_app *app, photo_open_job *j)
 
 static void handle_export_complete(ap_app *app, export_job *j)
 {
+    if (j->from_coord) {
+        // The export coordinator owns the progress bar + per-batch
+        // notify; here we only account the RGBA bytes back so the
+        // budget gate releases and the pump can schedule the next photo.
+        if (!j->ok) AP_ERROR("export: encode failed for %s", j->out_path);
+        ap_export_coord_encode_done(app, j->rgba_bytes);
+        free(j->rgba);
+        free(j);
+        return;
+    }
     if (app->export_inflight > 0) app->export_inflight--;
     ap_status_progress_finish(j->status_id, j->ok);
     if (j->ok) {
@@ -287,8 +298,12 @@ void discard_completed_item(ap_app *app, ap_work_item *it)
         free(j);
     } else if (it->run == export_job_run) {
         export_job *j = (export_job *)it;
-        if (app->export_inflight > 0) app->export_inflight--;
-        ap_status_progress_finish(j->status_id, 0);
+        if (j->from_coord) {
+            ap_export_coord_encode_done(app, j->rgba_bytes);
+        } else {
+            if (app->export_inflight > 0) app->export_inflight--;
+            ap_status_progress_finish(j->status_id, 0);
+        }
         free(j->rgba);
         free(j);
     } else if (it->run == thumb_encode_job_run) {
