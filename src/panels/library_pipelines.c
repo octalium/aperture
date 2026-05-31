@@ -124,7 +124,7 @@ static void library_pipelines_draw(ap_app *app)
         } else if (wrote == 0) {
             set_status("Nothing applied: no photos selected.");
         } else {
-            set_status("Applied to %d photo%s.",
+            set_status("Applying to %d photo%s...",
                        wrote, wrote == 1 ? "" : "s");
         }
     }

@@ -142,7 +142,7 @@ static void library_metadata_draw(ap_app *app)
                      "Nothing applied: no photos selected.");
         } else {
             snprintf(g_status, sizeof(g_status),
-                     "Applied %d field%s to %d photo%s.",
+                     "Applying %d field%s to %d photo%s...",
                      filled, filled == 1 ? "" : "s",
                      wrote,  wrote  == 1 ? "" : "s");
         }
