@@ -277,7 +277,10 @@ static void db_store_dedupe(sqlite3 *db, const char *rel_path,
         sqlite3_bind_null(st, 4);
     }
     sqlite3_bind_int64(st, 5, size);
-    sqlite3_step(st);
+    int rc = sqlite3_step(st);
+    if (rc != SQLITE_DONE) {
+        AP_WARN("import: dedupe insert for %s: %s", rel_path, sqlite3_errmsg(db));
+    }
     sqlite3_finalize(st);
 }
 
@@ -594,6 +597,10 @@ int ap_import_run_into(const char *lib_root, const char *db_path,
                     db_path, sqlite3_errmsg(db));
             if (db) { sqlite3_close(db); db = NULL; }
         } else {
+            // wait for a contended write lock instead of dropping the
+            // INSERT with SQLITE_BUSY -- the main thread holds its own
+            // handle to this WAL db.
+            sqlite3_busy_timeout(db, 5000);
             sqlite3_exec(db, "PRAGMA journal_mode=WAL;",     NULL, NULL, NULL);
             // Cheaper fsync regime during the bulk write: with WAL,
             // synchronous=NORMAL is safe across crashes (the WAL is
