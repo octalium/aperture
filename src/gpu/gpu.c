@@ -58,6 +58,19 @@ ap_gpu *ap_gpu_create(int width, int height, const char *title)
     }
 
     if (gpu_device_create(g) < 0)                         goto fail;
+
+    // Session pipeline cache: a NULL handle is still valid to pass to
+    // vkCreate*Pipelines, so a failure here just means no caching, not a
+    // hard error.
+    VkPipelineCacheCreateInfo pcci = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+    };
+    if (vkCreatePipelineCache(g->device, &pcci, NULL,
+                              &g->pipeline_cache) != VK_SUCCESS) {
+        AP_WARN("gpu: pipeline cache create failed; rebuilds won't be cached");
+        g->pipeline_cache = VK_NULL_HANDLE;
+    }
+
     if (gpu_swapchain_create(g) < 0)                      goto fail;
     if (gpu_frames_create(g) < 0)                         goto fail;
 
@@ -86,6 +99,10 @@ void ap_gpu_destroy(ap_gpu *g)
 
     gpu_frames_destroy(g);
     gpu_swapchain_destroy(g);
+    if (g->pipeline_cache) {
+        vkDestroyPipelineCache(g->device, g->pipeline_cache, NULL);
+        g->pipeline_cache = VK_NULL_HANDLE;
+    }
     gpu_device_destroy(g);
 
     if (g->surface) {
