@@ -783,6 +783,12 @@ static int resolve_output_path(const ap_export_settings *s,
                 }
                 suffix++;
             } while (stat(out, &st) == 0 && suffix < 10000);
+            // the loop also exits when suffix hits 10000 with `out` still
+            // colliding; refuse rather than overwrite an existing export.
+            if (stat(out, &st) == 0) {
+                AP_ERROR("export: no free suffix for %s.%s", stem, ext);
+                return -1;
+            }
         }
     }
     return 0;

@@ -348,11 +348,16 @@ static int parse_focal(const char *s, uint32_t *numer, uint32_t *denom)
 // Parse a GPS coordinate string in decimal degrees, e.g. "48.858222" or
 // "-2.294524". Produces degrees/minutes/seconds rationals with 1/1000
 // second precision. The sign indicates hemisphere — caller must pass abs.
-static int parse_gps_decimal(const char *s, double *deg_out)
+// Parse a decimal-degrees GPS field, rejecting anything outside
+// [-max_abs, max_abs] (and NaN). The range guard keeps deg_to_dms from
+// casting an out-of-range double to int (undefined behavior) on garbage
+// or abusive metadata input.
+static int parse_gps_decimal(const char *s, double *deg_out, double max_abs)
 {
     if (!s || *s == '\0') return 0;
     double v = 0.0;
     if (sscanf(s, "%lf", &v) != 1) return 0;
+    if (!(v >= -max_abs && v <= max_abs)) return 0;
     *deg_out = v;
     return 1;
 }
@@ -408,8 +413,8 @@ int ap_exif_build(const ap_photo_metadata *meta,
 
     // Determine what GPS data is usable.
     double lat_deg = 0.0, lon_deg = 0.0, alt_m = 0.0;
-    int has_lat  = *gps_lat_str  && parse_gps_decimal(gps_lat_str,  &lat_deg);
-    int has_lon  = *gps_lon_str  && parse_gps_decimal(gps_lon_str,  &lon_deg);
+    int has_lat  = *gps_lat_str  && parse_gps_decimal(gps_lat_str,  &lat_deg, 90.0);
+    int has_lon  = *gps_lon_str  && parse_gps_decimal(gps_lon_str,  &lon_deg, 180.0);
     int has_alt  = *gps_alt_str  && parse_gps_alt(gps_alt_str, &alt_m);
     int has_gps  = has_lat && has_lon;
 
