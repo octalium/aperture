@@ -305,6 +305,19 @@ int  ap_library_apply_metadata_patch(ap_library *lib, int index,
                                      const ap_photo_metadata *patch,
                                      const bool patch_set[AP_META_FIELD_COUNT]);
 
+// Path-based variants of the stack / metadata apply ops. These touch
+// neither the library cache nor its db — only the sidecar at `path` —
+// so they are safe to run off the main thread once the caller has
+// resolved the absolute path. The `*_to_photo` / `*_patch` wrappers
+// above resolve the path on the caller's thread and delegate here.
+// Return 0 on success.
+int  ap_library_apply_stack_to_path(const char *path,
+                                    const ap_edit_stack *stack,
+                                    const ap_sidecar_ancillary *prefetched);
+int  ap_library_apply_metadata_patch_to_path(
+         const char *path, const ap_photo_metadata *patch,
+         const bool patch_set[AP_META_FIELD_COUNT]);
+
 // A preset is a named bundle of ap_export_settings. The library db
 // stores them in the `export_presets` table so they survive across
 // sessions. The settings are serialised as a flat key=value blob

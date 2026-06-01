@@ -2086,52 +2086,11 @@ static void seed_default_stack(ap_edit_stack *stack)
     ap_pipeline_apply_default_to_stack(stack);
 }
 
-int ap_library_apply_pipeline_to_photo(ap_library *lib, int index,
-                                       int64_t pipeline_id)
+int ap_library_apply_stack_to_path(const char *path,
+                                   const ap_edit_stack *stack,
+                                   const ap_sidecar_ancillary *prefetched)
 {
-    if (!lib || index < 0 || index >= lib->photo_count) return -1;
-
-    ap_edit_stack new_stack;
-    if (ap_pipeline_apply_to_stack(pipeline_id, &new_stack) != 0) return -1;
-
-    char path[4096];
-    if (ap_library_photo_absolute_path(lib, index, path, sizeof(path)) != 0) {
-        return -1;
-    }
-
-    // Load to preserve everything other than the stack — orientation
-    // toggle, per-field metadata overrides. If no sidecar exists yet,
-    // the loader's defaults are fine; we just write the new stack on
-    // top of them.
-    ap_edit_stack existing_stack;
-    ap_edit_stack_init(&existing_stack);
-    bool respect_orientation = true;
-    ap_photo_metadata user_meta;
-    ap_photo_metadata_clear(&user_meta);
-    bool user_set[AP_META_FIELD_COUNT] = {0};
-    ap_photo_culling culling;
-    ap_photo_culling_clear(&culling);
-    ap_photo_groups groups;
-    groups.count = 0;
-    ap_photo_keywords keywords;
-    ap_photo_keywords_clear(&keywords);
-    ap_sidecar_load(path, &existing_stack, &respect_orientation,
-                    &user_meta, user_set, &culling, &groups, &keywords);
-
-    return ap_sidecar_save(path, &new_stack, respect_orientation,
-                           &user_meta, user_set, &culling, &groups, &keywords);
-}
-
-int ap_library_apply_stack_to_photo(ap_library *lib, int index,
-                                    const ap_edit_stack *stack,
-                                    const ap_sidecar_ancillary *prefetched)
-{
-    if (!lib || !stack || index < 0 || index >= lib->photo_count) return -1;
-
-    char path[4096];
-    if (ap_library_photo_absolute_path(lib, index, path, sizeof(path)) != 0) {
-        return -1;
-    }
+    if (!path || !stack) return -1;
 
     ap_sidecar_ancillary local;
     const ap_sidecar_ancillary *a = prefetched;
@@ -2150,17 +2109,11 @@ int ap_library_apply_stack_to_photo(ap_library *lib, int index,
                            &a->groups, &a->keywords);
 }
 
-int ap_library_apply_metadata_patch(ap_library *lib, int index,
-                                    const ap_photo_metadata *patch,
-                                    const bool patch_set[AP_META_FIELD_COUNT])
+int ap_library_apply_metadata_patch_to_path(
+    const char *path, const ap_photo_metadata *patch,
+    const bool patch_set[AP_META_FIELD_COUNT])
 {
-    if (!lib || !patch || !patch_set) return -1;
-    if (index < 0 || index >= lib->photo_count) return -1;
-
-    char path[4096];
-    if (ap_library_photo_absolute_path(lib, index, path, sizeof(path)) != 0) {
-        return -1;
-    }
+    if (!path || !patch || !patch_set) return -1;
 
     ap_edit_stack stack;
     ap_edit_stack_init(&stack);
@@ -2189,6 +2142,48 @@ int ap_library_apply_metadata_patch(ap_library *lib, int index,
 
     return ap_sidecar_save(path, &stack, respect_orientation,
                            &user_meta, user_set, &culling, &groups, &keywords);
+}
+
+int ap_library_apply_pipeline_to_photo(ap_library *lib, int index,
+                                       int64_t pipeline_id)
+{
+    if (!lib || index < 0 || index >= lib->photo_count) return -1;
+
+    ap_edit_stack new_stack;
+    if (ap_pipeline_apply_to_stack(pipeline_id, &new_stack) != 0) return -1;
+
+    char path[4096];
+    if (ap_library_photo_absolute_path(lib, index, path, sizeof(path)) != 0) {
+        return -1;
+    }
+    return ap_library_apply_stack_to_path(path, &new_stack, NULL);
+}
+
+int ap_library_apply_stack_to_photo(ap_library *lib, int index,
+                                    const ap_edit_stack *stack,
+                                    const ap_sidecar_ancillary *prefetched)
+{
+    if (!lib || !stack || index < 0 || index >= lib->photo_count) return -1;
+
+    char path[4096];
+    if (ap_library_photo_absolute_path(lib, index, path, sizeof(path)) != 0) {
+        return -1;
+    }
+    return ap_library_apply_stack_to_path(path, stack, prefetched);
+}
+
+int ap_library_apply_metadata_patch(ap_library *lib, int index,
+                                    const ap_photo_metadata *patch,
+                                    const bool patch_set[AP_META_FIELD_COUNT])
+{
+    if (!lib || !patch || !patch_set) return -1;
+    if (index < 0 || index >= lib->photo_count) return -1;
+
+    char path[4096];
+    if (ap_library_photo_absolute_path(lib, index, path, sizeof(path)) != 0) {
+        return -1;
+    }
+    return ap_library_apply_metadata_patch_to_path(path, patch, patch_set);
 }
 
 // Load-modify-save the n-th photo's sidecar so its on-disk `groups`
