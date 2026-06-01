@@ -1344,21 +1344,15 @@ void ap_app_set_sort(ap_app *app, ap_library_sort sort)
 {
     if (!app || !app->library) return;
     if (app->sort == sort) return;
-    app->sort = sort;
-    // Drain in-flight thumbnail jobs before reordering: jobs carry a
-    // library index and the reload shifts every index.
-    drain_all_workers(app);
-    ap_app_wait_idle(app);
-    ap_library_reload_sorted(app->library, sort);
-    // Clear grid thumbnails: the thumbnail cache (thumbs[]) was reset
-    // by the reload, and grid cells still hold stale VkImageViews.
-    if (app->grid) {
-        int c;
-        for (c = 0; c < app->grid_map_count; c++) {
-            ap_grid_set_thumbnail(app->grid, c, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
-        }
+    // Background the re-sort: the cache build (a sidecar pass over every
+    // photo) runs off-thread, then the completion swaps the reordered
+    // cache in and rebuilds the grid. Commit app->sort only on a
+    // successful submit so the menubar checkmark matches the order that
+    // will actually land.
+    if (submit_library_job(app, AP_LIBRARY_OP_RELOAD, sort,
+                           NULL, 0, -1, "Sorting library...") == 0) {
+        app->sort = sort;
     }
-    rebuild_grid_map(app);
 }
 
 ap_library_sort ap_app_sort(const ap_app *app)
@@ -1956,59 +1950,44 @@ void open_selected_photo(ap_app *app)
     }
 }
 
-// De-index and delete every selected library photo from disk. Drains
-// worker + GPU work first so no in-flight job acts on a library index
-// this removal is about to shift.
+// De-index and delete every selected library photo from disk. The
+// disk + db work runs in a background library job; its completion swaps
+// in the renumbered cache, rebuilds the grid, and lands on the nearest
+// surviving neighbour (anchor cell).
 void delete_grid_selection(ap_app *app)
 {
     if (!app->library || !app->grid) return;
-    if (ap_grid_selection_count(app->grid) <= 0) return;
+    int sel = ap_grid_selection_count(app->grid);
+    if (sel <= 0) return;
 
-    drain_all_workers(app);
-    ap_app_wait_idle(app);
-
-    int anchor_cell = -1;
-    int removed     = 0;
-
-    // grid_map is ascending in library index, so walking cells
-    // high-to-low removes photos from the back — the indices of the
-    // photos still pending stay valid as we go. The descending walk
-    // also leaves anchor_cell holding the smallest selected cell.
-    for (int c = app->grid_map_count - 1; c >= 0; c--) {
+    // Snapshot the relative paths of the selected photos on the main
+    // thread; the worker deletes them on its own connection. anchor_cell
+    // is the smallest selected cell — where the grid lands afterward.
+    char (*del_rel)[4096] = malloc((size_t)sel * sizeof(*del_rel));
+    if (!del_rel) {
+        AP_ERROR("delete: snapshot alloc failed");
+        return;
+    }
+    int n = 0, anchor_cell = -1;
+    for (int c = 0; c < app->grid_map_count; c++) {
         if (!ap_grid_is_selected(app->grid, c)) continue;
-        anchor_cell = c;
+        if (anchor_cell < 0) anchor_cell = c;
         int i = app->grid_map[c];
         // Leave the open photo — deleting its file out from under the
-        // edit view would strand it. It can be deleted after closing.
+        // edit view would strand it. (In library mode no photo is open,
+        // so this is defensive.)
         if (app->photo && i == app->photo_library_idx) continue;
-        if (ap_library_photo_remove(app->library, i) != 0) continue;
-        if (app->photo && i < app->photo_library_idx) {
-            app->photo_library_idx--;
-        }
-        removed++;
+        const char *rel = ap_library_photo_relative_path(app->library, i);
+        if (!rel) continue;
+        snprintf(del_rel[n], sizeof(del_rel[n]), "%s", rel);
+        n++;
     }
-    if (removed == 0) return;
-
-    rebuild_grid_map(app);
-    if (app->grid_map_count > 0) {
-        // Land on the photo that slid into the lowest deleted cell —
-        // the nearest remaining neighbour — and scroll to it, since
-        // rebuild_grid_map reset the grid's scroll to the top.
-        int target = anchor_cell;
-        if (target >= app->grid_map_count) {
-            target = app->grid_map_count - 1;
-        }
-        if (target < 0) target = 0;
-        ap_grid_select_only(app->grid, target);
-
-        ImGuiIO *io = igGetIO_Nil();
-        if (io) {
-            ap_grid_ensure_visible(app->grid, target,
-                                   (int)io->DisplaySize.x,
-                                   (int)io->DisplaySize.y);
-        }
+    if (n == 0) {
+        free(del_rel);
+        return;
     }
-    AP_INFO("library: deleted %d photo(s)", removed);
+    submit_library_job(app, AP_LIBRARY_OP_DELETE, app->sort,
+                       del_rel, n, anchor_cell, "Deleting photos...");
 }
 
 // Close the currently-open photo, de-index it, delete its files from
@@ -2586,6 +2565,16 @@ int ap_app_run_frame(ap_app *app)
         draw_selection_overlay(app);
         draw_marquee_overlay(app);
         submit_pending_thumbs(app);
+    }
+    // An import sets library_rescan_pending; submit the background
+    // rescan once both single-flight guards are clear so it never races
+    // a selection-edit batch's snapshotted indices.
+    if (app->library_rescan_pending && app->library &&
+        !app->library_job_inflight && !app->selection_edit_inflight) {
+        if (submit_library_job(app, AP_LIBRARY_OP_RESCAN, app->sort,
+                               NULL, 0, -1, "Rescanning library...") == 0) {
+            app->library_rescan_pending = false;
+        }
     }
     drain_one_completed_job(app);
     ap_export_coord_pump(app);

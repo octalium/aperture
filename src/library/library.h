@@ -212,22 +212,6 @@ typedef enum {
     AP_SORT_RATING       = 3,  // star rating (highest first)
 } ap_library_sort;
 
-// Re-order the in-memory photo list by re-reading the photos table
-// with the given sort key.  Drops all cached thumbnails, rebuilds
-// the group index, and resets the thumbnail decode cursor.  Callers
-// must follow this with ap_app_rebuild_grid_map (or equivalent) so
-// the grid reflects the new order.  Returns 0 on success.
-int ap_library_reload_sorted(ap_library *lib, ap_library_sort sort);
-
-// Rescan the library root for new/removed raw files without
-// tearing the library down. Used after import + after any operation
-// that mutates the filesystem outside the library API. The library's
-// db connection stays open, no thumbnails are released except for
-// files that have been removed from disk; the in-memory photo list
-// is reloaded with `sort` afterwards so newly-added rows appear in
-// the grid. Returns 0 on success, -1 on error.
-int ap_library_rescan(ap_library *lib, ap_library_sort sort);
-
 // A detached, fully-built replacement for a library's rebuildable
 // state (photo list / group index / culling cache / group registry).
 // Built off the main thread by ap_library_cache_build on its own

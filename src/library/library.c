@@ -1201,8 +1201,8 @@ static void prune_missing_photos(sqlite3 *db, const char *root);
 
 // Run the disk -> db reconciliation for a rescan on `db`: INSERT OR
 // IGNORE every raw file currently under `root`, then prune rows whose
-// files are gone. Shared by the synchronous open path and the
-// off-thread cache build. Returns 0 on success.
+// files are gone. Run on the cache build's own connection for the
+// RESCAN op. Returns 0 on success.
 static int db_rescan(sqlite3 *db, const char *root)
 {
     sqlite3_stmt *insert_stmt = NULL;
@@ -1223,15 +1223,8 @@ static int db_rescan(sqlite3 *db, const char *root)
     return 0;
 }
 
-int ap_library_rescan(ap_library *lib, ap_library_sort sort)
-{
-    if (!lib || !lib->db) return -1;
-    if (db_rescan(lib->db, lib->root) < 0) return -1;
-    return ap_library_reload_sorted(lib, sort);
-}
-
 // Free a cache's heap-owned contents (paths, groups, culling) but not
-// the container. Used by reload-in-place and by ap_library_cache_free.
+// the container. Used by the swap, close, and ap_library_cache_free.
 static void cache_clear(ap_library_cache *cache)
 {
     if (!cache) return;
@@ -1247,42 +1240,6 @@ static void cache_clear(ap_library_cache *cache)
     free(cache->photo_culling);
     cache->photo_culling = NULL;
     cache->group_count = 0;
-}
-
-int ap_library_reload_sorted(ap_library *lib, ap_library_sort sort)
-{
-    if (!lib || !lib->db || !lib->cache) return -1;
-
-    if (lib->thumbs) {
-        for (int i = 0; i < lib->cache->photo_count; i++) {
-            ap_thumbnail_destroy(lib->thumbs[i]);
-        }
-        free(lib->thumbs);
-        lib->thumbs = NULL;
-    }
-    free(lib->thumb_failed);
-    lib->thumb_failed = NULL;
-    lib->thumb_cursor = 0;
-
-    cache_clear(lib->cache);
-
-    if (cache_load_photos(lib->db, lib->cache, sort) < 0) return -1;
-
-    if (lib->cache->photo_count > 0) {
-        lib->thumbs = calloc((size_t)lib->cache->photo_count,
-                             sizeof(*lib->thumbs));
-        lib->thumb_failed = calloc((size_t)lib->cache->photo_count,
-                                   sizeof(*lib->thumb_failed));
-        if (!lib->thumbs || !lib->thumb_failed) {
-            AP_ERROR("library: thumbnail cache alloc failed");
-            return -1;
-        }
-    }
-
-    if (cache_load_groups(lib->db, lib->cache, lib->root, NULL)   < 0) return -1;
-    if (cache_load_culling(lib->db, lib->cache, lib->root, NULL) < 0) return -1;
-
-    return 0;
 }
 
 // Open an independent connection to <root>/library.db with the same
