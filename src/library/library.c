@@ -38,33 +38,47 @@
 #error "APERTURE_VERSION must be defined at compile time (set via meson)"
 #endif
 
+typedef struct ap_library_cache ap_library_cache;
+
+// The rebuildable slice of a library: everything derived from the db +
+// sidecars that a sort / rescan / delete replaces wholesale. Split out
+// so a replacement can be built off the main thread (its own sqlite
+// connection + sidecar reads) and swapped in atomically between frames
+// — see ap_library_cache_build / ap_library_cache_swap. The GPU-owned
+// thumbnail arrays stay on ap_library: they are main-thread/GPU state,
+// resized to match this cache's photo_count at swap time.
+struct ap_library_cache {
+    char    **photo_paths; // relative to root
+    int       photo_count;
+    int       photo_capacity;
+
+    // photo_count entries, built from the sidecars.
+    ap_photo_groups *photo_groups;
+
+    // photo_count entries, mirroring the rating / flag / color columns
+    // on the photos table. Seeded from the db, reconciled against the
+    // sidecars (the source of truth).
+    ap_photo_culling *photo_culling;
+
+    // Group registry — the names of groups that exist, independent of
+    // membership. Loaded from the `groups` table.
+    char group_names[AP_LIBRARY_GROUPS_MAX][AP_GROUP_NAME_LEN];
+    int  group_count;
+};
+
 struct ap_library {
     char     *root;        // absolute path to the photo directory
     char      id[37];      // RFC 4122 v4 UUID, 36 chars + NUL
     char      name[128];   // user-set display name; empty if unset
     sqlite3  *db;          // <library_root>/library.db
 
-    char    **photo_paths; // relative to root
-    int       photo_count;
-    int       photo_capacity;
+    // The rebuildable cache (photo list / groups / culling). Swapped
+    // wholesale by ap_library_cache_swap; never NULL after open.
+    ap_library_cache *cache;
 
-    ap_thumbnail **thumbs;        // photo_count entries, NULL = not loaded
-    bool          *thumb_failed;  // photo_count entries, true = decode failed
+    ap_thumbnail **thumbs;        // cache->photo_count entries, NULL = not loaded
+    bool          *thumb_failed;  // cache->photo_count entries, true = decode failed
     int            thumb_cursor;  // next idx to try; rolled forward
-
-    // In-memory group index: photo_count entries, built from the
-    // sidecars when the library is opened.
-    ap_photo_groups *photo_groups;
-
-    // In-memory culling cache: photo_count entries, mirroring the
-    // rating / flag / color columns on the photos table. Built from
-    // the db on open; kept in sync as the user changes culling state.
-    ap_photo_culling *photo_culling;
-
-    // Group registry — the names of groups that exist, independent of
-    // membership. Loaded from the `groups` table on open.
-    char group_names[AP_LIBRARY_GROUPS_MAX][AP_GROUP_NAME_LEN];
-    int  group_count;
 };
 
 // registry: <app_root>/aperture.db, libraries(id, path, created_at)
@@ -1004,24 +1018,38 @@ static bool is_raw_file(const char *name)
     return ap_raw_is_raw_path(name);
 }
 
-static int append_path(ap_library *lib, const char *rel)
+static int cache_append_path(ap_library_cache *cache, const char *rel)
 {
-    if (lib->photo_count == lib->photo_capacity) {
-        int new_cap = lib->photo_capacity ? lib->photo_capacity * 2 : 64;
-        char **np = realloc(lib->photo_paths, (size_t)new_cap * sizeof(*np));
+    if (cache->photo_count == cache->photo_capacity) {
+        int new_cap = cache->photo_capacity ? cache->photo_capacity * 2 : 64;
+        char **np = realloc(cache->photo_paths, (size_t)new_cap * sizeof(*np));
         if (!np) {
             AP_ERROR("library: photo list grow failed");
             return -1;
         }
-        lib->photo_paths    = np;
-        lib->photo_capacity = new_cap;
+        cache->photo_paths    = np;
+        cache->photo_capacity = new_cap;
     }
     char *dup = strdup(rel);
     if (!dup) {
         AP_ERROR("library: path dup failed");
         return -1;
     }
-    lib->photo_paths[lib->photo_count++] = dup;
+    cache->photo_paths[cache->photo_count++] = dup;
+    return 0;
+}
+
+// Absolute path of the cache's n-th photo into `buf`. Mirrors
+// ap_library_photo_absolute_path but works on a detached cache, so the
+// off-thread build can resolve sidecar paths without an ap_library.
+static int cache_abs_path(const ap_library_cache *cache, const char *root,
+                          int index, char *buf, size_t buflen)
+{
+    if (!cache || !root || !buf || index < 0 || index >= cache->photo_count) {
+        return -1;
+    }
+    int n = snprintf(buf, buflen, "%s/%s", root, cache->photo_paths[index]);
+    if (n < 0 || (size_t)n >= buflen) return -1;
     return 0;
 }
 
@@ -1040,7 +1068,7 @@ static int insert_photo(sqlite3 *db, sqlite3_stmt *stmt, const char *rel,
     return 0;
 }
 
-static int scan_dir(ap_library *lib, sqlite3_stmt *insert_stmt,
+static int scan_dir(sqlite3 *db, sqlite3_stmt *insert_stmt,
                     const char *abs_dir, const char *rel_prefix,
                     int64_t added_at)
 {
@@ -1073,7 +1101,7 @@ static int scan_dir(ap_library *lib, sqlite3_stmt *insert_stmt,
                 snprintf(child_rel, sizeof(child_rel), "%s/%s",
                          rel_prefix, ename);
             }
-            scan_dir(lib, insert_stmt, abs_child, child_rel, added_at);
+            scan_dir(db, insert_stmt, abs_child, child_rel, added_at);
             continue;
         }
 
@@ -1086,15 +1114,37 @@ static int scan_dir(ap_library *lib, sqlite3_stmt *insert_stmt,
         } else {
             snprintf(rel, sizeof(rel), "%s/%s", rel_prefix, ename);
         }
-        insert_photo(lib->db, insert_stmt, rel, added_at);
+        insert_photo(db, insert_stmt, rel, added_at);
     }
 
     ap_dir_close(d);
     return 0;
 }
 
-static int load_group_cache(ap_library *lib);
-static int load_culling_cache(ap_library *lib);
+// Progress + cancel for an off-thread cache build. `cb` mirrors the
+// importer's callback contract: it returns false to request cancel, at
+// which point the build aborts and frees the partial cache. NULL `cb`
+// (the synchronous open path) never cancels.
+typedef struct {
+    bool (*cb)(int done, int total, void *ud);
+    void  *ud;
+    int    done;
+    int    total;
+} cache_build_ctx;
+
+// Tick one unit of progress; returns false when the caller asked to
+// cancel. A NULL ctx (or NULL callback) always continues.
+static bool cache_progress_tick(cache_build_ctx *bp)
+{
+    if (!bp || !bp->cb) return true;
+    bp->done++;
+    return bp->cb(bp->done, bp->total, bp->ud);
+}
+
+static int cache_load_groups(sqlite3 *db, ap_library_cache *cache,
+                             const char *root, cache_build_ctx *bp);
+static int cache_load_culling(sqlite3 *db, ap_library_cache *cache,
+                              const char *root, cache_build_ctx *bp);
 
 static const char *sort_order_clause(ap_library_sort sort)
 {
@@ -1111,26 +1161,27 @@ static const char *sort_order_clause(ap_library_sort sort)
     }
 }
 
-// Read the photo paths from the db into the in-memory list, in the
-// order given by `sort`.  Does not touch thumbs or the group index;
-// callers are responsible for those.
-static int load_photo_cache_sorted(ap_library *lib, ap_library_sort sort)
+// Read the photo paths from `db` into `cache`, in the order given by
+// `sort`. Does not touch thumbs or the group index; callers are
+// responsible for those.
+static int cache_load_photos(sqlite3 *db, ap_library_cache *cache,
+                             ap_library_sort sort)
 {
     char sql[128];
     snprintf(sql, sizeof(sql), "SELECT path FROM photos %s;",
              sort_order_clause(sort));
 
     sqlite3_stmt *stmt = NULL;
-    int rc = sqlite3_prepare_v2(lib->db, sql, -1, &stmt, NULL);
+    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        AP_ERROR("library: prepare photo list: %s", sqlite3_errmsg(lib->db));
+        AP_ERROR("library: prepare photo list: %s", sqlite3_errmsg(db));
         return -1;
     }
 
     while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
         const char *path = (const char *)sqlite3_column_text(stmt, 0);
         if (!path) continue;
-        if (append_path(lib, path) < 0) {
+        if (cache_append_path(cache, path) < 0) {
             sqlite3_finalize(stmt);
             return -1;
         }
@@ -1143,108 +1194,122 @@ static int load_photo_cache_sorted(ap_library *lib, ap_library_sort sort)
     return 0;
 }
 
-static int load_photo_cache(ap_library *lib)
-{
-    return load_photo_cache_sorted(lib, AP_SORT_PATH);
-}
+static void prune_missing_photos(sqlite3 *db, const char *root);
 
-static void prune_missing_photos(ap_library *lib);
+// Run the disk -> db reconciliation for a rescan on `db`: INSERT OR
+// IGNORE every raw file currently under `root`, then prune rows whose
+// files are gone. Shared by the synchronous open path and the
+// off-thread cache build. Returns 0 on success.
+static int db_rescan(sqlite3 *db, const char *root)
+{
+    sqlite3_stmt *insert_stmt = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR IGNORE INTO photos(path, added_at) VALUES (?, ?);",
+            -1, &insert_stmt, NULL) != SQLITE_OK) {
+        AP_ERROR("library: rescan prepare insert: %s", sqlite3_errmsg(db));
+        return -1;
+    }
+    sqlite3_exec(db, "BEGIN;", NULL, NULL, NULL);
+    scan_dir(db, insert_stmt, root, "", (int64_t)time(NULL));
+    sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL);
+    sqlite3_finalize(insert_stmt);
+
+    // Scan only adds; reconcile the other direction too. prune drops
+    // db rows whose files have been removed.
+    prune_missing_photos(db, root);
+    return 0;
+}
 
 int ap_library_rescan(ap_library *lib, ap_library_sort sort)
 {
     if (!lib || !lib->db) return -1;
-
-    // INSERT OR IGNORE everything currently on disk -- the same
-    // statement ap_library_open uses for its initial scan. The
-    // BEGIN/COMMIT wraps all inserts in one transaction.
-    sqlite3_stmt *insert_stmt = NULL;
-    if (sqlite3_prepare_v2(lib->db,
-            "INSERT OR IGNORE INTO photos(path, added_at) VALUES (?, ?);",
-            -1, &insert_stmt, NULL) != SQLITE_OK) {
-        AP_ERROR("library: rescan prepare insert: %s",
-                 sqlite3_errmsg(lib->db));
-        return -1;
-    }
-
-    sqlite3_exec(lib->db, "BEGIN;", NULL, NULL, NULL);
-    scan_dir(lib, insert_stmt, lib->root, "", (int64_t)time(NULL));
-    sqlite3_exec(lib->db, "COMMIT;", NULL, NULL, NULL);
-    sqlite3_finalize(insert_stmt);
-
-    // Scan only adds; reconcile the other direction too. prune drops
-    // db rows whose files have been removed; the in-memory cache
-    // gets rebuilt by reload_sorted below so the indexes stay valid.
-    prune_missing_photos(lib);
-
+    if (db_rescan(lib->db, lib->root) < 0) return -1;
     return ap_library_reload_sorted(lib, sort);
+}
+
+// Free a cache's heap-owned contents (paths, groups, culling) but not
+// the container. Used by reload-in-place and by ap_library_cache_free.
+static void cache_clear(ap_library_cache *cache)
+{
+    if (!cache) return;
+    for (int i = 0; i < cache->photo_count; i++) {
+        free(cache->photo_paths[i]);
+    }
+    free(cache->photo_paths);
+    cache->photo_paths    = NULL;
+    cache->photo_count    = 0;
+    cache->photo_capacity = 0;
+    free(cache->photo_groups);
+    cache->photo_groups = NULL;
+    free(cache->photo_culling);
+    cache->photo_culling = NULL;
+    cache->group_count = 0;
 }
 
 int ap_library_reload_sorted(ap_library *lib, ap_library_sort sort)
 {
-    if (!lib || !lib->db) return -1;
+    if (!lib || !lib->db || !lib->cache) return -1;
 
     if (lib->thumbs) {
-        for (int i = 0; i < lib->photo_count; i++) {
+        for (int i = 0; i < lib->cache->photo_count; i++) {
             ap_thumbnail_destroy(lib->thumbs[i]);
         }
         free(lib->thumbs);
         lib->thumbs = NULL;
     }
+    free(lib->thumb_failed);
+    lib->thumb_failed = NULL;
     lib->thumb_cursor = 0;
 
-    for (int i = 0; i < lib->photo_count; i++) {
-        free(lib->photo_paths[i]);
-        lib->photo_paths[i] = NULL;
-    }
-    lib->photo_count = 0;
+    cache_clear(lib->cache);
 
-    free(lib->photo_groups);
-    lib->photo_groups = NULL;
-    free(lib->photo_culling);
-    lib->photo_culling = NULL;
+    if (cache_load_photos(lib->db, lib->cache, sort) < 0) return -1;
 
-    if (load_photo_cache_sorted(lib, sort) < 0) return -1;
-
-    if (lib->photo_count > 0) {
-        lib->thumbs = calloc((size_t)lib->photo_count, sizeof(*lib->thumbs));
-        if (!lib->thumbs) {
+    if (lib->cache->photo_count > 0) {
+        lib->thumbs = calloc((size_t)lib->cache->photo_count,
+                             sizeof(*lib->thumbs));
+        lib->thumb_failed = calloc((size_t)lib->cache->photo_count,
+                                   sizeof(*lib->thumb_failed));
+        if (!lib->thumbs || !lib->thumb_failed) {
             AP_ERROR("library: thumbnail cache alloc failed");
             return -1;
         }
     }
 
-    if (load_group_cache(lib)   < 0) return -1;
-    if (load_culling_cache(lib) < 0) return -1;
+    if (cache_load_groups(lib->db, lib->cache, lib->root, NULL)   < 0) return -1;
+    if (cache_load_culling(lib->db, lib->cache, lib->root, NULL) < 0) return -1;
 
     return 0;
 }
 
-// Index of a group name in the in-memory registry, or -1.
-static int registry_index(const ap_library *lib, const char *name)
+// Index of a group name in the cache's registry, or -1.
+static int cache_registry_index(const ap_library_cache *cache,
+                                const char *name)
 {
-    for (int i = 0; i < lib->group_count; i++) {
-        if (strcmp(lib->group_names[i], name) == 0) return i;
+    for (int i = 0; i < cache->group_count; i++) {
+        if (strcmp(cache->group_names[i], name) == 0) return i;
     }
     return -1;
 }
 
-// Register a group name — into the in-memory registry and the `groups`
-// table. Idempotent.
-static void registry_add(ap_library *lib, const char *name)
+// Register a group name — into the cache's registry and, when `db` is
+// non-NULL, the `groups` table. Idempotent.
+static void cache_registry_add(sqlite3 *db, ap_library_cache *cache,
+                               const char *name)
 {
-    if (!name || !*name || registry_index(lib, name) >= 0) {
+    if (!name || !*name || cache_registry_index(cache, name) >= 0) {
         return;
     }
-    if (lib->group_count < AP_LIBRARY_GROUPS_MAX) {
-        snprintf(lib->group_names[lib->group_count], AP_GROUP_NAME_LEN,
+    if (cache->group_count < AP_LIBRARY_GROUPS_MAX) {
+        snprintf(cache->group_names[cache->group_count], AP_GROUP_NAME_LEN,
                  "%s", name);
-        lib->group_count++;
+        cache->group_count++;
     } else {
         AP_WARN("library: group registry full (%d)", AP_LIBRARY_GROUPS_MAX);
     }
-    if (lib->db) {
+    if (db) {
         sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(lib->db,
+        if (sqlite3_prepare_v2(db,
                 "INSERT OR IGNORE INTO groups(name) VALUES (?);",
                 -1, &st, NULL) == SQLITE_OK) {
             sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
@@ -1254,21 +1319,23 @@ static void registry_add(ap_library *lib, const char *name)
     }
 }
 
-// Remove a group name from the registry + the `groups` table. Photo
-// membership in the sidecars is the caller's separate responsibility.
-static void registry_remove(ap_library *lib, const char *name)
+// Remove a group name from the cache registry + the `groups` table.
+// Photo membership in the sidecars is the caller's separate
+// responsibility.
+static void cache_registry_remove(sqlite3 *db, ap_library_cache *cache,
+                                  const char *name)
 {
-    int idx = registry_index(lib, name);
+    int idx = cache_registry_index(cache, name);
     if (idx >= 0) {
-        for (int i = idx; i + 1 < lib->group_count; i++) {
-            memcpy(lib->group_names[i], lib->group_names[i + 1],
+        for (int i = idx; i + 1 < cache->group_count; i++) {
+            memcpy(cache->group_names[i], cache->group_names[i + 1],
                    AP_GROUP_NAME_LEN);
         }
-        lib->group_count--;
+        cache->group_count--;
     }
-    if (lib->db) {
+    if (db) {
         sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(lib->db,
+        if (sqlite3_prepare_v2(db,
                 "DELETE FROM groups WHERE name = ?;",
                 -1, &st, NULL) == SQLITE_OK) {
             sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
@@ -1282,45 +1349,47 @@ static void registry_remove(ap_library *lib, const char *name)
 // table seeds the registry; any group a sidecar references that the
 // table is missing gets folded in, keeping the registry a superset of
 // all membership.
-static int load_group_cache(ap_library *lib)
+static int cache_load_groups(sqlite3 *db, ap_library_cache *cache,
+                             const char *root, cache_build_ctx *bp)
 {
-    lib->group_count = 0;
-    if (lib->db) {
+    cache->group_count = 0;
+    if (db) {
         sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(lib->db,
+        if (sqlite3_prepare_v2(db,
                 "SELECT name FROM groups ORDER BY name;",
                 -1, &st, NULL) == SQLITE_OK) {
             while (sqlite3_step(st) == SQLITE_ROW &&
-                   lib->group_count < AP_LIBRARY_GROUPS_MAX) {
+                   cache->group_count < AP_LIBRARY_GROUPS_MAX) {
                 const char *n = (const char *)sqlite3_column_text(st, 0);
                 if (n) {
-                    snprintf(lib->group_names[lib->group_count],
+                    snprintf(cache->group_names[cache->group_count],
                              AP_GROUP_NAME_LEN, "%s", n);
-                    lib->group_count++;
+                    cache->group_count++;
                 }
             }
             sqlite3_finalize(st);
         }
     }
 
-    if (lib->photo_count <= 0) {
+    if (cache->photo_count <= 0) {
         return 0;
     }
-    lib->photo_groups = calloc((size_t)lib->photo_count,
-                               sizeof(*lib->photo_groups));
-    if (!lib->photo_groups) {
+    cache->photo_groups = calloc((size_t)cache->photo_count,
+                                 sizeof(*cache->photo_groups));
+    if (!cache->photo_groups) {
         AP_ERROR("library: group index alloc failed");
         return -1;
     }
-    for (int i = 0; i < lib->photo_count; i++) {
+    for (int i = 0; i < cache->photo_count; i++) {
         char path[4096];
-        if (ap_library_photo_absolute_path(lib, i, path, sizeof(path)) != 0) {
+        if (cache_abs_path(cache, root, i, path, sizeof(path)) != 0) {
             continue;
         }
-        ap_sidecar_load_groups(path, &lib->photo_groups[i]);
-        for (int g = 0; g < lib->photo_groups[i].count; g++) {
-            registry_add(lib, lib->photo_groups[i].names[g]);
+        ap_sidecar_load_groups(path, &cache->photo_groups[i]);
+        for (int g = 0; g < cache->photo_groups[i].count; g++) {
+            cache_registry_add(db, cache, cache->photo_groups[i].names[g]);
         }
+        if (!cache_progress_tick(bp)) return 1;  // cancelled
     }
     return 0;
 }
@@ -1351,14 +1420,15 @@ static void store_culling_row(sqlite3 *db, const char *rel,
 // truth: each photo's sidecar is parsed and, where it disagrees with
 // the cached db columns, the db is reconciled (so culling set outside
 // aperture is picked up). Mirrors load_group_cache.
-static int load_culling_cache(ap_library *lib)
+static int cache_load_culling(sqlite3 *db, ap_library_cache *cache,
+                              const char *root, cache_build_ctx *bp)
 {
-    if (lib->photo_count <= 0) {
+    if (cache->photo_count <= 0) {
         return 0;
     }
-    lib->photo_culling = calloc((size_t)lib->photo_count,
-                                sizeof(*lib->photo_culling));
-    if (!lib->photo_culling) {
+    cache->photo_culling = calloc((size_t)cache->photo_count,
+                                  sizeof(*cache->photo_culling));
+    if (!cache->photo_culling) {
         AP_ERROR("library: culling cache alloc failed");
         return -1;
     }
@@ -1366,19 +1436,19 @@ static int load_culling_cache(ap_library *lib)
     // Seed from the db columns first — the fast path when sidecars and
     // cache already agree.
     sqlite3_stmt *sel = NULL;
-    if (sqlite3_prepare_v2(lib->db,
+    if (sqlite3_prepare_v2(db,
             "SELECT rating, flag, color FROM photos WHERE path = ?;",
             -1, &sel, NULL) != SQLITE_OK) {
-        AP_ERROR("library: prepare culling select: %s", sqlite3_errmsg(lib->db));
+        AP_ERROR("library: prepare culling select: %s", sqlite3_errmsg(db));
         return -1;
     }
 
-    for (int i = 0; i < lib->photo_count; i++) {
-        ap_photo_culling *cached = &lib->photo_culling[i];
+    for (int i = 0; i < cache->photo_count; i++) {
+        ap_photo_culling *cached = &cache->photo_culling[i];
         ap_photo_culling_clear(cached);
 
         sqlite3_reset(sel);
-        sqlite3_bind_text(sel, 1, lib->photo_paths[i], -1, SQLITE_STATIC);
+        sqlite3_bind_text(sel, 1, cache->photo_paths[i], -1, SQLITE_STATIC);
         if (sqlite3_step(sel) == SQLITE_ROW) {
             cached->rating = ap_rating_clamp(sqlite3_column_int(sel, 0));
             cached->flag   = (ap_flag)sqlite3_column_int(sel, 1);
@@ -1388,17 +1458,20 @@ static int load_culling_cache(ap_library *lib)
         // Reconcile against the sidecar (source of truth). When no
         // sidecar exists the cached db value stands.
         char path[4096];
-        if (ap_library_photo_absolute_path(lib, i, path, sizeof(path)) != 0) {
-            continue;
-        }
-        ap_photo_culling side;
-        if (ap_sidecar_load_culling(path, &side) == 0) {
-            if (side.rating != cached->rating ||
-                side.flag   != cached->flag   ||
-                side.color  != cached->color) {
-                *cached = side;
-                store_culling_row(lib->db, lib->photo_paths[i], cached);
+        if (cache_abs_path(cache, root, i, path, sizeof(path)) == 0) {
+            ap_photo_culling side;
+            if (ap_sidecar_load_culling(path, &side) == 0) {
+                if (side.rating != cached->rating ||
+                    side.flag   != cached->flag   ||
+                    side.color  != cached->color) {
+                    *cached = side;
+                    store_culling_row(db, cache->photo_paths[i], cached);
+                }
             }
+        }
+        if (!cache_progress_tick(bp)) {           // cancelled
+            sqlite3_finalize(sel);
+            return 1;
         }
     }
     sqlite3_finalize(sel);
@@ -1409,10 +1482,10 @@ static int load_culling_cache(ap_library *lib)
 // cached thumbnails) for files no longer on disk. The scan only ever
 // adds — without this, files moved or deleted outside aperture leave
 // phantom entries behind.
-static void prune_missing_photos(ap_library *lib)
+static void prune_missing_photos(sqlite3 *db, const char *root)
 {
     sqlite3_stmt *sel = NULL;
-    if (sqlite3_prepare_v2(lib->db, "SELECT path FROM photos;",
+    if (sqlite3_prepare_v2(db, "SELECT path FROM photos;",
                            -1, &sel, NULL) != SQLITE_OK) {
         return;
     }
@@ -1423,7 +1496,7 @@ static void prune_missing_photos(ap_library *lib)
         if (!rel) continue;
         char abs[4096];
         if (snprintf(abs, sizeof(abs), "%s/%s",
-                     lib->root, rel) >= (int)sizeof(abs)) {
+                     root, rel) >= (int)sizeof(abs)) {
             continue;
         }
         struct stat st;
@@ -1442,11 +1515,11 @@ static void prune_missing_photos(ap_library *lib)
 
     if (n > 0) {
         sqlite3_stmt *del_p = NULL, *del_t = NULL;
-        sqlite3_prepare_v2(lib->db, "DELETE FROM photos WHERE path = ?;",
+        sqlite3_prepare_v2(db, "DELETE FROM photos WHERE path = ?;",
                            -1, &del_p, NULL);
-        sqlite3_prepare_v2(lib->db, "DELETE FROM thumbnails WHERE path = ?;",
+        sqlite3_prepare_v2(db, "DELETE FROM thumbnails WHERE path = ?;",
                            -1, &del_t, NULL);
-        sqlite3_exec(lib->db, "BEGIN;", NULL, NULL, NULL);
+        sqlite3_exec(db, "BEGIN;", NULL, NULL, NULL);
         for (int i = 0; i < n; i++) {
             if (del_p) {
                 sqlite3_reset(del_p);
@@ -1459,7 +1532,7 @@ static void prune_missing_photos(ap_library *lib)
                 sqlite3_step(del_t);
             }
         }
-        sqlite3_exec(lib->db, "COMMIT;", NULL, NULL, NULL);
+        sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL);
         sqlite3_finalize(del_p);
         sqlite3_finalize(del_t);
         AP_INFO("library: pruned %d photo(s) no longer on disk", n);
@@ -1618,27 +1691,33 @@ ap_library *ap_library_open(const char *path)
     int64_t now = (int64_t)time(NULL);
 
     sqlite3_exec(lib->db, "BEGIN;", NULL, NULL, NULL);
-    scan_dir(lib, insert_stmt, lib->root, "", now);
+    scan_dir(lib->db, insert_stmt, lib->root, "", now);
     sqlite3_exec(lib->db, "COMMIT;", NULL, NULL, NULL);
     sqlite3_finalize(insert_stmt);
 
     // Scan only adds; reconcile the other direction too.
-    prune_missing_photos(lib);
+    prune_missing_photos(lib->db, lib->root);
 
     // One-shot: stat any photos with NULL size and fill the column.
     // Subsequent imports store size at copy time, so this only does
     // real work the first time the library is opened after upgrade.
     backfill_photo_sizes(lib);
 
-    if (load_photo_cache(lib) < 0) goto fail;
+    lib->cache = calloc(1, sizeof(*lib->cache));
+    if (!lib->cache) {
+        AP_ERROR("library: cache alloc failed");
+        goto fail;
+    }
 
-    if (lib->photo_count > 0) {
-        lib->thumbs = calloc((size_t)lib->photo_count, sizeof(*lib->thumbs));
+    if (cache_load_photos(lib->db, lib->cache, AP_SORT_PATH) < 0) goto fail;
+
+    if (lib->cache->photo_count > 0) {
+        lib->thumbs = calloc((size_t)lib->cache->photo_count, sizeof(*lib->thumbs));
         if (!lib->thumbs) {
             AP_ERROR("library: thumbnail cache alloc failed");
             goto fail;
         }
-        lib->thumb_failed = calloc((size_t)lib->photo_count,
+        lib->thumb_failed = calloc((size_t)lib->cache->photo_count,
                                    sizeof(*lib->thumb_failed));
         if (!lib->thumb_failed) {
             AP_ERROR("library: thumbnail failed-flag alloc failed");
@@ -1646,11 +1725,11 @@ ap_library *ap_library_open(const char *path)
         }
     }
 
-    if (load_group_cache(lib)   < 0) goto fail;
-    if (load_culling_cache(lib) < 0) goto fail;
+    if (cache_load_groups(lib->db, lib->cache, lib->root, NULL)   < 0) goto fail;
+    if (cache_load_culling(lib->db, lib->cache, lib->root, NULL) < 0) goto fail;
 
     AP_INFO("library: %s [%s] (%d photos)",
-            lib->root, lib->id, lib->photo_count);
+            lib->root, lib->id, lib->cache->photo_count);
     return lib;
 
 fail:
@@ -1661,19 +1740,18 @@ fail:
 void ap_library_close(ap_library *lib)
 {
     if (!lib) return;
+    int n = lib->cache ? lib->cache->photo_count : 0;
     if (lib->thumbs) {
-        for (int i = 0; i < lib->photo_count; i++) {
+        for (int i = 0; i < n; i++) {
             ap_thumbnail_destroy(lib->thumbs[i]);
         }
         free(lib->thumbs);
     }
     free(lib->thumb_failed);
-    for (int i = 0; i < lib->photo_count; i++) {
-        free(lib->photo_paths[i]);
+    if (lib->cache) {
+        cache_clear(lib->cache);
+        free(lib->cache);
     }
-    free(lib->photo_paths);
-    free(lib->photo_groups);
-    free(lib->photo_culling);
     if (lib->db) {
         sqlite3_close(lib->db);
     }
@@ -1851,22 +1929,22 @@ int ap_library_setting_set(ap_library *lib, const char *key,
 
 int ap_library_photo_count(const ap_library *lib)
 {
-    return lib ? lib->photo_count : 0;
+    return lib ? lib->cache->photo_count : 0;
 }
 
 const char *ap_library_photo_relative_path(const ap_library *lib, int index)
 {
-    if (!lib || index < 0 || index >= lib->photo_count) return NULL;
-    return lib->photo_paths[index];
+    if (!lib || index < 0 || index >= lib->cache->photo_count) return NULL;
+    return lib->cache->photo_paths[index];
 }
 
 int ap_library_photo_absolute_path(const ap_library *lib, int index,
                                    char *buf, size_t buflen)
 {
-    if (!lib || !buf || index < 0 || index >= lib->photo_count) {
+    if (!lib || !buf || index < 0 || index >= lib->cache->photo_count) {
         return -1;
     }
-    int n = snprintf(buf, buflen, "%s/%s", lib->root, lib->photo_paths[index]);
+    int n = snprintf(buf, buflen, "%s/%s", lib->root, lib->cache->photo_paths[index]);
     if (n < 0 || (size_t)n >= buflen) {
         return -1;
     }
@@ -1875,10 +1953,10 @@ int ap_library_photo_absolute_path(const ap_library *lib, int index,
 
 int ap_library_photo_remove(ap_library *lib, int index)
 {
-    if (!lib || index < 0 || index >= lib->photo_count) {
+    if (!lib || index < 0 || index >= lib->cache->photo_count) {
         return -1;
     }
-    const char *rel = lib->photo_paths[index];
+    const char *rel = lib->cache->photo_paths[index];
 
     // Delete the raw file and its sidecar from disk. The library holds
     // an imported copy; the photographer's originals live elsewhere. A
@@ -1908,15 +1986,15 @@ int ap_library_photo_remove(ap_library *lib, int index)
     }
     sqlite3_finalize(st);
 
-    free(lib->photo_paths[index]);
+    free(lib->cache->photo_paths[index]);
     if (lib->thumbs && lib->thumbs[index]) {
         ap_thumbnail_destroy(lib->thumbs[index]);
     }
 
-    int tail = lib->photo_count - index - 1;
+    int tail = lib->cache->photo_count - index - 1;
     if (tail > 0) {
-        memmove(&lib->photo_paths[index], &lib->photo_paths[index + 1],
-                (size_t)tail * sizeof(*lib->photo_paths));
+        memmove(&lib->cache->photo_paths[index], &lib->cache->photo_paths[index + 1],
+                (size_t)tail * sizeof(*lib->cache->photo_paths));
         if (lib->thumbs) {
             memmove(&lib->thumbs[index], &lib->thumbs[index + 1],
                     (size_t)tail * sizeof(*lib->thumbs));
@@ -1925,22 +2003,22 @@ int ap_library_photo_remove(ap_library *lib, int index)
             memmove(&lib->thumb_failed[index], &lib->thumb_failed[index + 1],
                     (size_t)tail * sizeof(*lib->thumb_failed));
         }
-        if (lib->photo_groups) {
-            memmove(&lib->photo_groups[index], &lib->photo_groups[index + 1],
-                    (size_t)tail * sizeof(*lib->photo_groups));
+        if (lib->cache->photo_groups) {
+            memmove(&lib->cache->photo_groups[index], &lib->cache->photo_groups[index + 1],
+                    (size_t)tail * sizeof(*lib->cache->photo_groups));
         }
-        if (lib->photo_culling) {
-            memmove(&lib->photo_culling[index], &lib->photo_culling[index + 1],
-                    (size_t)tail * sizeof(*lib->photo_culling));
+        if (lib->cache->photo_culling) {
+            memmove(&lib->cache->photo_culling[index], &lib->cache->photo_culling[index + 1],
+                    (size_t)tail * sizeof(*lib->cache->photo_culling));
         }
     }
-    lib->photo_count--;
-    lib->photo_paths[lib->photo_count] = NULL;
+    lib->cache->photo_count--;
+    lib->cache->photo_paths[lib->cache->photo_count] = NULL;
     if (lib->thumbs) {
-        lib->thumbs[lib->photo_count] = NULL;
+        lib->thumbs[lib->cache->photo_count] = NULL;
     }
     if (lib->thumb_failed) {
-        lib->thumb_failed[lib->photo_count] = false;
+        lib->thumb_failed[lib->cache->photo_count] = false;
     }
     if (lib->thumb_cursor > index) {
         lib->thumb_cursor--;
@@ -1950,7 +2028,7 @@ int ap_library_photo_remove(ap_library *lib, int index)
 
 ap_thumbnail *ap_library_thumbnail(const ap_library *lib, int index)
 {
-    if (!lib || !lib->thumbs || index < 0 || index >= lib->photo_count) {
+    if (!lib || !lib->thumbs || index < 0 || index >= lib->cache->photo_count) {
         return NULL;
     }
     return lib->thumbs[index];
@@ -1958,7 +2036,7 @@ ap_thumbnail *ap_library_thumbnail(const ap_library *lib, int index)
 
 void ap_library_set_thumbnail(ap_library *lib, int index, ap_thumbnail *t)
 {
-    if (!lib || !lib->thumbs || index < 0 || index >= lib->photo_count) {
+    if (!lib || !lib->thumbs || index < 0 || index >= lib->cache->photo_count) {
         if (t) ap_thumbnail_destroy(t);
         return;
     }
@@ -1970,9 +2048,9 @@ void ap_library_set_thumbnail(ap_library *lib, int index, ap_thumbnail *t)
 
 int ap_library_pending_thumbnail_idx(const ap_library *lib)
 {
-    if (!lib || !lib->thumbs || lib->photo_count <= 0) return -1;
+    if (!lib || !lib->thumbs || lib->cache->photo_count <= 0) return -1;
     ap_library *m = (ap_library *)lib;
-    while (m->thumb_cursor < m->photo_count) {
+    while (m->thumb_cursor < m->cache->photo_count) {
         int idx = m->thumb_cursor++;
         if (!m->thumbs[idx] && !(m->thumb_failed && m->thumb_failed[idx]))
             return idx;
@@ -1982,7 +2060,7 @@ int ap_library_pending_thumbnail_idx(const ap_library *lib)
 
 void ap_library_invalidate_thumbnail(ap_library *lib, int index)
 {
-    if (!lib || !lib->thumbs || index < 0 || index >= lib->photo_count) return;
+    if (!lib || !lib->thumbs || index < 0 || index >= lib->cache->photo_count) return;
     if (lib->thumbs[index]) {
         ap_thumbnail_destroy(lib->thumbs[index]);
         lib->thumbs[index] = NULL;
@@ -1996,7 +2074,7 @@ void ap_library_invalidate_thumbnail(ap_library *lib, int index)
 
 void ap_library_mark_thumbnail_failed(ap_library *lib, int index)
 {
-    if (!lib || !lib->thumb_failed || index < 0 || index >= lib->photo_count)
+    if (!lib || !lib->thumb_failed || index < 0 || index >= lib->cache->photo_count)
         return;
     lib->thumb_failed[index] = true;
 }
@@ -2005,7 +2083,7 @@ int ap_library_thumbnail_blob(const ap_library *lib, int index,
                               unsigned char **out_jpeg, size_t *out_size)
 {
     if (!lib || !out_jpeg || !out_size) return -1;
-    if (index < 0 || index >= lib->photo_count) return -1;
+    if (index < 0 || index >= lib->cache->photo_count) return -1;
 
     // Freshness gate: the render must be at least as new as the
     // photo's edit sidecar. No sidecar -> nothing to be fresh
@@ -2027,7 +2105,7 @@ int ap_library_thumbnail_blob(const ap_library *lib, int index,
         AP_ERROR("library: prepare thumb select: %s", sqlite3_errmsg(lib->db));
         return -1;
     }
-    sqlite3_bind_text(stmt, 1, lib->photo_paths[index], -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 1, lib->cache->photo_paths[index], -1, SQLITE_STATIC);
 
     int rc = -1;
     if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -2054,7 +2132,7 @@ int ap_library_store_thumbnail(ap_library *lib, int index,
                                const unsigned char *jpeg, size_t size)
 {
     if (!lib || !jpeg || size == 0) return -1;
-    if (index < 0 || index >= lib->photo_count) return -1;
+    if (index < 0 || index >= lib->cache->photo_count) return -1;
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(lib->db,
@@ -2065,7 +2143,7 @@ int ap_library_store_thumbnail(ap_library *lib, int index,
         AP_ERROR("library: prepare thumb upsert: %s", sqlite3_errmsg(lib->db));
         return -1;
     }
-    sqlite3_bind_text(stmt, 1, lib->photo_paths[index], -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 1, lib->cache->photo_paths[index], -1, SQLITE_STATIC);
     sqlite3_bind_blob(stmt, 2, jpeg, (int)size, SQLITE_STATIC);
     sqlite3_bind_int64(stmt, 3, (int64_t)time(NULL));
     int rc = sqlite3_step(stmt);
@@ -2147,7 +2225,7 @@ int ap_library_apply_metadata_patch_to_path(
 int ap_library_apply_pipeline_to_photo(ap_library *lib, int index,
                                        int64_t pipeline_id)
 {
-    if (!lib || index < 0 || index >= lib->photo_count) return -1;
+    if (!lib || index < 0 || index >= lib->cache->photo_count) return -1;
 
     ap_edit_stack new_stack;
     if (ap_pipeline_apply_to_stack(pipeline_id, &new_stack) != 0) return -1;
@@ -2163,7 +2241,7 @@ int ap_library_apply_stack_to_photo(ap_library *lib, int index,
                                     const ap_edit_stack *stack,
                                     const ap_sidecar_ancillary *prefetched)
 {
-    if (!lib || !stack || index < 0 || index >= lib->photo_count) return -1;
+    if (!lib || !stack || index < 0 || index >= lib->cache->photo_count) return -1;
 
     char path[4096];
     if (ap_library_photo_absolute_path(lib, index, path, sizeof(path)) != 0) {
@@ -2177,7 +2255,7 @@ int ap_library_apply_metadata_patch(ap_library *lib, int index,
                                     const bool patch_set[AP_META_FIELD_COUNT])
 {
     if (!lib || !patch || !patch_set) return -1;
-    if (index < 0 || index >= lib->photo_count) return -1;
+    if (index < 0 || index >= lib->cache->photo_count) return -1;
 
     char path[4096];
     if (ap_library_photo_absolute_path(lib, index, path, sizeof(path)) != 0) {
@@ -2216,7 +2294,7 @@ static int write_photo_sidecar_groups(ap_library *lib, int index)
 
     return ap_sidecar_save(path, &stack, respect_orientation,
                            &user_meta, user_set, &culling,
-                           &lib->photo_groups[index], &keywords);
+                           &lib->cache->photo_groups[index], &keywords);
 }
 
 // Load-modify-save the n-th photo's sidecar so its on-disk culling
@@ -2254,39 +2332,39 @@ static int write_photo_sidecar_culling(ap_library *lib, int index,
 
 ap_photo_culling ap_library_photo_culling(const ap_library *lib, int index)
 {
-    if (!lib || !lib->photo_culling ||
-        index < 0 || index >= lib->photo_count) {
+    if (!lib || !lib->cache->photo_culling ||
+        index < 0 || index >= lib->cache->photo_count) {
         ap_photo_culling empty;
         ap_photo_culling_clear(&empty);
         return empty;
     }
-    return lib->photo_culling[index];
+    return lib->cache->photo_culling[index];
 }
 
 int ap_library_set_photo_culling(ap_library *lib, int index,
                                  ap_photo_culling culling)
 {
-    if (!lib || !lib->photo_culling) return -1;
-    if (index < 0 || index >= lib->photo_count) return -1;
+    if (!lib || !lib->cache->photo_culling) return -1;
+    if (index < 0 || index >= lib->cache->photo_count) return -1;
 
     culling.rating = ap_rating_clamp(culling.rating);
 
     if (write_photo_sidecar_culling(lib, index, &culling) != 0) {
         return -1;
     }
-    lib->photo_culling[index] = culling;
-    store_culling_row(lib->db, lib->photo_paths[index], &culling);
+    lib->cache->photo_culling[index] = culling;
+    store_culling_row(lib->db, lib->cache->photo_paths[index], &culling);
     return 0;
 }
 
 const ap_photo_groups *ap_library_photo_groups(const ap_library *lib,
                                                int index)
 {
-    if (!lib || !lib->photo_groups ||
-        index < 0 || index >= lib->photo_count) {
+    if (!lib || !lib->cache->photo_groups ||
+        index < 0 || index >= lib->cache->photo_count) {
         return NULL;
     }
-    return &lib->photo_groups[index];
+    return &lib->cache->photo_groups[index];
 }
 
 int ap_library_group_list(const ap_library *lib,
@@ -2295,9 +2373,9 @@ int ap_library_group_list(const ap_library *lib,
     if (!lib || !names || max <= 0) {
         return 0;
     }
-    int n = (lib->group_count < max) ? lib->group_count : max;
+    int n = (lib->cache->group_count < max) ? lib->cache->group_count : max;
     for (int i = 0; i < n; i++) {
-        snprintf(names[i], AP_GROUP_NAME_LEN, "%s", lib->group_names[i]);
+        snprintf(names[i], AP_GROUP_NAME_LEN, "%s", lib->cache->group_names[i]);
     }
     return n;
 }
@@ -2305,17 +2383,17 @@ int ap_library_group_list(const ap_library *lib,
 int ap_library_group_create(ap_library *lib, const char *name)
 {
     if (!lib || !name || !*name) return -1;
-    registry_add(lib, name);
+    cache_registry_add(lib->db, lib->cache, name);
     return 0;
 }
 
 int ap_library_set_photo_group(ap_library *lib, int index,
                                const char *group, bool member)
 {
-    if (!lib || !lib->photo_groups || !group || !*group) return -1;
-    if (index < 0 || index >= lib->photo_count) return -1;
+    if (!lib || !lib->cache->photo_groups || !group || !*group) return -1;
+    if (index < 0 || index >= lib->cache->photo_count) return -1;
 
-    ap_photo_groups *g = &lib->photo_groups[index];
+    ap_photo_groups *g = &lib->cache->photo_groups[index];
     int found = -1;
     for (int i = 0; i < g->count; i++) {
         if (strcmp(g->names[i], group) == 0) {
@@ -2332,7 +2410,7 @@ int ap_library_set_photo_group(ap_library *lib, int index,
         }
         snprintf(g->names[g->count], AP_GROUP_NAME_LEN, "%s", group);
         g->count++;
-        registry_add(lib, group);                 // ensure the group exists
+        cache_registry_add(lib->db, lib->cache, group);                 // ensure the group exists
     } else {
         if (found < 0) return 0;                  // not a member
         for (int i = found; i + 1 < g->count; i++) {
@@ -2351,8 +2429,8 @@ int ap_library_rename_group(ap_library *lib, const char *old_name,
     }
     if (strcmp(old_name, new_name) == 0) return 0;
 
-    for (int p = 0; p < lib->photo_count; p++) {
-        const ap_photo_groups *g = &lib->photo_groups[p];
+    for (int p = 0; p < lib->cache->photo_count; p++) {
+        const ap_photo_groups *g = &lib->cache->photo_groups[p];
         bool has = false;
         for (int i = 0; i < g->count; i++) {
             if (strcmp(g->names[i], old_name) == 0) {
@@ -2365,18 +2443,18 @@ int ap_library_rename_group(ap_library *lib, const char *old_name,
             ap_library_set_photo_group(lib, p, new_name, true);
         }
     }
-    registry_remove(lib, old_name);
-    registry_add(lib, new_name);
+    cache_registry_remove(lib->db, lib->cache, old_name);
+    cache_registry_add(lib->db, lib->cache, new_name);
     return 0;
 }
 
 int ap_library_delete_group(ap_library *lib, const char *group)
 {
     if (!lib || !group || !*group) return -1;
-    for (int p = 0; p < lib->photo_count; p++) {
+    for (int p = 0; p < lib->cache->photo_count; p++) {
         ap_library_set_photo_group(lib, p, group, false);
     }
-    registry_remove(lib, group);
+    cache_registry_remove(lib->db, lib->cache, group);
     return 0;
 }
 
