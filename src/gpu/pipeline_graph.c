@@ -338,8 +338,8 @@ static int create_histogram_pass(ap_pipeline_graph *graph)
         },
         .layout = graph->hist_pl,
     };
-    VkResult r = vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpci,
-                                          NULL, &graph->hist_pipeline);
+    VkResult r = vkCreateComputePipelines(dev, graph->gpu->pipeline_cache,
+                                          1, &cpci, NULL, &graph->hist_pipeline);
     vkDestroyShaderModule(dev, sm, NULL);
     if (r != VK_SUCCESS) {
         AP_ERROR("graph: hist: vkCreateComputePipelines -> %d", r);
@@ -469,7 +469,8 @@ static int create_stage(ap_pipeline_graph *graph, graph_stage *st,
         },
         .layout = st->pl,
     };
-    VkResult r = vkCreateComputePipelines(graph->gpu->device, VK_NULL_HANDLE,
+    VkResult r = vkCreateComputePipelines(graph->gpu->device,
+                                          graph->gpu->pipeline_cache,
                                           1, &cpci, NULL, &st->pipeline);
     vkDestroyShaderModule(graph->gpu->device, sm, NULL);
     if (r != VK_SUCCESS) {

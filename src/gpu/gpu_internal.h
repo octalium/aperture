@@ -58,6 +58,11 @@ struct ap_gpu {
     gpu_frame frames[APERTURE_FRAMES_IN_FLIGHT];
     uint32_t current_frame;
 
+    // Session-wide compute-pipeline cache. Each unique stage shader is
+    // compiled by the driver once; subsequent graph rebuilds (every edit)
+    // reuse the cached pipeline instead of recompiling from scratch.
+    VkPipelineCache pipeline_cache;
+
     struct ap_pipeline_graph *current_graph;
     struct ap_canvas         *current_canvas;
     struct ap_grid           *current_grid;
