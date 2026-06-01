@@ -161,8 +161,7 @@ void ap_app_destroy(ap_app *app)
     if (!app) return;
 
     save_panel_visibility();
-    ap_export_coord_shutdown(app);
-    drain_all_workers(app);
+    drain_all_workers(app);  // aborts the export coordinator, then the pool
     ap_app_wait_idle(app);
     ap_app_close_photo(app);
     ap_app_close_library(app);
@@ -1091,13 +1090,24 @@ bool ap_app_import_inflight(const ap_app *app)
 int ap_app_apply_pipeline_to_selection(ap_app *app, int64_t pipeline_id)
 {
     // Backgrounded: the per-item op is pure path-based sidecar I/O. The
-    // return value is now the number of photos *queued*; the thumbnail
+    // return value is the number of photos *queued*; the thumbnail
     // invalidation + final count notify happen at completion on the main
     // thread (handle_selection_edit_complete).
+    bool busy = false;
     selection_edit_job *j =
-        build_selection_edit_job(app, AP_SEL_EDIT_PIPELINE, true);
-    if (!j) return (app && app->library && app->grid) ? 0 : -1;
-    j->pipeline_id = pipeline_id;
+        build_selection_edit_job(app, AP_SEL_EDIT_PIPELINE, true, &busy);
+    if (!j) {
+        if (busy) return AP_SELECTION_EDIT_BUSY;
+        return (app && app->library && app->grid) ? 0 : -1;
+    }
+    // Resolve the pipeline to a concrete stack here, on the main thread,
+    // so the worker never touches the pipeline db connection.
+    if (ap_pipeline_apply_to_stack(pipeline_id, &j->stack) != 0) {
+        free(j->indices);
+        free(j->paths);
+        free(j);
+        return -1;
+    }
     return commit_selection_edit_job(app, j, "Applying pipeline...");
 }
 
@@ -1154,9 +1164,10 @@ int ap_app_sync_edits_to_selection(ap_app *app)
     if (!app || !app->library || !app->grid) return -1;
     if (!app->edit_clipboard_valid) return -1;
 
+    bool busy = false;
     selection_edit_job *j =
-        build_selection_edit_job(app, AP_SEL_EDIT_STACK, true);
-    if (!j) return 0;
+        build_selection_edit_job(app, AP_SEL_EDIT_STACK, true, &busy);
+    if (!j) return busy ? AP_SELECTION_EDIT_BUSY : 0;
     // Copy the clipboard stack into the job: it is mutable from the UI,
     // so the worker must not read app->edit_clipboard directly.
     j->stack = app->edit_clipboard;
@@ -1196,9 +1207,10 @@ int ap_app_apply_lens_override_to_selection(ap_app *app,
                                 lens_mod->str_params_count, "lens_override");
     if (slot < 0) return -1;
 
+    bool busy = false;
     selection_edit_job *j =
-        build_selection_edit_job(app, AP_SEL_EDIT_LENS, true);
-    if (!j) return 0;
+        build_selection_edit_job(app, AP_SEL_EDIT_LENS, true, &busy);
+    if (!j) return busy ? AP_SELECTION_EDIT_BUSY : 0;
     j->lens_slot = slot;
     snprintf(j->match_exif_lens, sizeof(j->match_exif_lens),
              "%s", match_exif_lens);
@@ -1217,9 +1229,10 @@ int ap_app_apply_metadata_to_selection(ap_app *app,
     if (!app || !patch || !patch_set) return -1;
     if (!app->library || !app->grid)  return -1;
 
+    bool busy = false;
     selection_edit_job *j =
-        build_selection_edit_job(app, AP_SEL_EDIT_METADATA, false);
-    if (!j) return 0;
+        build_selection_edit_job(app, AP_SEL_EDIT_METADATA, false, &busy);
+    if (!j) return busy ? AP_SELECTION_EDIT_BUSY : 0;
     j->patch = *patch;
     memcpy(j->patch_set, patch_set, sizeof(j->patch_set));
     return commit_selection_edit_job(app, j, "Applying metadata...");

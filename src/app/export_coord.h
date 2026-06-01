@@ -26,8 +26,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-// Hard cap on summed in-flight RGBA buffers. The coordinator never
-// opens the next photo while bytes_inflight + est_next would exceed it.
+// Soft cap on summed in-flight RGBA buffers. The gate is reactive: the
+// coordinator stops opening the next photo once bytes_inflight has
+// already reached this budget, so peak is bounded to BUDGET + one photo
+// (the photo that pushed it over). bytes_inflight == 0 always opens one
+// photo so a single image larger than the budget never deadlocks.
 #define AP_EXPORT_BYTE_BUDGET ((size_t)512u * 1024u * 1024u)
 
 // One photo queued for export. Paths are precomputed at submit time
@@ -58,9 +61,12 @@ void ap_export_coord_pump(ap_app *app);
 // buffer size the encode held.
 void ap_export_coord_encode_done(ap_app *app, size_t bytes);
 
-// Tear the coordinator down on shutdown: request cancel, pump until all
-// in-flight encodes drain, free buffers and the coordinator. Safe when
-// app->export_coord is NULL.
-void ap_export_coord_shutdown(ap_app *app);
+// Tear the coordinator down immediately: request cancel, wait for all
+// in-flight encodes to drain, free their buffers and the coordinator.
+// Called on shutdown and before any library mutation that would
+// invalidate the indices/photos the pump still has queued (sort, delete,
+// close) — drain_all_workers calls it so those callers quiesce export
+// work, not just the worker pool. Safe when app->export_coord is NULL.
+void ap_export_coord_abort(ap_app *app);
 
 #endif /* APERTURE_APP_EXPORT_COORD_H */

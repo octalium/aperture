@@ -154,10 +154,17 @@ void        ap_app_cancel_import(ap_app *app);
 // True while an import job is running on a worker.
 bool        ap_app_import_inflight(const ap_app *app);
 
+// Returned by the selection-edit APIs below when a batch is already
+// running (single-flight rejection). Distinct from 0 ("queued nothing")
+// and -1 ("no library / grid / invalid args") so callers can show the
+// right message instead of conflating busy with an empty selection.
+#define AP_SELECTION_EDIT_BUSY (-2)
+
 // Apply a metadata-override patch to every photo currently in the
 // library grid's selection set. The bulk-edit panel + the photo-mode
-// Sync-to-selection button both route through here. Returns the
-// number of photos written, or -1 if no library / no grid.
+// Sync-to-selection button both route through here. Returns the number
+// of photos queued, -1 if no library / no grid, or
+// AP_SELECTION_EDIT_BUSY when a selection edit is already running.
 int ap_app_apply_metadata_to_selection(ap_app *app,
                                        const ap_photo_metadata *patch,
                                        const bool patch_set[AP_META_FIELD_COUNT]);
@@ -165,8 +172,9 @@ int ap_app_apply_metadata_to_selection(ap_app *app,
 // Replace the edit stack of every selected photo with the contents
 // of the named pipeline. Skips the currently-open photo to avoid
 // desyncing its in-memory stack from the sidecar; reopening the
-// photo picks up the rewritten stack. Returns the number written,
-// or -1 on error.
+// photo picks up the rewritten stack. Returns the number queued, -1
+// on error, or AP_SELECTION_EDIT_BUSY when a selection edit is already
+// running.
 int ap_app_apply_pipeline_to_selection(ap_app *app, int64_t pipeline_id);
 
 // Culling: set the rating / pick-reject flag / colour label on every
@@ -220,8 +228,9 @@ bool        ap_app_has_edit_clipboard(const ap_app *app);
 
 // Apply the edit clipboard's stack to every selected library photo's
 // sidecar, skipping the currently-open photo. Mirrors the pipeline-to-
-// selection path. Returns the number of photos written, or -1 on error
-// (no library, no grid, or empty clipboard).
+// selection path. Returns the number of photos queued, -1 on error (no
+// library, no grid, or empty clipboard), or AP_SELECTION_EDIT_BUSY when
+// a selection edit is already running.
 int         ap_app_sync_edits_to_selection(ap_app *app);
 
 // Walk the library grid's selection and write `override_lens` into the
@@ -233,7 +242,8 @@ int         ap_app_sync_edits_to_selection(ap_app *app);
 // the canonical version; the chooser already updated it directly).
 // Writes the per-selection counts into `*out_applied` and `*out_skipped`
 // when those pointers are non-NULL. Returns 0 on success, -1 on a
-// missing library / grid or invalid arguments.
+// missing library / grid or invalid arguments, or AP_SELECTION_EDIT_BUSY
+// when a selection edit is already running.
 int         ap_app_apply_lens_override_to_selection(
                 ap_app     *app,
                 const char *match_exif_lens,

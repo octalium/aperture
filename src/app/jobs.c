@@ -86,20 +86,17 @@ void import_job_run(ap_work_item *self)
 }
 
 // Attach the lens override to one photo if its EXIF lens matches. Pure
-// CPU + path-based sidecar I/O; no library cache or db mutation.
-static bool selection_edit_lens_one(selection_edit_job *j, int idx)
+// CPU + path-based sidecar I/O against a pre-resolved absolute path; the
+// worker never touches the library cache.
+static bool selection_edit_lens_one(selection_edit_job *j, const char *path)
 {
-    char abs[4096];
-    if (ap_library_photo_absolute_path(j->library, idx, abs, sizeof(abs)) != 0)
-        return false;
-
     char peer_lens[AP_META_VALUE_LEN];
-    if (ap_raw_lens_model(abs, peer_lens, sizeof(peer_lens)) != 0) return false;
+    if (ap_raw_lens_model(path, peer_lens, sizeof(peer_lens)) != 0) return false;
     if (strcmp(peer_lens, j->match_exif_lens) != 0) return false;
 
     ap_edit_stack stack;
     ap_sidecar_ancillary ancillary;
-    if (ap_sidecar_load_full(abs, &stack, &ancillary) != 0) return false;
+    if (ap_sidecar_load_full(path, &stack, &ancillary) != 0) return false;
 
     int hit = -1;
     for (int e = 0; e < stack.count; e++) {
@@ -112,26 +109,23 @@ static bool selection_edit_lens_one(selection_edit_job *j, int idx)
 
     snprintf(stack.entries[hit].str_params[j->lens_slot], AP_EDIT_STR_LEN,
              "%s", j->override_lens);
-    return ap_library_apply_stack_to_photo(j->library, idx, &stack,
-                                           &ancillary) == 0;
+    return ap_library_apply_stack_to_path(path, &stack, &ancillary) == 0;
 }
 
-// Run one per-item sidecar op for photo index `idx`. Returns true on a
-// successful write.
-static bool selection_edit_one(selection_edit_job *j, int idx)
+// Run one per-item sidecar op against the pre-resolved absolute `path`.
+// Returns true on a successful write. PIPELINE is resolved to a stack at
+// submit, so it runs through the same STACK path here.
+static bool selection_edit_one(selection_edit_job *j, const char *path)
 {
     switch (j->op) {
     case AP_SEL_EDIT_PIPELINE:
-        return ap_library_apply_pipeline_to_photo(j->library, idx,
-                                                  j->pipeline_id) == 0;
     case AP_SEL_EDIT_STACK:
-        return ap_library_apply_stack_to_photo(j->library, idx,
-                                               &j->stack, NULL) == 0;
+        return ap_library_apply_stack_to_path(path, &j->stack, NULL) == 0;
     case AP_SEL_EDIT_METADATA:
-        return ap_library_apply_metadata_patch(j->library, idx,
-                                               &j->patch, j->patch_set) == 0;
+        return ap_library_apply_metadata_patch_to_path(path, &j->patch,
+                                                       j->patch_set) == 0;
     case AP_SEL_EDIT_LENS:
-        return selection_edit_lens_one(j, idx);
+        return selection_edit_lens_one(j, path);
     }
     return false;
 }
@@ -142,7 +136,7 @@ void selection_edit_job_run(ap_work_item *self)
     int wrote = 0;
     for (int k = 0; k < j->count; k++) {
         if (ap_job_cancel_requested(j->job)) break;
-        if (selection_edit_one(j, j->indices[k])) wrote++;
+        if (selection_edit_one(j, j->paths[k])) wrote++;
         ap_job_progress(j->job, k + 1, j->count);
     }
     atomic_store(&j->wrote, wrote);
@@ -308,9 +302,12 @@ static void handle_selection_edit_complete(ap_app *app, selection_edit_job *j)
 
     // Thumbnail invalidation touches the library cache the main thread
     // owns, so it happens here, not on the worker. Re-validate each
-    // index against the current photo count + thumb generation: a
-    // concurrent reorder/delete (PR 2) bumps the gen and the indices
-    // would be stale — discard rather than corrupt the grid.
+    // index against the current photo count + thumb generation: the
+    // import-completion rescan bumps the gen (it reorders indices
+    // without draining the pool), so a job that was snapshotted before
+    // it would hold stale indices — skip invalidation rather than
+    // corrupt the grid. Sort/delete drain the pool first, so an
+    // in-flight job can never reach here across one of those.
     if (app->library && j->thumb_gen == app->thumb_load_gen) {
         int n = ap_library_photo_count(app->library);
         for (int k = 0; k < j->count; k++) {
@@ -332,6 +329,7 @@ static void handle_selection_edit_complete(ap_app *app, selection_edit_job *j)
     }
 
     free(j->indices);
+    free(j->paths);
     free(j->job);
     free(j);
 }
@@ -351,6 +349,14 @@ static void handle_import_complete(ap_app *app, import_job *j)
         // the photo cache. Drops the perceived "main thread blocks
         // at import end" pause.
         if (app->library) {
+            // The reload re-sorts and renumbers photos, so any
+            // selection-edit job snapshotted before it now holds stale
+            // indices. Bump the thumb generation around the rescan so
+            // handle_selection_edit_complete skips its stale-index
+            // thumbnail invalidation. This rescan does NOT drain the
+            // pool, so it is the one reorder path an in-flight job can
+            // outlive.
+            app->thumb_load_gen++;
             ap_library_rescan(app->library, ap_app_sort(app));
         }
 
@@ -418,6 +424,7 @@ void discard_completed_item(ap_app *app, ap_work_item *it)
         app->selection_edit_inflight = false;
         ap_job_finish(j->job, AP_JOB_CANCELED);
         free(j->indices);
+        free(j->paths);
         free(j->job);
         free(j);
     } else if (it->run == ap_update_check_run) {
@@ -432,6 +439,12 @@ void discard_completed_item(ap_app *app, ap_work_item *it)
 void drain_all_workers(ap_app *app)
 {
     if (!app->workers) return;
+    // Tear down the export coordinator first: draining the worker pool
+    // alone leaves it alive with cursor < count, and the next pump would
+    // resume opening photos against the library/GPU state the caller is
+    // about to mutate (sort/delete/close). Abort quiesces its in-flight
+    // encodes and frees it. No-op when no export is running.
+    ap_export_coord_abort(app);
     ap_worker_pool_wait_idle(app->workers);
     for (;;) {
         ap_work_item *it = ap_worker_pool_poll(app->workers);
@@ -572,12 +585,15 @@ void submit_import_job(ap_app *app, const char *lib_root, const char *src_dir,
 }
 
 selection_edit_job *build_selection_edit_job(ap_app *app, ap_sel_edit_op op,
-                                             bool skip_open_photo)
+                                             bool skip_open_photo,
+                                             bool *out_busy)
 {
+    if (out_busy) *out_busy = false;
     if (!app || !app->library || !app->grid || !app->workers) return NULL;
     // Single-flight: never run two selection-edit batches at once, or
     // two workers could write the same photo's sidecar concurrently.
     if (app->selection_edit_inflight) {
+        if (out_busy) *out_busy = true;
         ap_status_notify(AP_STATUS_INFO,
                          "A selection edit is already running.");
         return NULL;
@@ -592,12 +608,17 @@ selection_edit_job *build_selection_edit_job(ap_app *app, ap_sel_edit_op op,
         return NULL;
     }
     j->indices = malloc((size_t)sel * sizeof(int));
-    if (!j->indices) {
-        AP_ERROR("selection edit: index snapshot alloc failed");
+    j->paths   = malloc((size_t)sel * sizeof(*j->paths));
+    if (!j->indices || !j->paths) {
+        AP_ERROR("selection edit: snapshot alloc failed");
+        free(j->indices);
+        free(j->paths);
         free(j);
         return NULL;
     }
 
+    // Resolve every selected index to its absolute path here, on the
+    // main thread, so the worker never touches the library cache.
     int count = 0;
     for (int c = 0; c < app->grid_map_count && count < sel; c++) {
         if (!ap_grid_is_selected(app->grid, c)) continue;
@@ -606,16 +627,19 @@ selection_edit_job *build_selection_edit_job(ap_app *app, ap_sel_edit_op op,
         // would leave its in-memory stack stale until close + reopen.
         if (skip_open_photo && app->photo && i == app->photo_library_idx)
             continue;
+        if (ap_library_photo_absolute_path(app->library, i, j->paths[count],
+                                           sizeof(j->paths[count])) != 0)
+            continue;
         j->indices[count++] = i;
     }
     if (count == 0) {
         free(j->indices);
+        free(j->paths);
         free(j);
         return NULL;
     }
 
     j->base.run   = selection_edit_job_run;
-    j->library    = app->library;
     j->op         = op;
     j->count      = count;
     j->thumb_gen  = app->thumb_load_gen;
@@ -630,6 +654,7 @@ int commit_selection_edit_job(ap_app *app, selection_edit_job *j,
     if (!j->job) {
         AP_ERROR("selection edit: job control block alloc failed");
         free(j->indices);
+        free(j->paths);
         free(j);
         return -1;
     }

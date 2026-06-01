@@ -170,10 +170,11 @@ void ap_export_coord_pump(ap_app *app)
     // While canceling, schedule nothing new; just let encodes drain.
     if (canceling || c->cursor >= c->count) return;
 
-    // Backpressure gate: don't open the next photo while it would push
-    // us over the byte budget or the concurrent-encode cap. An empty
-    // pipeline always opens at least one photo so we never deadlock on
-    // a single photo larger than the budget.
+    // Backpressure gate (reactive): don't open the next photo once the
+    // already-accumulated bytes have reached the budget, or while the
+    // concurrent-encode cap is full. bytes_inflight == 0 always opens at
+    // least one photo so we never deadlock on a single photo larger than
+    // the budget — hence peak is bounded to BUDGET + one photo.
     if (c->inflight_encode >= c->max_inflight) return;
     if (c->bytes_inflight > 0 &&
         c->bytes_inflight >= AP_EXPORT_BYTE_BUDGET) return;
@@ -196,7 +197,7 @@ void ap_export_coord_encode_done(ap_app *app, size_t bytes)
     if (c->inflight_encode > 0) c->inflight_encode--;
 }
 
-void ap_export_coord_shutdown(ap_app *app)
+void ap_export_coord_abort(ap_app *app)
 {
     if (!app || !app->export_coord) return;
     ap_export_coord *c = app->export_coord;
