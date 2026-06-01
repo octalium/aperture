@@ -212,21 +212,49 @@ typedef enum {
     AP_SORT_RATING       = 3,  // star rating (highest first)
 } ap_library_sort;
 
-// Re-order the in-memory photo list by re-reading the photos table
-// with the given sort key.  Drops all cached thumbnails, rebuilds
-// the group index, and resets the thumbnail decode cursor.  Callers
-// must follow this with ap_app_rebuild_grid_map (or equivalent) so
-// the grid reflects the new order.  Returns 0 on success.
-int ap_library_reload_sorted(ap_library *lib, ap_library_sort sort);
+// A detached, fully-built replacement for a library's rebuildable
+// state (photo list / group index / culling cache / group registry).
+// Built off the main thread by ap_library_cache_build on its own
+// sqlite connection, then handed to ap_library_cache_swap on the main
+// thread between frames. Opaque to callers.
+typedef struct ap_library_cache ap_library_cache;
 
-// Rescan the library root for new/removed raw files without
-// tearing the library down. Used after import + after any operation
-// that mutates the filesystem outside the library API. The library's
-// db connection stays open, no thumbnails are released except for
-// files that have been removed from disk; the in-memory photo list
-// is reloaded with `sort` afterwards so newly-added rows appear in
-// the grid. Returns 0 on success, -1 on error.
-int ap_library_rescan(ap_library *lib, ap_library_sort sort);
+// Which db mutation a cache build performs before re-reading the photo
+// list. The mutation runs on the build's own connection; the live
+// library db handle is never touched.
+typedef enum {
+    AP_LIBRARY_OP_RELOAD = 0,  // no mutation — just re-read (sort change)
+    AP_LIBRARY_OP_RESCAN,      // walk the tree for new/removed files first
+    AP_LIBRARY_OP_DELETE,      // delete del_rel[] from disk + db first
+} ap_library_op;
+
+// Build a detached replacement cache for the library rooted at `root`,
+// off the main thread. Opens its OWN sqlite connection — the caller's
+// live lib->db is never touched. `op` runs its db mutation first
+// (RESCAN walks the tree; DELETE removes the del_count relative paths in
+// `del_rel` from disk + db), then the photo list is read in `sort` order
+// and the group + culling caches are built from the sidecars. `progress`
+// is invoked during the build (returning false requests cancel). For
+// RELOAD/RESCAN a cancel frees the partial cache and returns NULL (no
+// swap — the live cache is untouched). A DELETE always returns the
+// post-delete cache (cancel only stops scheduling further deletes) so
+// the swap reflects the files actually removed. Returns NULL on cancel
+// (non-DELETE) or error. The result is owned by the caller until
+// ap_library_cache_swap or ap_library_cache_free.
+ap_library_cache *ap_library_cache_build(
+    const char *root, ap_library_op op, ap_library_sort sort,
+    const char (*del_rel)[4096], int del_count,
+    bool (*progress)(int done, int total, void *ud), void *ud);
+
+// Swap a freshly-built cache into `lib`, replacing the live one. Frees
+// the old cache, destroys the old GPU thumbnails, and reallocs the
+// thumbnail arrays to the new photo_count (decode cursor reset). Takes
+// ownership of `fresh`. Main thread only, and the GPU must be idle —
+// old thumbnail textures are destroyed here.
+void ap_library_cache_swap(ap_library *lib, ap_library_cache *fresh);
+
+// Free a detached cache that was never swapped in (cancel / error path).
+void ap_library_cache_free(ap_library_cache *cache);
 
 typedef struct ap_thumbnail ap_thumbnail;
 
@@ -317,6 +345,29 @@ int  ap_library_apply_stack_to_path(const char *path,
 int  ap_library_apply_metadata_patch_to_path(
          const char *path, const ap_photo_metadata *patch,
          const bool patch_set[AP_META_FIELD_COUNT]);
+
+// Worker-safe sidecar writes for backgrounded culling / group batches:
+// load-modify-save the sidecar at `path` (seeding the default pipeline
+// when none exists), touching neither the library cache nor its db.
+// _write_culling_to_path overwrites the culling block; _modify_group_in_
+// sidecar adds/removes one group (a no-op when already in that state).
+// Return 0 on success. The main-thread completion reconciles the cache:
+int  ap_library_write_culling_to_path(const char *path,
+                                      ap_photo_culling culling);
+int  ap_library_modify_group_in_sidecar(const char *path, const char *group,
+                                        bool member);
+
+// Main-thread completion of a backgrounded culling batch: write the
+// in-memory culling cells + cached db columns for the `count` photos in
+// `indices` (the worker already wrote the sidecars), in one transaction.
+void ap_library_commit_culling_batch(ap_library *lib, const int *indices,
+                                     const ap_photo_culling *cull, int count);
+
+// Main-thread completion of a backgrounded group batch: add/remove the
+// n-th photo's membership in `group` in the in-memory cache + group
+// registry (the worker already wrote the sidecar). No sidecar I/O.
+void ap_library_apply_group_cache(ap_library *lib, int index,
+                                  const char *group, bool member);
 
 // A preset is a named bundle of ap_export_settings. The library db
 // stores them in the `export_presets` table so they survive across

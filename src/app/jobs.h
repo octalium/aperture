@@ -59,6 +59,7 @@ typedef struct {
     uint8_t       *rgba;
     int            width, height;
     int            idx;
+    uint64_t       gen;        // thumb_load_gen at submit; stale => skip store
     unsigned char *jpeg;
     size_t         jpeg_size;
     int            ok;
@@ -89,7 +90,16 @@ typedef enum {
     AP_SEL_EDIT_STACK,         // write a copied edit stack to each photo
     AP_SEL_EDIT_METADATA,      // merge a metadata patch into each sidecar
     AP_SEL_EDIT_LENS,          // attach a lens override to matching photos
+    AP_SEL_EDIT_CULLING,       // write a per-photo culling struct to each sidecar
+    AP_SEL_EDIT_GROUP,         // add/remove one group on each photo's sidecar
 } ap_sel_edit_op;
+
+// Whether an op changes the rendered pixels (so its thumbnails must be
+// re-decoded at completion). Culling + group are metadata-only.
+static inline bool ap_sel_edit_changes_render(ap_sel_edit_op op)
+{
+    return op != AP_SEL_EDIT_CULLING && op != AP_SEL_EDIT_GROUP;
+}
 
 // Background batch over a snapshot of the selected photos. Both the
 // library indices and their resolved absolute paths are snapshotted on
@@ -108,6 +118,7 @@ typedef struct {
     char          (*paths)[4096];  // resolved abs path per index; worker reads these
     int             count;
     _Atomic int     wrote;         // photos successfully written
+    _Atomic int     processed;     // photos the worker iterated (< count on cancel)
     uint64_t        thumb_gen;     // generation captured at submit
 
     // op payloads (only the active op's fields are meaningful)
@@ -117,10 +128,41 @@ typedef struct {
     char            match_exif_lens[AP_META_VALUE_LEN]; // LENS
     char            override_lens[AP_META_VALUE_LEN];   // LENS
     int             lens_slot;                          // LENS str-param slot
+    ap_photo_culling *cull;                      // CULLING: per-photo, count entries
+    char            group_name[AP_GROUP_NAME_LEN]; // GROUP
+    bool            group_add;                     // GROUP
 } selection_edit_job;
+
+// Background structural library op: sort (RELOAD) / rescan / delete.
+// The worker builds a full replacement ap_library_cache off its own
+// sqlite connection (ap_library_cache_build); the main-thread
+// completion drains the pool, waits for GPU idle, then atomically swaps
+// it into the library and rebuilds the grid. DELETE carries the rel
+// paths to remove + the grid cell to land on afterward.
+typedef struct {
+    ap_work_item      base;
+    ap_job           *job;
+    ap_library_op     op;
+    ap_library_sort   sort;
+    char              root[4096];
+    char            (*del_rel)[4096];  // DELETE: rel paths (owned), del_count
+    int               del_count;
+    int               anchor_cell;     // DELETE: grid cell to select at done
+    ap_library_cache *result;          // built cache; NULL on cancel/fail
+    _Atomic int       ok;
+} library_job;
 
 void submit_import_job(ap_app *app, const char *lib_root, const char *src_dir,
                        const ap_import_settings *settings);
+
+// Begin + submit a background library job. Single-flight against both
+// library jobs and selection-edit jobs (a 2nd is rejected with a toast,
+// so structural rebuilds never overlap a sidecar batch). Takes
+// ownership of `del_rel` (freed on submit failure / at completion).
+// Returns 0 on submit, -1 on rejection or allocation failure.
+int submit_library_job(ap_app *app, ap_library_op op, ap_library_sort sort,
+                       char (*del_rel)[4096], int del_count, int anchor_cell,
+                       const char *label);
 
 // Allocate a selection_edit_job and snapshot the current grid
 // selection's library indices + resolved absolute paths into it. When
@@ -137,6 +179,11 @@ void submit_import_job(ap_app *app, const char *lib_root, const char *src_dir,
 selection_edit_job *build_selection_edit_job(ap_app *app, ap_sel_edit_op op,
                                              bool skip_open_photo,
                                              bool *out_busy);
+
+// Free a built-but-not-committed selection_edit_job (its ap_job has not
+// been begun, so the single-flight guard is still clear). Use this when
+// a caller fails to fill the op payload after build_selection_edit_job.
+void abandon_selection_edit_job(selection_edit_job *j);
 
 // Begin the job's ap_job (label/progress/cancel) and submit it to the
 // worker pool. Takes ownership; on ap_job_begin failure it frees the

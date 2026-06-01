@@ -1014,6 +1014,30 @@ int cell_for_photo(const ap_app *app, int photo_idx)
     return -1;
 }
 
+// After a library cache swap renumbers the photo list, re-resolve the
+// open photo's index by matching its path in the new cache. Set to -1
+// when the open photo is gone (e.g. deleted by the same job) so the
+// photo-mode culling / navigation paths no-op on a stale index rather
+// than act on the wrong photo. No-op when no photo is open.
+void remap_open_photo_index(ap_app *app)
+{
+    if (!app || !app->photo || !app->library) return;
+    const char *p = ap_photo_path(app->photo);
+    if (p) {
+        int n = ap_library_photo_count(app->library);
+        char abs[4096];
+        for (int i = 0; i < n; i++) {
+            if (ap_library_photo_absolute_path(app->library, i, abs,
+                                               sizeof(abs)) == 0 &&
+                strcmp(abs, p) == 0) {
+                app->photo_library_idx = i;
+                return;
+            }
+        }
+    }
+    app->photo_library_idx = -1;
+}
+
 int ap_app_open_library(ap_app *app, const char *path)
 {
     if (!app || !path) return -1;
@@ -1049,6 +1073,10 @@ void ap_app_close_library(ap_app *app)
     ap_app_wait_idle(app);
     ap_grid_set_photo_count(app->grid, 0);
     app->grid_map_count = 0;
+    // A rescan queued by an import into this library must not fire against
+    // whatever library is opened next. (drain_all_workers cleared the job
+    // inflight flags but not this import-scoped intent.)
+    app->library_rescan_pending = false;
     ap_library_close(app->library);
     app->library = NULL;
     bind_mode_view(app);
@@ -1058,6 +1086,11 @@ void ap_app_close_library(ap_app *app)
 ap_library *ap_app_library(ap_app *app)
 {
     return app ? app->library : NULL;
+}
+
+bool ap_app_library_busy(const ap_app *app)
+{
+    return app && app->library_job_inflight;
 }
 
 void ap_app_open_import_modal(ap_app *app)
@@ -1103,9 +1136,7 @@ int ap_app_apply_pipeline_to_selection(ap_app *app, int64_t pipeline_id)
     // Resolve the pipeline to a concrete stack here, on the main thread,
     // so the worker never touches the pipeline db connection.
     if (ap_pipeline_apply_to_stack(pipeline_id, &j->stack) != 0) {
-        free(j->indices);
-        free(j->paths);
-        free(j);
+        abandon_selection_edit_job(j);
         return -1;
     }
     return commit_selection_edit_job(app, j, "Applying pipeline...");
@@ -1246,38 +1277,84 @@ typedef enum {
     AP_CULL_COLOR  = 2,
 } ap_cull_field;
 
-// Apply a single culling-field change to one library photo. `value` is
-// interpreted per `field`: a rating int, an ap_flag, or an ap_color_label.
+// Set one culling field on a culling struct. `value` is interpreted per
+// `field`: a rating int, an ap_flag, or an ap_color_label.
+static ap_photo_culling culling_with_field(ap_photo_culling c,
+                                           ap_cull_field field, int value)
+{
+    switch (field) {
+    case AP_CULL_RATING: c.rating = value;                 break;
+    case AP_CULL_FLAG:   c.flag   = (ap_flag)value;        break;
+    case AP_CULL_COLOR:  c.color  = (ap_color_label)value; break;
+    }
+    return c;
+}
+
+// Apply a single culling-field change to one library photo inline.
 // Returns 0 on success, -1 on a missing library or out-of-range index.
 static int apply_culling_to_photo(ap_app *app, int idx, ap_cull_field field,
                                   int value)
 {
     if (!app || !app->library) return -1;
-    ap_photo_culling cull = ap_library_photo_culling(app->library, idx);
-    switch (field) {
-    case AP_CULL_RATING: cull.rating = value;                  break;
-    case AP_CULL_FLAG:   cull.flag   = (ap_flag)value;         break;
-    case AP_CULL_COLOR:  cull.color  = (ap_color_label)value;  break;
-    }
+    // A background library job is rebuilding the cache on its own db
+    // connection; an inline sidecar + lib->db write here would race the
+    // worker's transaction and be discarded by the imminent swap. Defer.
+    if (app->library_job_inflight) return -1;
+    ap_photo_culling cull = culling_with_field(
+        ap_library_photo_culling(app->library, idx), field, value);
     return ap_library_set_photo_culling(app->library, idx, cull);
 }
 
-// Apply a single culling-field change to every selected grid photo.
-// Returns the number of photos written, or -1 on a missing library / grid.
+// Apply a single culling-field change to every selected grid photo. A
+// single-photo edit is applied inline (one sidecar write, instant); a
+// multi-select edit is backgrounded — the per-photo sidecar writes (the
+// slow part) run on a worker, the db columns + cache cells land at
+// completion. Returns photos written/queued, AP_SELECTION_EDIT_BUSY when
+// a job is already running, or -1 on error.
 static int apply_culling_to_selection(ap_app *app, ap_cull_field field,
                                       int value)
 {
     if (!app || !app->library || !app->grid) return -1;
 
-    int wrote = 0;
-    for (int c = 0; c < app->grid_map_count; c++) {
-        if (!ap_grid_is_selected(app->grid, c)) continue;
-        int i = app->grid_map[c];
-        if (apply_culling_to_photo(app, i, field, value) == 0) {
-            wrote++;
-        }
+    int sel = ap_grid_selection_count(app->grid);
+    if (sel <= 0) return 0;
+
+    // Mutually exclude against a running library job (the inline branch
+    // would race its db connection; the batch branch is rejected by the
+    // builder anyway). One toast covers both.
+    if (app->library_job_inflight) {
+        ap_status_notify(AP_STATUS_INFO, "A library task is already running.");
+        return AP_SELECTION_EDIT_BUSY;
     }
-    return wrote;
+
+    if (sel == 1) {
+        for (int c = 0; c < app->grid_map_count; c++) {
+            if (!ap_grid_is_selected(app->grid, c)) continue;
+            return apply_culling_to_photo(app, app->grid_map[c],
+                                          field, value) == 0 ? 1 : 0;
+        }
+        return 0;
+    }
+
+    bool busy = false;
+    selection_edit_job *j =
+        build_selection_edit_job(app, AP_SEL_EDIT_CULLING, false, &busy);
+    if (!j) return busy ? AP_SELECTION_EDIT_BUSY : 0;
+
+    // Compute each photo's resulting culling on the main thread (reading
+    // the live cache), so the worker only writes sidecars.
+    j->cull = malloc((size_t)j->count * sizeof(*j->cull));
+    if (!j->cull) {
+        AP_ERROR("culling: payload alloc failed");
+        abandon_selection_edit_job(j);
+        return -1;
+    }
+    for (int k = 0; k < j->count; k++) {
+        ap_photo_culling cur =
+            ap_library_photo_culling(app->library, j->indices[k]);
+        j->cull[k] = culling_with_field(cur, field, value);
+    }
+    return commit_selection_edit_job(app, j, "Updating rating/flag/color...");
 }
 
 int ap_app_set_selection_rating(ap_app *app, int rating)
@@ -1344,21 +1421,15 @@ void ap_app_set_sort(ap_app *app, ap_library_sort sort)
 {
     if (!app || !app->library) return;
     if (app->sort == sort) return;
-    app->sort = sort;
-    // Drain in-flight thumbnail jobs before reordering: jobs carry a
-    // library index and the reload shifts every index.
-    drain_all_workers(app);
-    ap_app_wait_idle(app);
-    ap_library_reload_sorted(app->library, sort);
-    // Clear grid thumbnails: the thumbnail cache (thumbs[]) was reset
-    // by the reload, and grid cells still hold stale VkImageViews.
-    if (app->grid) {
-        int c;
-        for (c = 0; c < app->grid_map_count; c++) {
-            ap_grid_set_thumbnail(app->grid, c, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
-        }
+    // Background the re-sort: the cache build (a sidecar pass over every
+    // photo) runs off-thread, then the completion swaps the reordered
+    // cache in and rebuilds the grid. Commit app->sort only on a
+    // successful submit so the menubar checkmark matches the order that
+    // will actually land.
+    if (submit_library_job(app, AP_LIBRARY_OP_RELOAD, sort,
+                           NULL, 0, -1, "Sorting library...") == 0) {
+        app->sort = sort;
     }
-    rebuild_grid_map(app);
 }
 
 ap_library_sort ap_app_sort(const ap_app *app)
@@ -1429,17 +1500,39 @@ int ap_app_assign_selection_to_group(ap_app *app, const char *group, bool add)
     if (!app || !app->library || !app->grid || !group || !*group) {
         return -1;
     }
-    int wrote = 0;
-    for (int c = 0; c < app->grid_map_count; c++) {
-        if (!ap_grid_is_selected(app->grid, c)) continue;
-        if (ap_library_set_photo_group(app->library, app->grid_map[c],
-                                       group, add) == 0) {
-            wrote++;
-        }
+    int sel = ap_grid_selection_count(app->grid);
+    if (sel <= 0) return 0;
+
+    // Mutually exclude against a running library job (see culling above).
+    if (app->library_job_inflight) {
+        ap_status_notify(AP_STATUS_INFO, "A library task is already running.");
+        return AP_SELECTION_EDIT_BUSY;
     }
-    // Membership changed — a group filter's visible set may have moved.
-    rebuild_grid_map(app);
-    return wrote;
+
+    // Single photo: apply inline (one sidecar write) and re-filter now.
+    if (sel == 1) {
+        for (int c = 0; c < app->grid_map_count; c++) {
+            if (!ap_grid_is_selected(app->grid, c)) continue;
+            int wrote = (ap_library_set_photo_group(app->library,
+                             app->grid_map[c], group, add) == 0) ? 1 : 0;
+            // Membership changed — a group filter's visible set may move.
+            rebuild_grid_map(app);
+            return wrote;
+        }
+        return 0;
+    }
+
+    // Multi-select: background the per-photo sidecar writes; the cache +
+    // group registry land at completion (which also re-filters).
+    bool busy = false;
+    selection_edit_job *j =
+        build_selection_edit_job(app, AP_SEL_EDIT_GROUP, false, &busy);
+    if (!j) return busy ? AP_SELECTION_EDIT_BUSY : 0;
+    snprintf(j->group_name, sizeof(j->group_name), "%s", group);
+    j->group_add = add;
+    return commit_selection_edit_job(app, j,
+                                     add ? "Adding to group..."
+                                         : "Removing from group...");
 }
 
 void navigate_library_relative(ap_app *app, int dir)
@@ -1956,59 +2049,44 @@ void open_selected_photo(ap_app *app)
     }
 }
 
-// De-index and delete every selected library photo from disk. Drains
-// worker + GPU work first so no in-flight job acts on a library index
-// this removal is about to shift.
+// De-index and delete every selected library photo from disk. The
+// disk + db work runs in a background library job; its completion swaps
+// in the renumbered cache, rebuilds the grid, and lands on the nearest
+// surviving neighbour (anchor cell).
 void delete_grid_selection(ap_app *app)
 {
     if (!app->library || !app->grid) return;
-    if (ap_grid_selection_count(app->grid) <= 0) return;
+    int sel = ap_grid_selection_count(app->grid);
+    if (sel <= 0) return;
 
-    drain_all_workers(app);
-    ap_app_wait_idle(app);
-
-    int anchor_cell = -1;
-    int removed     = 0;
-
-    // grid_map is ascending in library index, so walking cells
-    // high-to-low removes photos from the back — the indices of the
-    // photos still pending stay valid as we go. The descending walk
-    // also leaves anchor_cell holding the smallest selected cell.
-    for (int c = app->grid_map_count - 1; c >= 0; c--) {
+    // Snapshot the relative paths of the selected photos on the main
+    // thread; the worker deletes them on its own connection. anchor_cell
+    // is the smallest selected cell — where the grid lands afterward.
+    char (*del_rel)[4096] = malloc((size_t)sel * sizeof(*del_rel));
+    if (!del_rel) {
+        AP_ERROR("delete: snapshot alloc failed");
+        return;
+    }
+    int n = 0, anchor_cell = -1;
+    for (int c = 0; c < app->grid_map_count; c++) {
         if (!ap_grid_is_selected(app->grid, c)) continue;
-        anchor_cell = c;
+        if (anchor_cell < 0) anchor_cell = c;
         int i = app->grid_map[c];
         // Leave the open photo — deleting its file out from under the
-        // edit view would strand it. It can be deleted after closing.
+        // edit view would strand it. (In library mode no photo is open,
+        // so this is defensive.)
         if (app->photo && i == app->photo_library_idx) continue;
-        if (ap_library_photo_remove(app->library, i) != 0) continue;
-        if (app->photo && i < app->photo_library_idx) {
-            app->photo_library_idx--;
-        }
-        removed++;
+        const char *rel = ap_library_photo_relative_path(app->library, i);
+        if (!rel) continue;
+        snprintf(del_rel[n], sizeof(del_rel[n]), "%s", rel);
+        n++;
     }
-    if (removed == 0) return;
-
-    rebuild_grid_map(app);
-    if (app->grid_map_count > 0) {
-        // Land on the photo that slid into the lowest deleted cell —
-        // the nearest remaining neighbour — and scroll to it, since
-        // rebuild_grid_map reset the grid's scroll to the top.
-        int target = anchor_cell;
-        if (target >= app->grid_map_count) {
-            target = app->grid_map_count - 1;
-        }
-        if (target < 0) target = 0;
-        ap_grid_select_only(app->grid, target);
-
-        ImGuiIO *io = igGetIO_Nil();
-        if (io) {
-            ap_grid_ensure_visible(app->grid, target,
-                                   (int)io->DisplaySize.x,
-                                   (int)io->DisplaySize.y);
-        }
+    if (n == 0) {
+        free(del_rel);
+        return;
     }
-    AP_INFO("library: deleted %d photo(s)", removed);
+    submit_library_job(app, AP_LIBRARY_OP_DELETE, app->sort,
+                       del_rel, n, anchor_cell, "Deleting photos...");
 }
 
 // Close the currently-open photo, de-index it, delete its files from
@@ -2586,6 +2664,19 @@ int ap_app_run_frame(ap_app *app)
         draw_selection_overlay(app);
         draw_marquee_overlay(app);
         submit_pending_thumbs(app);
+    }
+    // An import sets library_rescan_pending; submit the background rescan
+    // once both single-flight guards are clear so it never races a
+    // selection-edit batch's snapshotted indices. Only in library mode —
+    // renumbering the photo list while a photo is open would shift
+    // photo_library_idx under the editing view.
+    if (app->library_rescan_pending && app->library &&
+        app->mode == AP_MODE_LIBRARY &&
+        !app->library_job_inflight && !app->selection_edit_inflight) {
+        if (submit_library_job(app, AP_LIBRARY_OP_RESCAN, app->sort,
+                               NULL, 0, -1, "Rescanning library...") == 0) {
+            app->library_rescan_pending = false;
+        }
     }
     drain_one_completed_job(app);
     ap_export_coord_pump(app);

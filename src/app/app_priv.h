@@ -73,6 +73,17 @@ struct ap_app {
     // photo's sidecar concurrently.
     bool             selection_edit_inflight;
 
+    // Single-flight guard for background library jobs (sort/rescan/
+    // delete). Mutually exclusive with selection_edit_inflight so a
+    // structural cache swap never races a sidecar batch's snapshotted
+    // indices, and with the inline cache-mutating ops (culling / group).
+    // library_rescan_pending is set when an import finishes; the per-frame
+    // pump submits the rescan job once both guards are clear and we are in
+    // library mode (so imported photos appear without shifting an open
+    // photo's index).
+    bool             library_job_inflight;
+    bool             library_rescan_pending;
+
     bool             show_panels;
     bool             show_rendered_thumbnails;
 
@@ -163,6 +174,7 @@ enum {
 void bind_mode_view(ap_app *app);
 void rebuild_grid_map(ap_app *app);
 int  cell_for_photo(const ap_app *app, int photo_idx);
+void remap_open_photo_index(ap_app *app);
 void release_photo(ap_app *app);
 void submit_thumb_refresh(ap_app *app, int idx);
 void toggle_and_persist_fullscreen(ap_app *app);
@@ -184,6 +196,7 @@ void photo_open_job_run(ap_work_item *self);
 void export_job_run(ap_work_item *self);
 void import_job_run(ap_work_item *self);
 void selection_edit_job_run(ap_work_item *self);
+void library_job_run(ap_work_item *self);
 
 /* jobs.c public entry points */
 void submit_import_job(ap_app *app, const char *lib_root, const char *src_dir,
