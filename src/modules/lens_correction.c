@@ -410,14 +410,18 @@ static void lens_render(const ap_module *self, float *params,
         // this photo's EXIF lens model.
         igSameLine(0.0f, 4.0f);
         if (igSmallButton("Apply to selection")) {
-            int applied = 0, skipped = 0;
-            if (ap_app_apply_lens_override_to_selection(
+            int queued = 0, skipped = 0;
+            int rc = ap_app_apply_lens_override_to_selection(
                     ctx->app, exif_lens, ctx->str_params[STR_LENS],
-                    &applied, &skipped) == 0) {
+                    &queued, &skipped);
+            if (rc == 0) {
                 ap_toast_push(AP_TOAST_INFO,
-                              "Lens override: applied to %d photo%s; "
-                              "skipped %d (different lens or no module).",
-                              applied, applied == 1 ? "" : "s", skipped);
+                              "Lens override: queued %d photo%s "
+                              "(matching runs in the background).",
+                              queued, queued == 1 ? "" : "s");
+            } else if (rc == AP_SELECTION_EDIT_BUSY) {
+                // The "already running" status was already surfaced;
+                // stay silent rather than show a contradictory error.
             } else {
                 ap_toast_push(AP_TOAST_ERROR,
                               "Lens override: no library / selection.");

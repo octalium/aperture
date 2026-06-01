@@ -47,6 +47,11 @@ typedef struct {
     char         out_path[4096];
     ap_status_id status_id;
     int          ok;
+    // When true, the export coordinator owns this encode: completion
+    // accounts rgba_bytes back to it (and drives no standalone status
+    // bar — the coordinator's job owns the progress surface).
+    bool         from_coord;
+    size_t       rgba_bytes;
 } export_job;
 
 typedef struct {
@@ -65,23 +70,79 @@ typedef struct import_job {
     char                db_path[4096];
     char                src_dir[4096];
     ap_import_settings  settings;
-    ap_status_id        status_id;
     ap_import_report    report;
     int                 ok;
-    // Atomic so the worker thread sees a request set from the main
-    // thread without explicit locking. Polled by the progress
-    // callback after each file; the importer breaks the loop on
-    // true and reports report.cancelled.
-    _Atomic int         cancel_requested;
+    // The unified job control block (label / progress / cancel). The
+    // worker polls job->cancel between files via the progress callback;
+    // the main thread flips it through ap_job_request_cancel_by_id.
+    ap_job             *job;
 } import_job;
+
+// Which worker-safe sidecar op a selection_edit_job runs. Each maps to
+// a pure path-based ap_library_* per-item function (no GPU, no in-memory
+// library cache mutation, no shared db handle, no sqlite). PIPELINE is
+// resolved to a concrete edit stack at submit on the main thread and
+// runs as STACK on the worker, so the worker never touches the pipeline
+// db connection.
+typedef enum {
+    AP_SEL_EDIT_PIPELINE = 0,  // apply a pipeline to each photo's stack
+    AP_SEL_EDIT_STACK,         // write a copied edit stack to each photo
+    AP_SEL_EDIT_METADATA,      // merge a metadata patch into each sidecar
+    AP_SEL_EDIT_LENS,          // attach a lens override to matching photos
+} ap_sel_edit_op;
+
+// Background batch over a snapshot of the selected photos. Both the
+// library indices and their resolved absolute paths are snapshotted on
+// the main thread at submit; the worker runs the per-item sidecar op
+// against `paths` ONLY — it never dereferences the library, so a
+// concurrent main-thread library reload (e.g. the import-completion
+// rescan, which does not drain the pool) cannot free state out from
+// under it. The indices are kept solely for the main-thread completion
+// handler, which invalidates the touched thumbnails (re-validating
+// index + generation first).
+typedef struct {
+    ap_work_item    base;
+    ap_job         *job;
+    ap_sel_edit_op  op;
+    int            *indices;       // snapshot of selected library indices
+    char          (*paths)[4096];  // resolved abs path per index; worker reads these
+    int             count;
+    _Atomic int     wrote;         // photos successfully written
+    uint64_t        thumb_gen;     // generation captured at submit
+
+    // op payloads (only the active op's fields are meaningful)
+    ap_edit_stack   stack;                       // STACK + resolved PIPELINE
+    ap_photo_metadata patch;                     // METADATA
+    bool            patch_set[AP_META_FIELD_COUNT]; // METADATA
+    char            match_exif_lens[AP_META_VALUE_LEN]; // LENS
+    char            override_lens[AP_META_VALUE_LEN];   // LENS
+    int             lens_slot;                          // LENS str-param slot
+} selection_edit_job;
 
 void submit_import_job(ap_app *app, const char *lib_root, const char *src_dir,
                        const ap_import_settings *settings);
 
-// Signal the in-flight import (if any) to stop. The worker thread
-// notices on its next progress tick (between files) and reports
-// partial results. No-op when no import is running.
-void request_import_cancel(ap_app *app);
+// Allocate a selection_edit_job and snapshot the current grid
+// selection's library indices + resolved absolute paths into it. When
+// `skip_open_photo` is true the currently-open photo is excluded (ops
+// that rewrite the edit stack must skip it, else its in-memory stack
+// goes stale). Sets op + thumb generation. Returns NULL on no library /
+// empty selection / allocation failure / single-flight rejection; when
+// `out_busy` is non-NULL it is set true only for the single-flight
+// rejection, so callers can distinguish "already running" from "nothing
+// to do". The job is NOT yet submitted: the caller fills the op-specific
+// payload, then calls commit_selection_edit_job, which begins the ap_job
+// and submits. This two-step keeps the worker from observing partial
+// payload.
+selection_edit_job *build_selection_edit_job(ap_app *app, ap_sel_edit_op op,
+                                             bool skip_open_photo,
+                                             bool *out_busy);
+
+// Begin the job's ap_job (label/progress/cancel) and submit it to the
+// worker pool. Takes ownership; on ap_job_begin failure it frees the
+// job and returns -1. Returns the queued photo count on success.
+int commit_selection_edit_job(ap_app *app, selection_edit_job *j,
+                              const char *label);
 
 void discard_completed_item(ap_app *app, ap_work_item *it);
 void drain_all_workers(ap_app *app);

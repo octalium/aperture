@@ -134,7 +134,10 @@ static void library_metadata_draw(ap_app *app)
             }
         }
         int wrote = ap_app_apply_metadata_to_selection(app, &patch, patch_set);
-        if (wrote < 0) {
+        if (wrote == AP_SELECTION_EDIT_BUSY) {
+            snprintf(g_status, sizeof(g_status),
+                     "A selection edit is already running.");
+        } else if (wrote < 0) {
             snprintf(g_status, sizeof(g_status),
                      "Bulk apply failed (no library / grid).");
         } else if (wrote == 0) {
@@ -142,7 +145,7 @@ static void library_metadata_draw(ap_app *app)
                      "Nothing applied: no photos selected.");
         } else {
             snprintf(g_status, sizeof(g_status),
-                     "Applied %d field%s to %d photo%s.",
+                     "Applying %d field%s to %d photo%s...",
                      filled, filled == 1 ? "" : "s",
                      wrote,  wrote  == 1 ? "" : "s");
         }

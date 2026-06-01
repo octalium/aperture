@@ -2,6 +2,7 @@
 
 #include "app.h"
 #include "app_priv.h"
+#include "export_coord.h"
 #include "grid_view.h"
 #include "jobs.h"
 #include "menubar.h"
@@ -160,7 +161,7 @@ void ap_app_destroy(ap_app *app)
     if (!app) return;
 
     save_panel_visibility();
-    drain_all_workers(app);
+    drain_all_workers(app);  // aborts the export coordinator, then the pool
     ap_app_wait_idle(app);
     ap_app_close_photo(app);
     ap_app_close_library(app);
@@ -457,73 +458,48 @@ int ap_app_request_jpeg_export(ap_app *app, ap_photo *photo,
     return 0;
 }
 
-// Read back the open photo's rendered output, frame it through its
-// viewport, and queue an encode job in the configured format. Shared
-// by ap_app_run_export; the caller owns the collision-policy and
-// directory-creation decisions and passes a final `out_path`.
-static int queue_export_job(ap_app *app, ap_photo *photo,
-                            const ap_export_settings *s,
-                            const char *out_path)
+// Append one resolved export item to a growing array. Doubles capacity
+// as needed. Returns 0 on success, -1 on allocation failure (the array
+// is left intact for the caller to free).
+static int export_items_push(ap_export_item **items, int *count, int *cap,
+                             const char *src_abs, const char *out_path,
+                             bool use_open_photo)
 {
-    int w = ap_photo_width(photo);
-    int h = ap_photo_height(photo);
-    if (w <= 0 || h <= 0) return -1;
+    if (*count == *cap) {
+        int newcap = *cap ? *cap * 2 : 16;
+        ap_export_item *n = realloc(*items, (size_t)newcap * sizeof(*n));
+        if (!n) return -1;
+        *items = n;
+        *cap   = newcap;
+    }
+    ap_export_item *it = &(*items)[(*count)++];
+    snprintf(it->src_abs, sizeof(it->src_abs), "%s", src_abs ? src_abs : "");
+    snprintf(it->out_path, sizeof(it->out_path), "%s", out_path);
+    it->use_open_photo = use_open_photo;
+    return 0;
+}
 
-    size_t bytes = (size_t)w * (size_t)h * 4u;
-    uint8_t *rgba = malloc(bytes);
-    if (!rgba) {
-        AP_ERROR("export: out of memory (%zu bytes)", bytes);
+// Hand a resolved item array to a freshly-created coordinator, taking
+// ownership of `items`. Rejects (and frees) when an export is already
+// running — one coordinator at a time. Returns 0 on success, -1 on
+// error (a toast is pushed by the caller).
+static int start_export_coord(ap_app *app, ap_export_item *items, int count,
+                              const ap_export_settings *s)
+{
+    if (count <= 0) { free(items); return -1; }
+    if (app->export_coord) {
+        free(items);
+        ap_toast_push(AP_TOAST_INFO, "An export is already running.");
         return -1;
     }
-    if (ap_pipeline_graph_readback(ap_photo_graph(photo), rgba, bytes) != 0) {
-        free(rgba);
+    ap_export_coord *c = ap_export_coord_create(app, items, count, s);
+    if (!c) {
+        free(items);
+        AP_ERROR("export: coordinator alloc failed");
         return -1;
     }
-
-    {
-        ap_viewport vp = ap_photo_viewport(photo);
-        int framed_w = 0, framed_h = 0;
-        uint8_t *framed = ap_viewport_resample_rgba8(&vp, rgba, w, h,
-                                                     &framed_w, &framed_h);
-        if (!framed) {
-            AP_ERROR("export: out of memory framing the export");
-            free(rgba);
-            return -1;
-        }
-        free(rgba);
-        rgba = framed;
-        w = framed_w;
-        h = framed_h;
-    }
-
-    export_job *j = calloc(1, sizeof(*j));
-    if (!j) {
-        AP_ERROR("export: job alloc failed");
-        free(rgba);
-        return -1;
-    }
-    j->base.run       = export_job_run;
-    j->rgba           = rgba;
-    j->width          = w;
-    j->height         = h;
-    j->format         = s->format;
-    j->jpeg_quality   = s->jpeg_quality;
-    j->png_depth      = s->png_depth;
-    j->tiff_depth     = s->tiff_depth;
-    j->tiff_compress  = s->tiff_compress;
-    snprintf(j->out_path, sizeof(j->out_path), "%s", out_path);
-    {
-        const char *slash = strrchr(out_path, '/');
-        const char *name  = slash ? slash + 1 : out_path;
-        char label[160];
-        snprintf(label, sizeof(label), "Exporting %s", name);
-        j->status_id = ap_status_progress_begin(label, 0);
-    }
-
-    app->export_inflight++;
-    AP_INFO("export: queued %s (%dx%d, format=%d)",
-            j->out_path, w, h, s->format);
-    ap_worker_pool_submit(app->workers, &j->base);
+    app->export_coord = c;
+    AP_INFO("export: started coordinator for %d photo(s)", count);
     return 0;
 }
 
@@ -613,11 +589,12 @@ static void quick_export_stem(const char *src, char *out, size_t out_len)
     if (dot) *dot = '\0';
 }
 
-// Resolve + create the destination directory, build a final filename
-// honouring the format extension, and queue an export job for `photo`.
-// Returns 0 on success, -1 on error (also pushes a toast).
-static int quick_export_one(ap_app *app, ap_photo *photo, const char *src,
-                            const ap_quick_export_settings *q)
+// Resolve + create the quick-export destination directory and build a
+// final output path for `src`. No GPU work — path resolution only.
+// Returns 0 on success, -1 on error (pushes a toast).
+static int quick_export_resolve_out(ap_app *app, const char *src,
+                                    const ap_quick_export_settings *q,
+                                    char *out_path, size_t out_len)
 {
     char dir[AP_EXPORT_DEST_LEN];
     const char *root = app->library ? ap_library_root(app->library) : NULL;
@@ -637,25 +614,9 @@ static int quick_export_one(ap_app *app, ap_photo *photo, const char *src,
     if (!stem[0]) snprintf(stem, sizeof(stem), "photo");
 
     const char *ext = ap_export_format_extension(q->format);
-
-    char out_path[AP_EXPORT_DEST_LEN];
-    int n = snprintf(out_path, sizeof(out_path),
-                     "%s/%s.%s", dir, stem, ext);
-    if (n <= 0 || (size_t)n >= sizeof(out_path)) {
+    int n = snprintf(out_path, out_len, "%s/%s.%s", dir, stem, ext);
+    if (n <= 0 || (size_t)n >= out_len) {
         ap_toast_push(AP_TOAST_ERROR, "Quick Export: output path too long");
-        return -1;
-    }
-
-    ap_export_settings es = {0};
-    es.format        = q->format;
-    es.jpeg_quality  = q->jpeg_quality;
-    es.png_depth     = AP_PNG_UINT8;
-    es.tiff_depth    = AP_TIFF_UINT8;
-    es.tiff_compress = AP_TIFF_COMPRESS_LZW;
-    es.collision     = AP_EXPORT_COLLIDE_OVERWRITE;
-
-    if (queue_export_job(app, photo, &es, out_path) != 0) {
-        ap_toast_push(AP_TOAST_ERROR, "Quick Export failed — see the log.");
         return -1;
     }
     return 0;
@@ -667,6 +628,17 @@ void ap_app_run_quick_export(ap_app *app)
 
     const ap_quick_export_settings *q = &app->quick_export_settings;
 
+    ap_export_settings es = {0};
+    es.format        = q->format;
+    es.jpeg_quality  = q->jpeg_quality;
+    es.png_depth     = AP_PNG_UINT8;
+    es.tiff_depth    = AP_TIFF_UINT8;
+    es.tiff_compress = AP_TIFF_COMPRESS_LZW;
+    es.collision     = AP_EXPORT_COLLIDE_OVERWRITE;
+
+    ap_export_item *items = NULL;
+    int count = 0, cap = 0;
+
     if (app->mode == AP_MODE_PHOTO) {
         // ap_app_open_photo flips mode synchronously and decodes async;
         // app->photo is NULL until install_loaded_photo lands. Ctrl+Shift+E
@@ -676,7 +648,17 @@ void ap_app_run_quick_export(ap_app *app)
                           "Quick Export: photo is still loading");
             return;
         }
-        quick_export_one(app, app->photo, ap_photo_path(app->photo), q);
+        char out_path[AP_EXPORT_DEST_LEN];
+        if (quick_export_resolve_out(app, ap_photo_path(app->photo), q,
+                                     out_path, sizeof(out_path)) != 0) {
+            return;
+        }
+        export_items_push(&items, &count, &cap, ap_photo_path(app->photo),
+                          out_path, true);
+        if (start_export_coord(app, items, count, &es) != 0) {
+            ap_toast_push(AP_TOAST_ERROR,
+                          "Quick Export failed — see the log.");
+        }
         return;
     }
 
@@ -686,7 +668,6 @@ void ap_app_run_quick_export(ap_app *app)
         ap_toast_push(AP_TOAST_INFO, "Quick Export: no photos selected");
         return;
     }
-    int queued = 0;
     for (int c = 0; c < app->grid_map_count; c++) {
         if (!ap_grid_is_selected(app->grid, c)) continue;
         int i = app->grid_map[c];
@@ -701,20 +682,23 @@ void ap_app_run_quick_export(ap_app *app)
                                            abs, sizeof(abs)) != 0) {
             continue;
         }
-        ap_photo *tmp = ap_photo_open(app->gpu, abs);
-        if (!tmp) {
-            AP_WARN("quick export: cannot open %s — skipping", abs);
+        char out_path[AP_EXPORT_DEST_LEN];
+        if (quick_export_resolve_out(app, abs, q,
+                                     out_path, sizeof(out_path)) != 0) {
             continue;
         }
-        if (quick_export_one(app, tmp, abs, q) == 0) queued++;
-        ap_photo_close(tmp);
+        if (export_items_push(&items, &count, &cap, abs, out_path, false) != 0)
+            break;
     }
-    if (queued == 0) {
+    if (count == 0) {
+        free(items);
         ap_toast_push(AP_TOAST_ERROR, "Quick Export: nothing was queued.");
-    } else {
+        return;
+    }
+    if (start_export_coord(app, items, count, &es) == 0) {
         ap_toast_push(AP_TOAST_INFO,
-                      "Quick Export queued %d photo%s.",
-                      queued, queued == 1 ? "" : "s");
+                      "Quick Export started: %d photo%s.",
+                      count, count == 1 ? "" : "s");
     }
 }
 
@@ -805,7 +789,12 @@ int ap_app_run_export(ap_app *app)
         return 1;
     }
 
-    if (queue_export_job(app, app->photo, s, out) != 0) {
+    ap_export_item *items = NULL;
+    int count = 0, cap = 0;
+    // use_open_photo: read back the live app->photo (its in-memory edits)
+    // rather than re-opening the source from disk.
+    export_items_push(&items, &count, &cap, src, out, true);
+    if (start_export_coord(app, items, count, s) != 0) {
         ap_toast_push(AP_TOAST_ERROR, "Export failed — see the log.");
         return -1;
     }
@@ -823,12 +812,23 @@ int ap_app_batch_export_selection(ap_app *app, const ap_export_settings *s,
     if (out_queued)  *out_queued  = 0;
     if (out_skipped) *out_skipped = 0;
 
+    if (app->export_coord) {
+        ap_toast_push(AP_TOAST_INFO, "An export is already running.");
+        return -1;
+    }
+
     const char *lib_root = ap_library_root(app->library);
 
     int seq     = 1;
-    int queued  = 0;
     int skipped = 0;
 
+    ap_export_item *items = NULL;
+    int count = 0, cap = 0;
+
+    // Resolve every output path up front (pure CPU, no GPU, no per-photo
+    // allocation). The coordinator opens + reads back each photo under
+    // its memory budget, so a 1000-photo selection never holds more than
+    // BUDGET + one photo of RGBA at once.
     for (int c = 0; c < app->grid_map_count; c++) {
         if (!ap_grid_is_selected(app->grid, c)) continue;
         int i = app->grid_map[c];
@@ -858,33 +858,18 @@ int ap_app_batch_export_selection(ap_app *app, const ap_export_settings *s,
             continue;
         }
 
-        // Open the photo synchronously on the main thread: decode raw +
-        // build GPU pipeline. We operate an entirely separate ap_photo
-        // so the canvas / open-photo state is untouched. The readback
-        // inside queue_export_job calls vkDeviceWaitIdle on its own
-        // graph — no need to touch gpu->current_graph here.
-        ap_photo *tmp = ap_photo_open(app->gpu, abs);
-        if (!tmp) {
-            AP_WARN("batch export: cannot open %s — skipping", abs);
-            continue;
-        }
-
-        if (queue_export_job(app, tmp, s, out_path) == 0) {
-            queued++;
-        } else {
-            AP_WARN("batch export: encode queue failed for %s", abs);
-        }
-
-        // Close without persisting: we did not touch the sidecar and
-        // the thumbnail is unchanged. The pipeline readback already
-        // called vkDeviceWaitIdle, so the graph's images are idle.
-        ap_photo_close(tmp);
-
+        if (export_items_push(&items, &count, &cap, abs, out_path, false) != 0)
+            break;
         seq++;
     }
 
-    if (out_queued)  *out_queued  = queued;
     if (out_skipped) *out_skipped = skipped;
+    if (count == 0) {
+        free(items);
+        return 0;
+    }
+    if (start_export_coord(app, items, count, s) != 0) return -1;
+    if (out_queued) *out_queued = count;
     return 0;
 }
 
@@ -1090,7 +1075,11 @@ void ap_app_open_import_modal(ap_app *app)
 
 void ap_app_cancel_import(ap_app *app)
 {
-    request_import_cancel(app);
+    if (!app) return;
+    // id-keyed: the worker notices on its next progress tick (between
+    // files) and reports partial results. No-op if the import already
+    // finished and unlinked its job.
+    ap_job_request_cancel_by_id(app->import_job_id);
 }
 
 bool ap_app_import_inflight(const ap_app *app)
@@ -1100,26 +1089,26 @@ bool ap_app_import_inflight(const ap_app *app)
 
 int ap_app_apply_pipeline_to_selection(ap_app *app, int64_t pipeline_id)
 {
-    if (!app || !app->library || !app->grid) return -1;
-
-    int wrote = 0;
-    for (int c = 0; c < app->grid_map_count; c++) {
-        if (!ap_grid_is_selected(app->grid, c)) continue;
-        int i = app->grid_map[c];
-        // Skip the open photo: rewriting its sidecar would leave the
-        // in-memory stack stale until the user closes + reopens.
-        if (app->photo && i == app->photo_library_idx) continue;
-        if (ap_library_apply_pipeline_to_photo(app->library, i,
-                                               pipeline_id) == 0) {
-            wrote++;
-            // Drop the cached thumbnail so the grid re-decodes against
-            // the new stack on the next pump cycle. The stored
-            // edit-render blob's freshness check already handles the
-            // sidecar-mtime side.
-            ap_library_invalidate_thumbnail(app->library, i);
-        }
+    // Backgrounded: the per-item op is pure path-based sidecar I/O. The
+    // return value is the number of photos *queued*; the thumbnail
+    // invalidation + final count notify happen at completion on the main
+    // thread (handle_selection_edit_complete).
+    bool busy = false;
+    selection_edit_job *j =
+        build_selection_edit_job(app, AP_SEL_EDIT_PIPELINE, true, &busy);
+    if (!j) {
+        if (busy) return AP_SELECTION_EDIT_BUSY;
+        return (app && app->library && app->grid) ? 0 : -1;
     }
-    return wrote;
+    // Resolve the pipeline to a concrete stack here, on the main thread,
+    // so the worker never touches the pipeline db connection.
+    if (ap_pipeline_apply_to_stack(pipeline_id, &j->stack) != 0) {
+        free(j->indices);
+        free(j->paths);
+        free(j);
+        return -1;
+    }
+    return commit_selection_edit_job(app, j, "Applying pipeline...");
 }
 
 int ap_app_copy_edits(ap_app *app)
@@ -1175,19 +1164,14 @@ int ap_app_sync_edits_to_selection(ap_app *app)
     if (!app || !app->library || !app->grid) return -1;
     if (!app->edit_clipboard_valid) return -1;
 
-    int wrote = 0;
-    for (int c = 0; c < app->grid_map_count; c++) {
-        if (!ap_grid_is_selected(app->grid, c)) continue;
-        int i = app->grid_map[c];
-        if (app->photo && i == app->photo_library_idx) continue;
-        if (ap_library_apply_stack_to_photo(app->library, i,
-                                            &app->edit_clipboard,
-                                            NULL) == 0) {
-            wrote++;
-            ap_library_invalidate_thumbnail(app->library, i);
-        }
-    }
-    return wrote;
+    bool busy = false;
+    selection_edit_job *j =
+        build_selection_edit_job(app, AP_SEL_EDIT_STACK, true, &busy);
+    if (!j) return busy ? AP_SELECTION_EDIT_BUSY : 0;
+    // Copy the clipboard stack into the job: it is mutable from the UI,
+    // so the worker must not read app->edit_clipboard directly.
+    j->stack = app->edit_clipboard;
+    return commit_selection_edit_job(app, j, "Syncing edits...");
 }
 
 // Find the index of `name` in a NUL-terminated array. Returns -1
@@ -1208,6 +1192,10 @@ int ap_app_apply_lens_override_to_selection(ap_app *app,
                                             int *out_applied,
                                             int *out_skipped)
 {
+    // Backgrounded: the per-item EXIF match + sidecar attach runs on a
+    // worker. The match is data-dependent, so out_applied reports the
+    // number of photos *queued* and out_skipped is 0 — the final
+    // applied count is surfaced by the completion handler.
     if (out_applied) *out_applied = 0;
     if (out_skipped) *out_skipped = 0;
     if (!app || !app->library || !app->grid) return -1;
@@ -1219,65 +1207,18 @@ int ap_app_apply_lens_override_to_selection(ap_app *app,
                                 lens_mod->str_params_count, "lens_override");
     if (slot < 0) return -1;
 
-    int applied = 0;
-    int skipped = 0;
+    bool busy = false;
+    selection_edit_job *j =
+        build_selection_edit_job(app, AP_SEL_EDIT_LENS, true, &busy);
+    if (!j) return busy ? AP_SELECTION_EDIT_BUSY : 0;
+    j->lens_slot = slot;
+    snprintf(j->match_exif_lens, sizeof(j->match_exif_lens),
+             "%s", match_exif_lens);
+    snprintf(j->override_lens, sizeof(j->override_lens), "%s", override_lens);
 
-    for (int c = 0; c < app->grid_map_count; c++) {
-        if (!ap_grid_is_selected(app->grid, c)) continue;
-        int i = app->grid_map[c];
-        if (app->photo && i == app->photo_library_idx) continue;
-
-        char abs[4096];
-        if (ap_library_photo_absolute_path(app->library, i,
-                                           abs, sizeof(abs)) != 0) {
-            skipped++;
-            continue;
-        }
-
-        char peer_lens[AP_META_VALUE_LEN];
-        if (ap_raw_lens_model(abs, peer_lens, sizeof(peer_lens)) != 0) {
-            skipped++;
-            continue;
-        }
-        if (strcmp(peer_lens, match_exif_lens) != 0) {
-            skipped++;
-            continue;
-        }
-
-        ap_edit_stack stack;
-        ap_sidecar_ancillary ancillary;
-        if (ap_sidecar_load_full(abs, &stack, &ancillary) != 0) {
-            // No sidecar / unreadable: nothing to attach an override to.
-            skipped++;
-            continue;
-        }
-
-        int hit = -1;
-        for (int e = 0; e < stack.count; e++) {
-            if (strcmp(stack.entries[e].module_name, "lens_correction") == 0) {
-                hit = e;
-                break;
-            }
-        }
-        if (hit < 0) {
-            skipped++;
-            continue;
-        }
-
-        snprintf(stack.entries[hit].str_params[slot], AP_EDIT_STR_LEN,
-                 "%s", override_lens);
-
-        if (ap_library_apply_stack_to_photo(app->library, i, &stack,
-                                            &ancillary) == 0) {
-            applied++;
-            ap_library_invalidate_thumbnail(app->library, i);
-        } else {
-            skipped++;
-        }
-    }
-
-    if (out_applied) *out_applied = applied;
-    if (out_skipped) *out_skipped = skipped;
+    int queued = commit_selection_edit_job(app, j, "Applying lens override...");
+    if (queued < 0) return -1;
+    if (out_applied) *out_applied = queued;
     return 0;
 }
 
@@ -1288,16 +1229,13 @@ int ap_app_apply_metadata_to_selection(ap_app *app,
     if (!app || !patch || !patch_set) return -1;
     if (!app->library || !app->grid)  return -1;
 
-    int wrote = 0;
-    for (int c = 0; c < app->grid_map_count; c++) {
-        if (!ap_grid_is_selected(app->grid, c)) continue;
-        int i = app->grid_map[c];
-        if (ap_library_apply_metadata_patch(app->library, i,
-                                            patch, patch_set) == 0) {
-            wrote++;
-        }
-    }
-    return wrote;
+    bool busy = false;
+    selection_edit_job *j =
+        build_selection_edit_job(app, AP_SEL_EDIT_METADATA, false, &busy);
+    if (!j) return busy ? AP_SELECTION_EDIT_BUSY : 0;
+    j->patch = *patch;
+    memcpy(j->patch_set, patch_set, sizeof(j->patch_set));
+    return commit_selection_edit_job(app, j, "Applying metadata...");
 }
 
 // Culling field to mutate across the selection. Each enumerator
@@ -2472,6 +2410,7 @@ int ap_app_run_frame(ap_app *app)
     draw_delete_edit_modal(app);
     draw_update_modal(app);
     draw_about_modal(app);
+    draw_jobs_panel(app);
     drive_global_hotkeys(app);
 
     // Full-viewport invisible host window owns the dockspace that
@@ -2649,6 +2588,7 @@ int ap_app_run_frame(ap_app *app)
         submit_pending_thumbs(app);
     }
     drain_one_completed_job(app);
+    ap_export_coord_pump(app);
     ap_status_draw();
     ap_toast_draw();
 

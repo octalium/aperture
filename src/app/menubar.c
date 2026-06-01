@@ -149,6 +149,21 @@ void draw_menubar(ap_app *app)
                             ap_gpu_is_fullscreen(app->gpu), true)) {
             toggle_and_persist_fullscreen(app);
         }
+        {
+            ap_job_view jv[AP_JOB_MAX];
+            int njobs = ap_job_snapshot(jv, AP_JOB_MAX);
+            char jobs_label[48];
+            if (njobs > 0) {
+                snprintf(jobs_label, sizeof(jobs_label),
+                         "Background Jobs (%d)", njobs);
+            } else {
+                snprintf(jobs_label, sizeof(jobs_label), "Background Jobs");
+            }
+            bool jp = app->jobs_panel;
+            if (igMenuItem_BoolPtr(jobs_label, NULL, &jp, njobs > 0)) {
+                app->jobs_panel = jp;
+            }
+        }
         igSeparator();
         if (app->mode == AP_MODE_PHOTO) {
             if (igMenuItem_Bool("Reset View", "Ctrl+0", false, true)) {

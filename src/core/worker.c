@@ -176,6 +176,11 @@ void ap_worker_pool_destroy(ap_worker_pool *p)
     free(p);
 }
 
+int ap_worker_pool_thread_count(const ap_worker_pool *p)
+{
+    return p ? p->n_threads : 0;
+}
+
 void ap_worker_pool_submit(ap_worker_pool *p, ap_work_item *item)
 {
     if (!p || !item) return;
