@@ -232,6 +232,14 @@ void install_loaded_photo(ap_app *app, photo_open_job *j)
 
 static void handle_photo_open_complete(ap_app *app, photo_open_job *j)
 {
+    // Background export decode: hand the raw to the coordinator (it takes
+    // or frees it) rather than installing it as the interactive photo.
+    if (j->from_coord) {
+        ap_export_coord_decode_complete(app, j);
+        free(j);
+        return;
+    }
+
     bool stale = (j->gen != app->photo_load_gen);
     if (stale) {
         ap_raw_image_free(&j->raw);
@@ -262,7 +270,7 @@ static void handle_export_complete(ap_app *app, export_job *j)
         // notify; here we only account the RGBA bytes back so the
         // budget gate releases and the pump can schedule the next photo.
         if (!j->ok) AP_ERROR("export: encode failed for %s", j->out_path);
-        ap_export_coord_encode_done(app, j->rgba_bytes);
+        ap_export_coord_encode_done(app, j->rgba_bytes, j->ok);
         free(j->rgba);
         free(j);
         return;
@@ -528,12 +536,15 @@ void discard_completed_item(ap_app *app, ap_work_item *it)
     } else if (it->run == photo_open_job_run) {
         photo_open_job *j = (photo_open_job *)it;
         ap_raw_image_free(&j->raw);
-        ap_status_progress_finish(j->status_id, 0);
+        // Coordinator decodes own no status bar; the coordinator's own
+        // drain (ap_export_coord_abort) normally reclaims them, but a
+        // generic drain here must still free the raw.
+        if (!j->from_coord) ap_status_progress_finish(j->status_id, 0);
         free(j);
     } else if (it->run == export_job_run) {
         export_job *j = (export_job *)it;
         if (j->from_coord) {
-            ap_export_coord_encode_done(app, j->rgba_bytes);
+            ap_export_coord_encode_done(app, j->rgba_bytes, j->ok);
         } else {
             if (app->export_inflight > 0) app->export_inflight--;
             ap_status_progress_finish(j->status_id, 0);

@@ -303,8 +303,11 @@ void draw_export_modal(ap_app *app)
 
         igText("On conflict:");
         igSameLine(0.0f, -1.0f);
+        // Order MUST match ap_export_collision: OVERWRITE=0, SUFFIX=1,
+        // SKIP=2 — igCombo writes the selected index straight into the
+        // enum field.
         static const char *const collide_items[] = {
-            "Skip", "Overwrite", "Auto-suffix",
+            "Overwrite", "Auto-suffix", "Skip",
         };
         igSetNextItemWidth(140.0f);
         igCombo_Str_arr("##collision", &s->collision, collide_items, 3, -1);

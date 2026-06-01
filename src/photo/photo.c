@@ -252,6 +252,21 @@ int ap_photo_rebuild_graph(ap_photo *photo)
     return rebuild_graph(photo);
 }
 
+int ap_photo_render(ap_photo *photo)
+{
+    if (!photo || !photo->graph) return -1;
+    // Render off-screen through the same stack rebuild_graph built the
+    // graph from (empty in view-raw mode), so the dispatched chain
+    // matches the graph's stages. Used by the export path before
+    // readback, since an export-only photo is never the live graph the
+    // frame loop renders.
+    ap_edit_stack empty;
+    ap_edit_stack_init(&empty);
+    const ap_edit_stack *use_stack =
+        photo->view_raw ? &empty : &photo->stack;
+    return ap_pipeline_graph_render_once(photo->graph, use_stack);
+}
+
 ap_pipeline_graph *ap_photo_graph(ap_photo *photo) { return photo->graph; }
 ap_edit_stack     *ap_photo_stack(ap_photo *photo) { return &photo->stack; }
 int                ap_photo_width(const ap_photo *photo)   { return photo->width; }

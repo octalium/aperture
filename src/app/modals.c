@@ -118,6 +118,8 @@ void draw_import_modal(ap_app *app)
 
     igText("On name collision:");
     igSameLine(0.0f, -1.0f);
+    // Order MUST match ap_import_collision: SKIP=0, OVERWRITE=1, SUFFIX=2
+    // — igCombo writes the selected index straight into the enum field.
     static const char *const collide_items[] = {
         "Skip", "Overwrite", "Auto-suffix",
     };

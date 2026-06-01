@@ -1382,6 +1382,65 @@ bool ap_pipeline_graph_histogram_read(const ap_pipeline_graph *graph,
     return true;
 }
 
+int ap_pipeline_graph_render_once(ap_pipeline_graph *graph,
+                                  const ap_edit_stack *stack)
+{
+    if (!graph) return -1;
+
+    // Off-screen render: dispatch the compute chain into display_image
+    // exactly as gpu_frame_render does for the interactive view, but on a
+    // transient one-shot command buffer with no swapchain. Used by the
+    // export path, where the photo is never the bound current_graph and
+    // so is never rendered by the frame loop. Records via the same
+    // ap_pipeline_graph_record the canvas uses, so the output is
+    // byte-identical; a fresh graph (has_recorded == false) always
+    // dispatches every stage.
+    VkCommandBufferAllocateInfo cba = {
+        .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool        = graph->gpu->command_pool,
+        .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(graph->gpu->device, &cba, &cmd) != VK_SUCCESS) {
+        AP_ERROR("render_once: command buffer alloc failed");
+        return -1;
+    }
+
+    VkCommandBufferBeginInfo bi = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    vkBeginCommandBuffer(cmd, &bi);
+    int rc = ap_pipeline_graph_record(graph, cmd, stack);
+    vkEndCommandBuffer(cmd);
+    if (rc < 0) {
+        vkFreeCommandBuffers(graph->gpu->device, graph->gpu->command_pool,
+                             1, &cmd);
+        return -1;
+    }
+
+    VkCommandBufferSubmitInfo cmd_si = {
+        .sType         = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+        .commandBuffer = cmd,
+    };
+    VkSubmitInfo2 submit = {
+        .sType                  = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+        .commandBufferInfoCount = 1,
+        .pCommandBufferInfos    = &cmd_si,
+    };
+    if (vkQueueSubmit2(graph->gpu->graphics_queue, 1, &submit,
+                       VK_NULL_HANDLE) != VK_SUCCESS) {
+        AP_ERROR("render_once: submit failed");
+        vkFreeCommandBuffers(graph->gpu->device, graph->gpu->command_pool,
+                             1, &cmd);
+        return -1;
+    }
+    vkQueueWaitIdle(graph->gpu->graphics_queue);
+    vkFreeCommandBuffers(graph->gpu->device, graph->gpu->command_pool, 1, &cmd);
+    return 0;
+}
+
 int ap_pipeline_graph_readback(ap_pipeline_graph *graph,
                                void *out_pixels, size_t out_size)
 {
