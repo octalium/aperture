@@ -6,22 +6,18 @@
  * state machine that drives single / batch / quick export.
  *
  * Convergence point for every export path. Each export is one
- * user-visible ap_job. The expensive raw decode runs on the worker pool
- * (a small prefetch ahead of the GPU stage); the per-frame pump does only
- * the GPU-bound work that must stay on the main thread — upload, render,
- * readback — then frames the result and submits a CPU-only encode work
- * item. So a batch export no longer blocks the UI on libraw decode.
+ * user-visible ap_job; the coordinator opens one photo per pump step
+ * (on the main thread, where the GPU readback must happen), frames it,
+ * and submits a CPU-only encode work item to the worker pool.
  *
  * It is the sole owner of the per-photo RGBA allocation gate, so peak
- * RGBA is bounded to AP_EXPORT_BYTE_BUDGET + one photo regardless of how
- * many photos the selection holds (the decode prefetch is separately
- * bounded by a small ahead count). This structurally eliminates the
+ * memory is bounded to AP_EXPORT_BYTE_BUDGET + one photo regardless of
+ * how many photos the selection holds. This structurally eliminates the
  * batch-export OOM rather than patching it.
  *
- * Cancellation is the shared ap_job mechanism: the pump checks the job's
- * cancel flag each frame, stops scheduling new decodes/photos, frees
- * pending decoded raws, lets in-flight encodes drain, and finishes
- * CANCELED.
+ * Cancellation is the shared ap_job mechanism: the pump checks the
+ * job's cancel flag each frame, stops opening new photos, lets in-flight
+ * encodes drain, frees their buffers, and finishes CANCELED.
  */
 
 #include "app_priv.h"
@@ -62,17 +58,8 @@ void ap_export_coord_pump(ap_app *app);
 // Account a completed encode work item against the coordinator: drop its
 // bytes from the in-flight total and decrement the inflight count.
 // Called from the export-job completion handler. `bytes` is the RGBA
-// buffer size the encode held; `ok` is whether the file was written (so
-// the final tally counts real successes, not just submissions).
-void ap_export_coord_encode_done(ap_app *app, size_t bytes, bool ok);
-
-// Hand a completed background decode (a from_coord photo_open_job) to the
-// coordinator. On success it takes ownership of j->raw (moved into the
-// ready queue for the GPU stage); on failure / cancel / no coordinator it
-// frees j->raw. Either way j->raw is consumed — the caller only frees the
-// job struct. Main thread (photo-open completion handler).
-struct photo_open_job;
-void ap_export_coord_decode_complete(ap_app *app, struct photo_open_job *j);
+// buffer size the encode held.
+void ap_export_coord_encode_done(ap_app *app, size_t bytes);
 
 // Tear the coordinator down immediately: request cancel, wait for all
 // in-flight encodes to drain, free their buffers and the coordinator.
