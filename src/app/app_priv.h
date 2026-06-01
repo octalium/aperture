@@ -174,6 +174,7 @@ enum {
 void bind_mode_view(ap_app *app);
 void rebuild_grid_map(ap_app *app);
 int  cell_for_photo(const ap_app *app, int photo_idx);
+void remap_open_photo_index(ap_app *app);
 void release_photo(ap_app *app);
 void submit_thumb_refresh(ap_app *app, int idx);
 void toggle_and_persist_fullscreen(ap_app *app);

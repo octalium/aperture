@@ -140,7 +140,8 @@ void selection_edit_job_run(ap_work_item *self)
 {
     selection_edit_job *j = (selection_edit_job *)self;
     int wrote = 0;
-    for (int k = 0; k < j->count; k++) {
+    int k = 0;
+    for (; k < j->count; k++) {
         if (ap_job_cancel_requested(j->job)) break;
         bool ok;
         if (j->op == AP_SEL_EDIT_CULLING) {
@@ -153,6 +154,10 @@ void selection_edit_job_run(ap_work_item *self)
         if (ok) wrote++;
         ap_job_progress(j->job, k + 1, j->count);
     }
+    // k = photos the worker reached (== count unless cancelled). The
+    // completion reconciles the cache only this far so it can't claim a
+    // new value for a photo whose sidecar was never written.
+    atomic_store(&j->processed, k);
     atomic_store(&j->wrote, wrote);
 }
 
@@ -281,8 +286,11 @@ static void handle_thumb_encode_complete(ap_app *app, thumb_encode_job *j)
     // list, so j->idx no longer names the photo this render belongs to;
     // the gen bump on swap marks the job stale. Skip the store/invalidate
     // (the render is re-derived on next decode) rather than stamp the
-    // thumbnail onto the wrong photo.
-    bool stale = (j->gen != app->thumb_load_gen);
+    // thumbnail onto the wrong photo. Also skip while a library job is
+    // building: ap_library_store_thumbnail writes lib->db, which would
+    // contend with the worker's write transaction, and the imminent swap
+    // resets every thumbnail anyway.
+    bool stale = (j->gen != app->thumb_load_gen) || app->library_job_inflight;
     if (!stale && j->ok && j->jpeg && j->jpeg_size > 0 && app->library
         && j->idx >= 0 && j->idx < ap_library_photo_count(app->library))
     {
@@ -342,13 +350,17 @@ static void handle_selection_edit_complete(ap_app *app, selection_edit_job *j)
     // Reconcile the main-thread-owned library cache for what the worker
     // wrote to the sidecars. Single-flight against library jobs means no
     // structural swap could have run during this job, so the snapshotted
-    // indices are still valid (each call bounds-checks regardless).
+    // indices are still valid (each call bounds-checks regardless). Only
+    // reconcile as far as the worker got: on cancel, photos past
+    // `processed` were never written, so their cache must keep the old
+    // value (the sidecar is the source of truth).
+    int processed = atomic_load(&j->processed);
     if (app->library) {
         if (j->op == AP_SEL_EDIT_CULLING) {
             ap_library_commit_culling_batch(app->library, j->indices,
-                                            j->cull, j->count);
+                                            j->cull, processed);
         } else if (j->op == AP_SEL_EDIT_GROUP) {
-            for (int k = 0; k < j->count; k++) {
+            for (int k = 0; k < processed; k++) {
                 ap_library_apply_group_cache(app->library, j->indices[k],
                                              j->group_name, j->group_add);
             }
@@ -360,7 +372,7 @@ static void handle_selection_edit_complete(ap_app *app, selection_edit_job *j)
             // so the pump re-decodes it. The thumb_gen check skips this
             // if a rendered-thumbnail toggle reset the cache mid-batch.
             int n = ap_library_photo_count(app->library);
-            for (int k = 0; k < j->count; k++) {
+            for (int k = 0; k < processed; k++) {
                 int idx = j->indices[k];
                 if (idx >= 0 && idx < n) {
                     ap_library_invalidate_thumbnail(app->library, idx);
@@ -442,6 +454,11 @@ static void handle_library_complete(ap_app *app, library_job *j)
         }
     }
     rebuild_grid_map(app);
+
+    // The swap renumbered the photo list; if a photo is open (a sort/
+    // delete can complete after the user stepped into photo mode),
+    // re-resolve its index so culling/navigation don't act on a stale one.
+    remap_open_photo_index(app);
 
     // After a delete, land on the nearest surviving neighbour (the
     // anchor cell, clamped) and scroll to it — rebuild_grid_map reset

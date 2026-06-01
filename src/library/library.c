@@ -2421,14 +2421,13 @@ int ap_library_write_culling_to_path(const char *path, ap_photo_culling culling)
     culling.rating = ap_rating_clamp(culling.rating);
 
     // Load-modify-save: preserve the edit stack + every other ancillary
-    // field, seeding the default pipeline when the photo has no sidecar
-    // yet so the write doesn't strip its edits.
+    // field. ap_sidecar_load_full clears both outputs even on failure, so
+    // for a photo with no sidecar yet we only seed the default pipeline
+    // (so the write doesn't strip its edits).
     ap_edit_stack stack;
     ap_sidecar_ancillary anc;
     if (ap_sidecar_load_full(path, &stack, &anc) != 0) {
-        ap_edit_stack_init(&stack);
         seed_default_stack(&stack);
-        ap_sidecar_ancillary_clear(&anc);
     }
     anc.culling = culling;
     return ap_library_apply_stack_to_path(path, &stack, &anc);
@@ -2442,9 +2441,7 @@ int ap_library_modify_group_in_sidecar(const char *path, const char *group,
     ap_edit_stack stack;
     ap_sidecar_ancillary anc;
     if (ap_sidecar_load_full(path, &stack, &anc) != 0) {
-        ap_edit_stack_init(&stack);
-        seed_default_stack(&stack);
-        ap_sidecar_ancillary_clear(&anc);
+        seed_default_stack(&stack);  // load_full already cleared anc
     }
 
     ap_photo_groups *g = &anc.groups;

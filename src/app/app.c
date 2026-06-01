@@ -1014,6 +1014,30 @@ int cell_for_photo(const ap_app *app, int photo_idx)
     return -1;
 }
 
+// After a library cache swap renumbers the photo list, re-resolve the
+// open photo's index by matching its path in the new cache. Set to -1
+// when the open photo is gone (e.g. deleted by the same job) so the
+// photo-mode culling / navigation paths no-op on a stale index rather
+// than act on the wrong photo. No-op when no photo is open.
+void remap_open_photo_index(ap_app *app)
+{
+    if (!app || !app->photo || !app->library) return;
+    const char *p = ap_photo_path(app->photo);
+    if (p) {
+        int n = ap_library_photo_count(app->library);
+        char abs[4096];
+        for (int i = 0; i < n; i++) {
+            if (ap_library_photo_absolute_path(app->library, i, abs,
+                                               sizeof(abs)) == 0 &&
+                strcmp(abs, p) == 0) {
+                app->photo_library_idx = i;
+                return;
+            }
+        }
+    }
+    app->photo_library_idx = -1;
+}
+
 int ap_app_open_library(ap_app *app, const char *path)
 {
     if (!app || !path) return -1;
@@ -1049,6 +1073,10 @@ void ap_app_close_library(ap_app *app)
     ap_app_wait_idle(app);
     ap_grid_set_photo_count(app->grid, 0);
     app->grid_map_count = 0;
+    // A rescan queued by an import into this library must not fire against
+    // whatever library is opened next. (drain_all_workers cleared the job
+    // inflight flags but not this import-scoped intent.)
+    app->library_rescan_pending = false;
     ap_library_close(app->library);
     app->library = NULL;
     bind_mode_view(app);
@@ -1263,6 +1291,10 @@ static int apply_culling_to_photo(ap_app *app, int idx, ap_cull_field field,
                                   int value)
 {
     if (!app || !app->library) return -1;
+    // A background library job is rebuilding the cache on its own db
+    // connection; an inline sidecar + lib->db write here would race the
+    // worker's transaction and be discarded by the imminent swap. Defer.
+    if (app->library_job_inflight) return -1;
     ap_photo_culling cull = culling_with_field(
         ap_library_photo_culling(app->library, idx), field, value);
     return ap_library_set_photo_culling(app->library, idx, cull);
@@ -1281,6 +1313,14 @@ static int apply_culling_to_selection(ap_app *app, ap_cull_field field,
 
     int sel = ap_grid_selection_count(app->grid);
     if (sel <= 0) return 0;
+
+    // Mutually exclude against a running library job (the inline branch
+    // would race its db connection; the batch branch is rejected by the
+    // builder anyway). One toast covers both.
+    if (app->library_job_inflight) {
+        ap_status_notify(AP_STATUS_INFO, "A library task is already running.");
+        return AP_SELECTION_EDIT_BUSY;
+    }
 
     if (sel == 1) {
         for (int c = 0; c < app->grid_map_count; c++) {
@@ -1457,6 +1497,12 @@ int ap_app_assign_selection_to_group(ap_app *app, const char *group, bool add)
     }
     int sel = ap_grid_selection_count(app->grid);
     if (sel <= 0) return 0;
+
+    // Mutually exclude against a running library job (see culling above).
+    if (app->library_job_inflight) {
+        ap_status_notify(AP_STATUS_INFO, "A library task is already running.");
+        return AP_SELECTION_EDIT_BUSY;
+    }
 
     // Single photo: apply inline (one sidecar write) and re-filter now.
     if (sel == 1) {
@@ -2614,10 +2660,13 @@ int ap_app_run_frame(ap_app *app)
         draw_marquee_overlay(app);
         submit_pending_thumbs(app);
     }
-    // An import sets library_rescan_pending; submit the background
-    // rescan once both single-flight guards are clear so it never races
-    // a selection-edit batch's snapshotted indices.
+    // An import sets library_rescan_pending; submit the background rescan
+    // once both single-flight guards are clear so it never races a
+    // selection-edit batch's snapshotted indices. Only in library mode —
+    // renumbering the photo list while a photo is open would shift
+    // photo_library_idx under the editing view.
     if (app->library_rescan_pending && app->library &&
+        app->mode == AP_MODE_LIBRARY &&
         !app->library_job_inflight && !app->selection_edit_inflight) {
         if (submit_library_job(app, AP_LIBRARY_OP_RESCAN, app->sort,
                                NULL, 0, -1, "Rescanning library...") == 0) {

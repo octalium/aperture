@@ -118,6 +118,7 @@ typedef struct {
     char          (*paths)[4096];  // resolved abs path per index; worker reads these
     int             count;
     _Atomic int     wrote;         // photos successfully written
+    _Atomic int     processed;     // photos the worker iterated (< count on cancel)
     uint64_t        thumb_gen;     // generation captured at submit
 
     // op payloads (only the active op's fields are meaningful)
