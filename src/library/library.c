@@ -2415,37 +2415,106 @@ static int write_photo_sidecar_groups(ap_library *lib, int index)
                            &lib->cache->photo_groups[index], &keywords);
 }
 
-// Load-modify-save the n-th photo's sidecar so its on-disk culling
-// fields match `culling`. Mirrors write_photo_sidecar_groups: preserves
-// the edit stack, orientation, metadata and groups, seeding the default
-// pipeline when the photo has no sidecar yet.
-static int write_photo_sidecar_culling(ap_library *lib, int index,
-                                       const ap_photo_culling *culling)
+int ap_library_write_culling_to_path(const char *path, ap_photo_culling culling)
 {
-    char path[4096];
-    if (ap_library_photo_absolute_path(lib, index, path, sizeof(path)) != 0) {
-        return -1;
-    }
+    if (!path) return -1;
+    culling.rating = ap_rating_clamp(culling.rating);
+
+    // Load-modify-save: preserve the edit stack + every other ancillary
+    // field, seeding the default pipeline when the photo has no sidecar
+    // yet so the write doesn't strip its edits.
     ap_edit_stack stack;
-    ap_edit_stack_init(&stack);
-    bool respect_orientation = true;
-    ap_photo_metadata user_meta;
-    ap_photo_metadata_clear(&user_meta);
-    bool user_set[AP_META_FIELD_COUNT] = {0};
-    ap_photo_culling discard_culling;
-    ap_photo_culling_clear(&discard_culling);
-    ap_photo_groups groups;
-    groups.count = 0;
-    ap_photo_keywords keywords;
-    ap_photo_keywords_clear(&keywords);
+    ap_sidecar_ancillary anc;
+    if (ap_sidecar_load_full(path, &stack, &anc) != 0) {
+        ap_edit_stack_init(&stack);
+        seed_default_stack(&stack);
+        ap_sidecar_ancillary_clear(&anc);
+    }
+    anc.culling = culling;
+    return ap_library_apply_stack_to_path(path, &stack, &anc);
+}
 
-    bool had = (ap_sidecar_load(path, &stack, &respect_orientation,
-                                &user_meta, user_set, &discard_culling,
-                                &groups, &keywords) == 0);
-    if (!had) seed_default_stack(&stack);
+int ap_library_modify_group_in_sidecar(const char *path, const char *group,
+                                       bool member)
+{
+    if (!path || !group || !*group) return -1;
 
-    return ap_sidecar_save(path, &stack, respect_orientation,
-                           &user_meta, user_set, culling, &groups, &keywords);
+    ap_edit_stack stack;
+    ap_sidecar_ancillary anc;
+    if (ap_sidecar_load_full(path, &stack, &anc) != 0) {
+        ap_edit_stack_init(&stack);
+        seed_default_stack(&stack);
+        ap_sidecar_ancillary_clear(&anc);
+    }
+
+    ap_photo_groups *g = &anc.groups;
+    int found = -1;
+    for (int i = 0; i < g->count; i++) {
+        if (strcmp(g->names[i], group) == 0) { found = i; break; }
+    }
+    if (member) {
+        if (found >= 0) return 0;                 // already a member
+        if (g->count >= AP_GROUPS_MAX) return -1;
+        snprintf(g->names[g->count], AP_GROUP_NAME_LEN, "%s", group);
+        g->count++;
+    } else {
+        if (found < 0) return 0;                  // not a member
+        for (int i = found; i + 1 < g->count; i++) {
+            memcpy(g->names[i], g->names[i + 1], AP_GROUP_NAME_LEN);
+        }
+        g->count--;
+    }
+    return ap_library_apply_stack_to_path(path, &stack, &anc);
+}
+
+void ap_library_commit_culling_batch(ap_library *lib, const int *indices,
+                                     const ap_photo_culling *cull, int count)
+{
+    if (!lib || !lib->db || !lib->cache || !lib->cache->photo_culling ||
+        !indices || !cull) {
+        return;
+    }
+    // The worker already wrote every sidecar; here we update only the
+    // in-memory cells + the cached db columns, in one transaction so the
+    // WAL takes a single commit rather than one per photo.
+    sqlite3_exec(lib->db, "BEGIN;", NULL, NULL, NULL);
+    for (int k = 0; k < count; k++) {
+        int idx = indices[k];
+        if (idx < 0 || idx >= lib->cache->photo_count) continue;
+        ap_photo_culling c = cull[k];
+        c.rating = ap_rating_clamp(c.rating);
+        lib->cache->photo_culling[idx] = c;
+        store_culling_row(lib->db, lib->cache->photo_paths[idx], &c);
+    }
+    sqlite3_exec(lib->db, "COMMIT;", NULL, NULL, NULL);
+}
+
+void ap_library_apply_group_cache(ap_library *lib, int index,
+                                  const char *group, bool member)
+{
+    if (!lib || !lib->cache || !lib->cache->photo_groups || !group || !*group) {
+        return;
+    }
+    if (index < 0 || index >= lib->cache->photo_count) return;
+
+    ap_photo_groups *g = &lib->cache->photo_groups[index];
+    int found = -1;
+    for (int i = 0; i < g->count; i++) {
+        if (strcmp(g->names[i], group) == 0) { found = i; break; }
+    }
+    if (member) {
+        if (found >= 0) return;
+        if (g->count >= AP_GROUPS_MAX) return;
+        snprintf(g->names[g->count], AP_GROUP_NAME_LEN, "%s", group);
+        g->count++;
+        cache_registry_add(lib->db, lib->cache, group);
+    } else {
+        if (found < 0) return;
+        for (int i = found; i + 1 < g->count; i++) {
+            memcpy(g->names[i], g->names[i + 1], AP_GROUP_NAME_LEN);
+        }
+        g->count--;
+    }
 }
 
 ap_photo_culling ap_library_photo_culling(const ap_library *lib, int index)
@@ -2467,7 +2536,11 @@ int ap_library_set_photo_culling(ap_library *lib, int index,
 
     culling.rating = ap_rating_clamp(culling.rating);
 
-    if (write_photo_sidecar_culling(lib, index, &culling) != 0) {
+    char path[4096];
+    if (ap_library_photo_absolute_path(lib, index, path, sizeof(path)) != 0) {
+        return -1;
+    }
+    if (ap_library_write_culling_to_path(path, culling) != 0) {
         return -1;
     }
     lib->cache->photo_culling[index] = culling;
@@ -2511,31 +2584,20 @@ int ap_library_set_photo_group(ap_library *lib, int index,
     if (!lib || !lib->cache->photo_groups || !group || !*group) return -1;
     if (index < 0 || index >= lib->cache->photo_count) return -1;
 
+    // No-op when already in the desired state — skip the sidecar rewrite.
     ap_photo_groups *g = &lib->cache->photo_groups[index];
-    int found = -1;
+    bool present = false;
     for (int i = 0; i < g->count; i++) {
-        if (strcmp(g->names[i], group) == 0) {
-            found = i;
-            break;
-        }
+        if (strcmp(g->names[i], group) == 0) { present = true; break; }
     }
-    if (member) {
-        if (found >= 0) return 0;                 // already a member
-        if (g->count >= AP_GROUPS_MAX) {
-            AP_WARN("library: photo %d is already in the max %d groups",
-                    index, AP_GROUPS_MAX);
-            return -1;
-        }
-        snprintf(g->names[g->count], AP_GROUP_NAME_LEN, "%s", group);
-        g->count++;
-        cache_registry_add(lib->db, lib->cache, group);                 // ensure the group exists
-    } else {
-        if (found < 0) return 0;                  // not a member
-        for (int i = found; i + 1 < g->count; i++) {
-            memcpy(g->names[i], g->names[i + 1], AP_GROUP_NAME_LEN);
-        }
-        g->count--;
+    if (member == present) return 0;
+    if (member && g->count >= AP_GROUPS_MAX) {
+        AP_WARN("library: photo %d is already in the max %d groups",
+                index, AP_GROUPS_MAX);
+        return -1;
     }
+
+    ap_library_apply_group_cache(lib, index, group, member);
     return write_photo_sidecar_groups(lib, index);
 }
 

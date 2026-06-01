@@ -1103,9 +1103,7 @@ int ap_app_apply_pipeline_to_selection(ap_app *app, int64_t pipeline_id)
     // Resolve the pipeline to a concrete stack here, on the main thread,
     // so the worker never touches the pipeline db connection.
     if (ap_pipeline_apply_to_stack(pipeline_id, &j->stack) != 0) {
-        free(j->indices);
-        free(j->paths);
-        free(j);
+        abandon_selection_edit_job(j);
         return -1;
     }
     return commit_selection_edit_job(app, j, "Applying pipeline...");
@@ -1246,38 +1244,72 @@ typedef enum {
     AP_CULL_COLOR  = 2,
 } ap_cull_field;
 
-// Apply a single culling-field change to one library photo. `value` is
-// interpreted per `field`: a rating int, an ap_flag, or an ap_color_label.
+// Set one culling field on a culling struct. `value` is interpreted per
+// `field`: a rating int, an ap_flag, or an ap_color_label.
+static ap_photo_culling culling_with_field(ap_photo_culling c,
+                                           ap_cull_field field, int value)
+{
+    switch (field) {
+    case AP_CULL_RATING: c.rating = value;                 break;
+    case AP_CULL_FLAG:   c.flag   = (ap_flag)value;        break;
+    case AP_CULL_COLOR:  c.color  = (ap_color_label)value; break;
+    }
+    return c;
+}
+
+// Apply a single culling-field change to one library photo inline.
 // Returns 0 on success, -1 on a missing library or out-of-range index.
 static int apply_culling_to_photo(ap_app *app, int idx, ap_cull_field field,
                                   int value)
 {
     if (!app || !app->library) return -1;
-    ap_photo_culling cull = ap_library_photo_culling(app->library, idx);
-    switch (field) {
-    case AP_CULL_RATING: cull.rating = value;                  break;
-    case AP_CULL_FLAG:   cull.flag   = (ap_flag)value;         break;
-    case AP_CULL_COLOR:  cull.color  = (ap_color_label)value;  break;
-    }
+    ap_photo_culling cull = culling_with_field(
+        ap_library_photo_culling(app->library, idx), field, value);
     return ap_library_set_photo_culling(app->library, idx, cull);
 }
 
-// Apply a single culling-field change to every selected grid photo.
-// Returns the number of photos written, or -1 on a missing library / grid.
+// Apply a single culling-field change to every selected grid photo. A
+// single-photo edit is applied inline (one sidecar write, instant); a
+// multi-select edit is backgrounded — the per-photo sidecar writes (the
+// slow part) run on a worker, the db columns + cache cells land at
+// completion. Returns photos written/queued, AP_SELECTION_EDIT_BUSY when
+// a job is already running, or -1 on error.
 static int apply_culling_to_selection(ap_app *app, ap_cull_field field,
                                       int value)
 {
     if (!app || !app->library || !app->grid) return -1;
 
-    int wrote = 0;
-    for (int c = 0; c < app->grid_map_count; c++) {
-        if (!ap_grid_is_selected(app->grid, c)) continue;
-        int i = app->grid_map[c];
-        if (apply_culling_to_photo(app, i, field, value) == 0) {
-            wrote++;
+    int sel = ap_grid_selection_count(app->grid);
+    if (sel <= 0) return 0;
+
+    if (sel == 1) {
+        for (int c = 0; c < app->grid_map_count; c++) {
+            if (!ap_grid_is_selected(app->grid, c)) continue;
+            return apply_culling_to_photo(app, app->grid_map[c],
+                                          field, value) == 0 ? 1 : 0;
         }
+        return 0;
     }
-    return wrote;
+
+    bool busy = false;
+    selection_edit_job *j =
+        build_selection_edit_job(app, AP_SEL_EDIT_CULLING, false, &busy);
+    if (!j) return busy ? AP_SELECTION_EDIT_BUSY : 0;
+
+    // Compute each photo's resulting culling on the main thread (reading
+    // the live cache), so the worker only writes sidecars.
+    j->cull = malloc((size_t)j->count * sizeof(*j->cull));
+    if (!j->cull) {
+        AP_ERROR("culling: payload alloc failed");
+        abandon_selection_edit_job(j);
+        return -1;
+    }
+    for (int k = 0; k < j->count; k++) {
+        ap_photo_culling cur =
+            ap_library_photo_culling(app->library, j->indices[k]);
+        j->cull[k] = culling_with_field(cur, field, value);
+    }
+    return commit_selection_edit_job(app, j, "Updating rating/flag/color...");
 }
 
 int ap_app_set_selection_rating(ap_app *app, int rating)
@@ -1423,17 +1455,33 @@ int ap_app_assign_selection_to_group(ap_app *app, const char *group, bool add)
     if (!app || !app->library || !app->grid || !group || !*group) {
         return -1;
     }
-    int wrote = 0;
-    for (int c = 0; c < app->grid_map_count; c++) {
-        if (!ap_grid_is_selected(app->grid, c)) continue;
-        if (ap_library_set_photo_group(app->library, app->grid_map[c],
-                                       group, add) == 0) {
-            wrote++;
+    int sel = ap_grid_selection_count(app->grid);
+    if (sel <= 0) return 0;
+
+    // Single photo: apply inline (one sidecar write) and re-filter now.
+    if (sel == 1) {
+        for (int c = 0; c < app->grid_map_count; c++) {
+            if (!ap_grid_is_selected(app->grid, c)) continue;
+            int wrote = (ap_library_set_photo_group(app->library,
+                             app->grid_map[c], group, add) == 0) ? 1 : 0;
+            // Membership changed — a group filter's visible set may move.
+            rebuild_grid_map(app);
+            return wrote;
         }
+        return 0;
     }
-    // Membership changed — a group filter's visible set may have moved.
-    rebuild_grid_map(app);
-    return wrote;
+
+    // Multi-select: background the per-photo sidecar writes; the cache +
+    // group registry land at completion (which also re-filters).
+    bool busy = false;
+    selection_edit_job *j =
+        build_selection_edit_job(app, AP_SEL_EDIT_GROUP, false, &busy);
+    if (!j) return busy ? AP_SELECTION_EDIT_BUSY : 0;
+    snprintf(j->group_name, sizeof(j->group_name), "%s", group);
+    j->group_add = add;
+    return commit_selection_edit_job(app, j,
+                                     add ? "Adding to group..."
+                                         : "Removing from group...");
 }
 
 void navigate_library_relative(ap_app *app, int dir)

@@ -346,6 +346,29 @@ int  ap_library_apply_metadata_patch_to_path(
          const char *path, const ap_photo_metadata *patch,
          const bool patch_set[AP_META_FIELD_COUNT]);
 
+// Worker-safe sidecar writes for backgrounded culling / group batches:
+// load-modify-save the sidecar at `path` (seeding the default pipeline
+// when none exists), touching neither the library cache nor its db.
+// _write_culling_to_path overwrites the culling block; _modify_group_in_
+// sidecar adds/removes one group (a no-op when already in that state).
+// Return 0 on success. The main-thread completion reconciles the cache:
+int  ap_library_write_culling_to_path(const char *path,
+                                      ap_photo_culling culling);
+int  ap_library_modify_group_in_sidecar(const char *path, const char *group,
+                                        bool member);
+
+// Main-thread completion of a backgrounded culling batch: write the
+// in-memory culling cells + cached db columns for the `count` photos in
+// `indices` (the worker already wrote the sidecars), in one transaction.
+void ap_library_commit_culling_batch(ap_library *lib, const int *indices,
+                                     const ap_photo_culling *cull, int count);
+
+// Main-thread completion of a backgrounded group batch: add/remove the
+// n-th photo's membership in `group` in the in-memory cache + group
+// registry (the worker already wrote the sidecar). No sidecar I/O.
+void ap_library_apply_group_cache(ap_library *lib, int index,
+                                  const char *group, bool member);
+
 // A preset is a named bundle of ap_export_settings. The library db
 // stores them in the `export_presets` table so they survive across
 // sessions. The settings are serialised as a flat key=value blob

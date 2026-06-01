@@ -126,6 +126,12 @@ static bool selection_edit_one(selection_edit_job *j, const char *path)
                                                        j->patch_set) == 0;
     case AP_SEL_EDIT_LENS:
         return selection_edit_lens_one(j, path);
+    case AP_SEL_EDIT_GROUP:
+        return ap_library_modify_group_in_sidecar(path, j->group_name,
+                                                  j->group_add) == 0;
+    case AP_SEL_EDIT_CULLING:
+        // handled per-index in selection_edit_job_run (needs cull[k])
+        return false;
     }
     return false;
 }
@@ -136,7 +142,15 @@ void selection_edit_job_run(ap_work_item *self)
     int wrote = 0;
     for (int k = 0; k < j->count; k++) {
         if (ap_job_cancel_requested(j->job)) break;
-        if (selection_edit_one(j, j->paths[k])) wrote++;
+        bool ok;
+        if (j->op == AP_SEL_EDIT_CULLING) {
+            // Per-index payload, so it can't go through selection_edit_one.
+            ok = (ap_library_write_culling_to_path(j->paths[k],
+                                                   j->cull[k]) == 0);
+        } else {
+            ok = selection_edit_one(j, j->paths[k]);
+        }
+        if (ok) wrote++;
         ap_job_progress(j->job, k + 1, j->count);
     }
     atomic_store(&j->wrote, wrote);
@@ -325,20 +339,32 @@ static void handle_selection_edit_complete(ap_app *app, selection_edit_job *j)
     bool canceled = ap_job_cancel_requested(j->job);
     int wrote = atomic_load(&j->wrote);
 
-    // Thumbnail invalidation touches the library cache the main thread
-    // owns, so it happens here, not on the worker. Re-validate each
-    // index against the current photo count + thumb generation: the
-    // import-completion rescan bumps the gen (it reorders indices
-    // without draining the pool), so a job that was snapshotted before
-    // it would hold stale indices — skip invalidation rather than
-    // corrupt the grid. Sort/delete drain the pool first, so an
-    // in-flight job can never reach here across one of those.
-    if (app->library && j->thumb_gen == app->thumb_load_gen) {
-        int n = ap_library_photo_count(app->library);
-        for (int k = 0; k < j->count; k++) {
-            int idx = j->indices[k];
-            if (idx >= 0 && idx < n) {
-                ap_library_invalidate_thumbnail(app->library, idx);
+    // Reconcile the main-thread-owned library cache for what the worker
+    // wrote to the sidecars. Single-flight against library jobs means no
+    // structural swap could have run during this job, so the snapshotted
+    // indices are still valid (each call bounds-checks regardless).
+    if (app->library) {
+        if (j->op == AP_SEL_EDIT_CULLING) {
+            ap_library_commit_culling_batch(app->library, j->indices,
+                                            j->cull, j->count);
+        } else if (j->op == AP_SEL_EDIT_GROUP) {
+            for (int k = 0; k < j->count; k++) {
+                ap_library_apply_group_cache(app->library, j->indices[k],
+                                             j->group_name, j->group_add);
+            }
+            // Membership changed — a group filter's visible set may move.
+            rebuild_grid_map(app);
+        } else if (ap_sel_edit_changes_render(j->op) &&
+                   j->thumb_gen == app->thumb_load_gen) {
+            // Edit-stack ops change the render: drop the stale thumbnail
+            // so the pump re-decodes it. The thumb_gen check skips this
+            // if a rendered-thumbnail toggle reset the cache mid-batch.
+            int n = ap_library_photo_count(app->library);
+            for (int k = 0; k < j->count; k++) {
+                int idx = j->indices[k];
+                if (idx >= 0 && idx < n) {
+                    ap_library_invalidate_thumbnail(app->library, idx);
+                }
             }
         }
     }
@@ -355,6 +381,7 @@ static void handle_selection_edit_complete(ap_app *app, selection_edit_job *j)
 
     free(j->indices);
     free(j->paths);
+    free(j->cull);
     free(j->job);
     free(j);
 }
@@ -518,6 +545,7 @@ void discard_completed_item(ap_app *app, ap_work_item *it)
         ap_job_finish(j->job, AP_JOB_CANCELED);
         free(j->indices);
         free(j->paths);
+        free(j->cull);
         free(j->job);
         free(j);
     } else if (it->run == library_job_run) {
@@ -695,18 +723,28 @@ void submit_import_job(ap_app *app, const char *lib_root, const char *src_dir,
     ap_worker_pool_submit(app->workers, &j->base);
 }
 
+void abandon_selection_edit_job(selection_edit_job *j)
+{
+    if (!j) return;
+    free(j->indices);
+    free(j->paths);
+    free(j->cull);
+    free(j);
+}
+
 selection_edit_job *build_selection_edit_job(ap_app *app, ap_sel_edit_op op,
                                              bool skip_open_photo,
                                              bool *out_busy)
 {
     if (out_busy) *out_busy = false;
     if (!app || !app->library || !app->grid || !app->workers) return NULL;
-    // Single-flight: never run two selection-edit batches at once, or
-    // two workers could write the same photo's sidecar concurrently.
-    if (app->selection_edit_inflight) {
+    // Single-flight: never run two selection-edit batches at once (two
+    // workers writing the same sidecar), and never overlap a library job
+    // (its cache swap would invalidate this batch's snapshotted indices).
+    if (app->selection_edit_inflight || app->library_job_inflight) {
         if (out_busy) *out_busy = true;
         ap_status_notify(AP_STATUS_INFO,
-                         "A selection edit is already running.");
+                         "A library task is already running.");
         return NULL;
     }
 
@@ -764,9 +802,7 @@ int commit_selection_edit_job(ap_app *app, selection_edit_job *j,
     j->job = ap_job_begin(AP_JOB_KIND_SELECTION_EDIT, label, j->count, NULL);
     if (!j->job) {
         AP_ERROR("selection edit: job control block alloc failed");
-        free(j->indices);
-        free(j->paths);
-        free(j);
+        abandon_selection_edit_job(j);
         return -1;
     }
     int count = j->count;

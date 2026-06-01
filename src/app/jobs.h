@@ -90,7 +90,16 @@ typedef enum {
     AP_SEL_EDIT_STACK,         // write a copied edit stack to each photo
     AP_SEL_EDIT_METADATA,      // merge a metadata patch into each sidecar
     AP_SEL_EDIT_LENS,          // attach a lens override to matching photos
+    AP_SEL_EDIT_CULLING,       // write a per-photo culling struct to each sidecar
+    AP_SEL_EDIT_GROUP,         // add/remove one group on each photo's sidecar
 } ap_sel_edit_op;
+
+// Whether an op changes the rendered pixels (so its thumbnails must be
+// re-decoded at completion). Culling + group are metadata-only.
+static inline bool ap_sel_edit_changes_render(ap_sel_edit_op op)
+{
+    return op != AP_SEL_EDIT_CULLING && op != AP_SEL_EDIT_GROUP;
+}
 
 // Background batch over a snapshot of the selected photos. Both the
 // library indices and their resolved absolute paths are snapshotted on
@@ -118,6 +127,9 @@ typedef struct {
     char            match_exif_lens[AP_META_VALUE_LEN]; // LENS
     char            override_lens[AP_META_VALUE_LEN];   // LENS
     int             lens_slot;                          // LENS str-param slot
+    ap_photo_culling *cull;                      // CULLING: per-photo, count entries
+    char            group_name[AP_GROUP_NAME_LEN]; // GROUP
+    bool            group_add;                     // GROUP
 } selection_edit_job;
 
 // Background structural library op: sort (RELOAD) / rescan / delete.
@@ -166,6 +178,11 @@ int submit_library_job(ap_app *app, ap_library_op op, ap_library_sort sort,
 selection_edit_job *build_selection_edit_job(ap_app *app, ap_sel_edit_op op,
                                              bool skip_open_photo,
                                              bool *out_busy);
+
+// Free a built-but-not-committed selection_edit_job (its ap_job has not
+// been begun, so the single-flight guard is still clear). Use this when
+// a caller fails to fill the op payload after build_selection_edit_job.
+void abandon_selection_edit_job(selection_edit_job *j);
 
 // Begin the job's ap_job (label/progress/cancel) and submit it to the
 // worker pool. Takes ownership; on ap_job_begin failure it frees the
