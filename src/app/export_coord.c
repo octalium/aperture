@@ -96,6 +96,18 @@ static size_t open_and_submit(ap_app *app, ap_export_coord *c,
         if (own_photo) ap_photo_close(photo);
         return 0;
     }
+    // Render the compute chain into display_image before reading it back.
+    // An export-only photo is never the bound current_graph, so the frame
+    // loop never renders it — without this the readback copies undefined
+    // (black) memory. The open photo (own_photo == false) is already
+    // rendered by the frame loop; render_once is a near-no-op for it
+    // (record skips on an unchanged stack).
+    if (ap_photo_render(photo) != 0) {
+        AP_WARN("export: render failed for %s — skipping", it->src_abs);
+        free(rgba);
+        if (own_photo) ap_photo_close(photo);
+        return 0;
+    }
     if (ap_pipeline_graph_readback(ap_photo_graph(photo), rgba, bytes) != 0) {
         free(rgba);
         if (own_photo) ap_photo_close(photo);

@@ -64,11 +64,24 @@ int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
 int ap_pipeline_graph_set_stage_skip(ap_pipeline_graph *graph,
                                      int entry_idx, bool skip);
 
+// Dispatch the compute chain once into display_image on a transient,
+// one-shot command buffer, decoupled from the swapchain frame loop.
+// Needed by off-screen consumers (export): a photo opened solely for
+// export is never the bound current_graph, so the per-frame submit never
+// renders it — without this its display_image is undefined (black).
+// Records via ap_pipeline_graph_record, so output matches the canvas.
+// Synchronous (waits on the queue). Main thread only. Returns 0 on
+// success, -1 on failure.
+int ap_pipeline_graph_render_once(ap_pipeline_graph *graph,
+                                  const ap_edit_stack *stack);
+
 // Copy the current display image (final stage's output) into a CPU
 // buffer. `out_pixels` must hold at least `output_width * output_height
 // * 4` bytes; data is written as 8-bit RGBA, sRGB-encoded (the bytes
 // the encode shader produced). Returns 0 on success. Synchronous -
-// waits on the device before reading.
+// waits on the device before reading. The display image must already
+// have been rendered (the frame loop for the live graph, or
+// ap_pipeline_graph_render_once for an off-screen one).
 int ap_pipeline_graph_readback(ap_pipeline_graph *graph,
                                void *out_pixels, size_t out_size);
 

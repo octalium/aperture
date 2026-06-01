@@ -57,6 +57,13 @@ void ap_photo_set_respect_orientation(ap_photo *photo, bool yes);
 // success; the photo's previous graph is destroyed first.
 int ap_photo_rebuild_graph(ap_photo *photo);
 
+// Render the photo's graph off-screen (dispatch the compute chain into
+// the display image) without the interactive frame loop. The export
+// path calls this before ap_pipeline_graph_readback because an
+// export-only photo is never the bound current_graph the frame loop
+// renders. Synchronous; call on the GPU thread. Returns 0 on success.
+int ap_photo_render(ap_photo *photo);
+
 // Synchronous GPU readback of the rendered display image to a
 // freshly malloc'd RGBA8 buffer (caller frees). Used by the
 // photo-close path to snapshot pixels while the graph is alive;
