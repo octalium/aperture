@@ -119,7 +119,9 @@ static void library_pipelines_draw(ap_app *app)
 
     if (igButton("Apply to selection", btn_size)) {
         int wrote = ap_app_apply_pipeline_to_selection(app, g_selected_id);
-        if (wrote < 0) {
+        if (wrote == AP_SELECTION_EDIT_BUSY) {
+            set_status("A selection edit is already running.");
+        } else if (wrote < 0) {
             set_status("Apply failed (no library / grid).");
         } else if (wrote == 0) {
             set_status("Nothing applied: no photos selected.");
