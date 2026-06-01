@@ -41,7 +41,8 @@ struct ap_export_coord {
     export_ready       ready[AP_EXPORT_DECODE_AHEAD];
     int                ready_count;     // decoded photos awaiting the GPU stage
 
-    int                processed;       // items past the GPU stage (progress)
+    int                processed;       // items accounted (GPU-staged or dropped)
+    int                written;         // encodes that actually wrote a file
     int                inflight_encode; // encode work items not yet completed
     size_t             bytes_inflight;  // summed RGBA buffers allocated
     int                max_inflight;    // concurrent-encode cap (worker count)
@@ -126,7 +127,18 @@ static size_t gpu_process_and_submit(ap_app *app, ap_export_coord *c,
     ap_photo *photo = NULL;
     bool own_photo = false;
     if (r->use_open) {
-        photo = app->photo;
+        // Read back the live open photo (its in-memory edits) — but only
+        // if app->photo is still the photo this item was resolved for. A
+        // photo-open completing between resolve and this GPU stage could
+        // have swapped app->photo; fall back to opening the intended
+        // source from disk rather than export the wrong photo.
+        if (app->photo &&
+            strcmp(ap_photo_path(app->photo), it->src_abs) == 0) {
+            photo = app->photo;
+        } else {
+            photo = ap_photo_open(app->gpu, it->src_abs);
+            own_photo = true;
+        }
     } else {
         // Consumes r->raw on every path (success or failure).
         photo = ap_photo_open_with_raw(app->gpu, it->src_abs, &r->raw);
@@ -234,9 +246,15 @@ void ap_export_coord_pump(ap_app *app)
         ap_job_finish(c->job, canceling ? AP_JOB_CANCELED : AP_JOB_DONE);
         if (canceling) {
             ap_status_notify(AP_STATUS_INFO, "Export canceled.");
-        } else {
+        } else if (c->written == c->count) {
             ap_status_notify(AP_STATUS_INFO, "Export complete: %d photo%s.",
-                             c->count, c->count == 1 ? "" : "s");
+                             c->written, c->written == 1 ? "" : "s");
+        } else {
+            // Some photos failed to decode / render / encode; the count
+            // would otherwise overstate success. The log has the details.
+            ap_status_notify(AP_STATUS_ERROR,
+                             "Exported %d of %d photo%s — see the log.",
+                             c->written, c->count, c->count == 1 ? "" : "s");
         }
         coord_free(app, c);
         return;
@@ -283,13 +301,14 @@ void ap_export_coord_pump(ap_app *app)
     ap_job_progress(c->job, c->processed, c->count);
 }
 
-void ap_export_coord_encode_done(ap_app *app, size_t bytes)
+void ap_export_coord_encode_done(ap_app *app, size_t bytes, bool ok)
 {
     if (!app || !app->export_coord) return;
     ap_export_coord *c = app->export_coord;
     if (c->bytes_inflight >= bytes) c->bytes_inflight -= bytes;
     else                            c->bytes_inflight = 0;
     if (c->inflight_encode > 0) c->inflight_encode--;
+    if (ok) c->written++;
 }
 
 void ap_export_coord_decode_complete(ap_app *app, struct photo_open_job *j)
@@ -308,6 +327,13 @@ void ap_export_coord_decode_complete(ap_app *app, struct photo_open_job *j)
     if (!job->ok || ap_job_cancel_requested(c->job) ||
         c->ready_count >= AP_EXPORT_DECODE_AHEAD) {
         ap_raw_image_free(&job->raw);
+        // A genuine decode failure (not a cancel) still retires the item —
+        // count it so the progress bar reaches 100% and the final tally is
+        // right. Cancel reports its own message, so don't advance there.
+        if (!job->ok && !ap_job_cancel_requested(c->job)) {
+            c->processed++;
+            ap_job_progress(c->job, c->processed, c->count);
+        }
         return;
     }
 
@@ -338,7 +364,7 @@ void ap_export_coord_abort(ap_app *app)
             if (!it) break;
             if (it->run == export_job_run && ((export_job *)it)->from_coord) {
                 export_job *j = (export_job *)it;
-                ap_export_coord_encode_done(app, j->rgba_bytes);
+                ap_export_coord_encode_done(app, j->rgba_bytes, j->ok);
                 free(j->rgba);
                 free(j);
             } else if (it->run == photo_open_job_run &&

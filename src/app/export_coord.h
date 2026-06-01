@@ -62,8 +62,9 @@ void ap_export_coord_pump(ap_app *app);
 // Account a completed encode work item against the coordinator: drop its
 // bytes from the in-flight total and decrement the inflight count.
 // Called from the export-job completion handler. `bytes` is the RGBA
-// buffer size the encode held.
-void ap_export_coord_encode_done(ap_app *app, size_t bytes);
+// buffer size the encode held; `ok` is whether the file was written (so
+// the final tally counts real successes, not just submissions).
+void ap_export_coord_encode_done(ap_app *app, size_t bytes, bool ok);
 
 // Hand a completed background decode (a from_coord photo_open_job) to the
 // coordinator. On success it takes ownership of j->raw (moved into the

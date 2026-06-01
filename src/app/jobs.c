@@ -270,7 +270,7 @@ static void handle_export_complete(ap_app *app, export_job *j)
         // notify; here we only account the RGBA bytes back so the
         // budget gate releases and the pump can schedule the next photo.
         if (!j->ok) AP_ERROR("export: encode failed for %s", j->out_path);
-        ap_export_coord_encode_done(app, j->rgba_bytes);
+        ap_export_coord_encode_done(app, j->rgba_bytes, j->ok);
         free(j->rgba);
         free(j);
         return;
@@ -544,7 +544,7 @@ void discard_completed_item(ap_app *app, ap_work_item *it)
     } else if (it->run == export_job_run) {
         export_job *j = (export_job *)it;
         if (j->from_coord) {
-            ap_export_coord_encode_done(app, j->rgba_bytes);
+            ap_export_coord_encode_done(app, j->rgba_bytes, j->ok);
         } else {
             if (app->export_inflight > 0) app->export_inflight--;
             ap_status_progress_finish(j->status_id, 0);
