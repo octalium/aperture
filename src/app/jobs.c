@@ -286,11 +286,8 @@ static void handle_thumb_encode_complete(ap_app *app, thumb_encode_job *j)
     // list, so j->idx no longer names the photo this render belongs to;
     // the gen bump on swap marks the job stale. Skip the store/invalidate
     // (the render is re-derived on next decode) rather than stamp the
-    // thumbnail onto the wrong photo. Also skip while a library job is
-    // building: ap_library_store_thumbnail writes lib->db, which would
-    // contend with the worker's write transaction, and the imminent swap
-    // resets every thumbnail anyway.
-    bool stale = (j->gen != app->thumb_load_gen) || app->library_job_inflight;
+    // thumbnail onto the wrong photo.
+    bool stale = (j->gen != app->thumb_load_gen);
     if (!stale && j->ok && j->jpeg && j->jpeg_size > 0 && app->library
         && j->idx >= 0 && j->idx < ap_library_photo_count(app->library))
     {
@@ -441,7 +438,6 @@ static void handle_library_complete(ap_app *app, library_job *j)
 
     ap_library_cache_swap(app->library, j->result);
     j->result = NULL;  // ownership transferred to the library
-    app->library_cache_gen++;
     app->thumb_load_gen++;
 
     // The swap reset thumbs to NULL + cursor 0; clear the stale grid

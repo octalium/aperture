@@ -76,12 +76,12 @@ struct ap_app {
     // Single-flight guard for background library jobs (sort/rescan/
     // delete). Mutually exclusive with selection_edit_inflight so a
     // structural cache swap never races a sidecar batch's snapshotted
-    // indices. library_cache_gen bumps on every swap (defensive invariant
-    // for index-snapshotting completions). library_rescan_pending is set
-    // when an import finishes; the per-frame pump submits the rescan job
-    // once both guards are clear (so imported photos always appear).
+    // indices, and with the inline cache-mutating ops (culling / group).
+    // library_rescan_pending is set when an import finishes; the per-frame
+    // pump submits the rescan job once both guards are clear and we are in
+    // library mode (so imported photos appear without shifting an open
+    // photo's index).
     bool             library_job_inflight;
-    uint64_t         library_cache_gen;
     bool             library_rescan_pending;
 
     bool             show_panels;

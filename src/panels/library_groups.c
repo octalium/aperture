@@ -93,8 +93,10 @@ static void library_groups_draw(ap_app *app)
                 igAcceptDragDropPayload("AP_THUMB_DRAG", 0);
             if (payload) {
                 int w = ap_app_assign_selection_to_group(app, names[i], true);
-                snprintf(g_status, sizeof(g_status),
-                         "Added %d to %s", w, names[i]);
+                if (w >= 0) {
+                    snprintf(g_status, sizeof(g_status),
+                             "Added %d to %s", w, names[i]);
+                }
             }
             igEndDragDropTarget();
         }
@@ -107,16 +109,20 @@ static void library_groups_draw(ap_app *app)
                 if (igMenuItem_Bool(it, NULL, false, true)) {
                     int w = ap_app_assign_selection_to_group(
                         app, names[i], true);
-                    snprintf(g_status, sizeof(g_status),
-                             "Added %d to %s", w, names[i]);
+                    if (w >= 0) {
+                        snprintf(g_status, sizeof(g_status),
+                                 "Added %d to %s", w, names[i]);
+                    }
                 }
                 snprintf(it, sizeof(it), "Remove %d selected from group",
                          sel_count);
                 if (igMenuItem_Bool(it, NULL, false, true)) {
                     int w = ap_app_assign_selection_to_group(
                         app, names[i], false);
-                    snprintf(g_status, sizeof(g_status),
-                             "Removed %d from %s", w, names[i]);
+                    if (w >= 0) {
+                        snprintf(g_status, sizeof(g_status),
+                                 "Removed %d from %s", w, names[i]);
+                    }
                 }
                 igSeparator();
             }
@@ -127,17 +133,22 @@ static void library_groups_draw(ap_app *app)
                          names[i]);
             }
             if (igMenuItem_Bool("Delete", NULL, false, true)) {
-                ap_library_delete_group(lib, names[i]);
-                if (fkind == AP_GROUP_FILTER_GROUP &&
-                    strcmp(fname, names[i]) == 0) {
-                    ap_app_set_group_filter(app, AP_GROUP_FILTER_ALL, NULL);
+                if (ap_app_library_busy(app)) {
+                    snprintf(g_status, sizeof(g_status),
+                             "Library task running — try again.");
+                } else {
+                    ap_library_delete_group(lib, names[i]);
+                    if (fkind == AP_GROUP_FILTER_GROUP &&
+                        strcmp(fname, names[i]) == 0) {
+                        ap_app_set_group_filter(app, AP_GROUP_FILTER_ALL, NULL);
+                    }
+                    if (g_rename_from[0] &&
+                        strcmp(g_rename_from, names[i]) == 0) {
+                        g_rename_from[0] = '\0';
+                    }
+                    snprintf(g_status, sizeof(g_status), "Deleted %s",
+                             names[i]);
                 }
-                if (g_rename_from[0] &&
-                    strcmp(g_rename_from, names[i]) == 0) {
-                    g_rename_from[0] = '\0';
-                }
-                snprintf(g_status, sizeof(g_status), "Deleted %s",
-                         names[i]);
             }
             igEndPopup();
         }
@@ -157,15 +168,20 @@ static void library_groups_draw(ap_app *app)
         bool can_rename = g_rename_buf[0] != '\0';
         if (!can_rename) igBeginDisabled(true);
         if (igButton("Rename", (ImVec2_c){ 70.0f, 0.0f })) {
-            ap_library_rename_group(lib, g_rename_from, g_rename_buf);
-            if (fkind == AP_GROUP_FILTER_GROUP &&
-                strcmp(fname, g_rename_from) == 0) {
-                ap_app_set_group_filter(app, AP_GROUP_FILTER_GROUP,
-                                        g_rename_buf);
+            if (ap_app_library_busy(app)) {
+                snprintf(g_status, sizeof(g_status),
+                         "Library task running — try again.");
+            } else {
+                ap_library_rename_group(lib, g_rename_from, g_rename_buf);
+                if (fkind == AP_GROUP_FILTER_GROUP &&
+                    strcmp(fname, g_rename_from) == 0) {
+                    ap_app_set_group_filter(app, AP_GROUP_FILTER_GROUP,
+                                            g_rename_buf);
+                }
+                snprintf(g_status, sizeof(g_status), "Renamed to %s",
+                         g_rename_buf);
+                g_rename_from[0] = '\0';
             }
-            snprintf(g_status, sizeof(g_status), "Renamed to %s",
-                     g_rename_buf);
-            g_rename_from[0] = '\0';
         }
         if (!can_rename) igEndDisabled();
         igSameLine(0.0f, -1.0f);
@@ -183,9 +199,14 @@ static void library_groups_draw(ap_app *app)
                              NULL, NULL);
     igSameLine(0.0f, -1.0f);
     if ((igButton("New Group", zero) || enter) && g_new_group[0]) {
-        ap_library_group_create(lib, g_new_group);
-        snprintf(g_status, sizeof(g_status), "Created %s", g_new_group);
-        g_new_group[0] = '\0';
+        if (ap_app_library_busy(app)) {
+            snprintf(g_status, sizeof(g_status),
+                     "Library task running — try again.");
+        } else {
+            ap_library_group_create(lib, g_new_group);
+            snprintf(g_status, sizeof(g_status), "Created %s", g_new_group);
+            g_new_group[0] = '\0';
+        }
     }
 
     igTextDisabled("click to filter; drag selected thumbnails onto a group");

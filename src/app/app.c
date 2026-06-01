@@ -1088,6 +1088,11 @@ ap_library *ap_app_library(ap_app *app)
     return app ? app->library : NULL;
 }
 
+bool ap_app_library_busy(const ap_app *app)
+{
+    return app && app->library_job_inflight;
+}
+
 void ap_app_open_import_modal(ap_app *app)
 {
     if (!app || !app->library) return;
