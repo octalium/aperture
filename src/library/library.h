@@ -228,6 +228,50 @@ int ap_library_reload_sorted(ap_library *lib, ap_library_sort sort);
 // the grid. Returns 0 on success, -1 on error.
 int ap_library_rescan(ap_library *lib, ap_library_sort sort);
 
+// A detached, fully-built replacement for a library's rebuildable
+// state (photo list / group index / culling cache / group registry).
+// Built off the main thread by ap_library_cache_build on its own
+// sqlite connection, then handed to ap_library_cache_swap on the main
+// thread between frames. Opaque to callers.
+typedef struct ap_library_cache ap_library_cache;
+
+// Which db mutation a cache build performs before re-reading the photo
+// list. The mutation runs on the build's own connection; the live
+// library db handle is never touched.
+typedef enum {
+    AP_LIBRARY_OP_RELOAD = 0,  // no mutation — just re-read (sort change)
+    AP_LIBRARY_OP_RESCAN,      // walk the tree for new/removed files first
+    AP_LIBRARY_OP_DELETE,      // delete del_rel[] from disk + db first
+} ap_library_op;
+
+// Build a detached replacement cache for the library rooted at `root`,
+// off the main thread. Opens its OWN sqlite connection — the caller's
+// live lib->db is never touched. `op` runs its db mutation first
+// (RESCAN walks the tree; DELETE removes the del_count relative paths in
+// `del_rel` from disk + db), then the photo list is read in `sort` order
+// and the group + culling caches are built from the sidecars. `progress`
+// is invoked during the build (returning false requests cancel). For
+// RELOAD/RESCAN a cancel frees the partial cache and returns NULL (no
+// swap — the live cache is untouched). A DELETE always returns the
+// post-delete cache (cancel only stops scheduling further deletes) so
+// the swap reflects the files actually removed. Returns NULL on cancel
+// (non-DELETE) or error. The result is owned by the caller until
+// ap_library_cache_swap or ap_library_cache_free.
+ap_library_cache *ap_library_cache_build(
+    const char *root, ap_library_op op, ap_library_sort sort,
+    const char (*del_rel)[4096], int del_count,
+    bool (*progress)(int done, int total, void *ud), void *ud);
+
+// Swap a freshly-built cache into `lib`, replacing the live one. Frees
+// the old cache, destroys the old GPU thumbnails, and reallocs the
+// thumbnail arrays to the new photo_count (decode cursor reset). Takes
+// ownership of `fresh`. Main thread only, and the GPU must be idle —
+// old thumbnail textures are destroyed here.
+void ap_library_cache_swap(ap_library *lib, ap_library_cache *fresh);
+
+// Free a detached cache that was never swapped in (cancel / error path).
+void ap_library_cache_free(ap_library_cache *cache);
+
 typedef struct ap_thumbnail ap_thumbnail;
 
 // Returns the cached thumbnail for the n-th photo, or NULL if not

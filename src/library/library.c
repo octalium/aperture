@@ -38,8 +38,6 @@
 #error "APERTURE_VERSION must be defined at compile time (set via meson)"
 #endif
 
-typedef struct ap_library_cache ap_library_cache;
-
 // The rebuildable slice of a library: everything derived from the db +
 // sidecars that a sort / rescan / delete replaces wholesale. Split out
 // so a replacement can be built off the main thread (its own sqlite
@@ -1130,15 +1128,20 @@ typedef struct {
     void  *ud;
     int    done;
     int    total;
+    bool   cancellable;  // false => report progress but never abort the build
 } cache_build_ctx;
 
 // Tick one unit of progress; returns false when the caller asked to
-// cancel. A NULL ctx (or NULL callback) always continues.
+// cancel and this build honors cancellation. A NULL ctx (or NULL
+// callback) always continues. A non-cancellable build still reports
+// progress but always continues — used by DELETE, whose post-mutation
+// cache must be built in full so the swap reflects the removed files.
 static bool cache_progress_tick(cache_build_ctx *bp)
 {
     if (!bp || !bp->cb) return true;
     bp->done++;
-    return bp->cb(bp->done, bp->total, bp->ud);
+    bool keep = bp->cb(bp->done, bp->total, bp->ud);
+    return bp->cancellable ? keep : true;
 }
 
 static int cache_load_groups(sqlite3 *db, ap_library_cache *cache,
@@ -1280,6 +1283,164 @@ int ap_library_reload_sorted(ap_library *lib, ap_library_sort sort)
     if (cache_load_culling(lib->db, lib->cache, lib->root, NULL) < 0) return -1;
 
     return 0;
+}
+
+// Open an independent connection to <root>/library.db with the same
+// WAL / busy-timeout / foreign-keys pragmas the live handle uses. The
+// schema already exists (the library is open), so no DDL runs here.
+// Caller closes. Returns NULL on failure.
+static sqlite3 *open_library_db(const char *root)
+{
+    char db_path[4096];
+    if (snprintf(db_path, sizeof(db_path), "%s/library.db", root)
+            >= (int)sizeof(db_path)) {
+        return NULL;
+    }
+    sqlite3 *db = NULL;
+    if (sqlite3_open(db_path, &db) != SQLITE_OK) {
+        AP_ERROR("library: cache build open(%s): %s",
+                 db_path, db ? sqlite3_errmsg(db) : "(no db)");
+        if (db) sqlite3_close(db);
+        return NULL;
+    }
+    sqlite3_busy_timeout(db, 5000);
+    sqlite3_exec(db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA foreign_keys=ON;",  NULL, NULL, NULL);
+    return db;
+}
+
+// Delete the del_count relative paths in `del_rel` from disk + db on
+// `db`, in one transaction for the db rows. Honors cancel between
+// photos (the committed rows stay durable + consistent). Mirrors
+// ap_library_photo_remove's per-photo disk + db work.
+static void db_delete_paths(sqlite3 *db, const char *root,
+                            const char (*del_rel)[4096], int del_count,
+                            bool (*progress)(int, int, void *), void *ud)
+{
+    sqlite3_stmt *del_p = NULL, *del_t = NULL;
+    sqlite3_prepare_v2(db, "DELETE FROM photos WHERE path = ?;",
+                       -1, &del_p, NULL);
+    sqlite3_prepare_v2(db, "DELETE FROM thumbnails WHERE path = ?;",
+                       -1, &del_t, NULL);
+    sqlite3_exec(db, "BEGIN;", NULL, NULL, NULL);
+    for (int i = 0; i < del_count; i++) {
+        char abs[4096];
+        if (snprintf(abs, sizeof(abs), "%s/%s", root, del_rel[i])
+                < (int)sizeof(abs)) {
+            if (unlink(abs) != 0 && errno != ENOENT) {
+                AP_WARN("library: unlink %s: %s", abs, strerror(errno));
+            }
+            ap_sidecar_remove(abs);
+        }
+        if (del_p) {
+            sqlite3_reset(del_p);
+            sqlite3_bind_text(del_p, 1, del_rel[i], -1, SQLITE_STATIC);
+            sqlite3_step(del_p);
+        }
+        if (del_t) {
+            sqlite3_reset(del_t);
+            sqlite3_bind_text(del_t, 1, del_rel[i], -1, SQLITE_STATIC);
+            sqlite3_step(del_t);
+        }
+        // Poll cancel (without disturbing the bar's total): stop
+        // scheduling further deletes, but still COMMIT what is done.
+        if (progress && !progress(0, 0, ud)) break;
+    }
+    sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL);
+    sqlite3_finalize(del_p);
+    sqlite3_finalize(del_t);
+}
+
+ap_library_cache *ap_library_cache_build(
+    const char *root, ap_library_op op, ap_library_sort sort,
+    const char (*del_rel)[4096], int del_count,
+    bool (*progress)(int, int, void *), void *ud)
+{
+    if (!root) return NULL;
+
+    sqlite3 *db = open_library_db(root);
+    if (!db) return NULL;
+
+    // Phase 1: the op's db mutation, on our own connection.
+    if (op == AP_LIBRARY_OP_DELETE && del_rel && del_count > 0) {
+        db_delete_paths(db, root, del_rel, del_count, progress, ud);
+    } else if (op == AP_LIBRARY_OP_RESCAN) {
+        db_rescan(db, root);
+    }
+
+    // Phase 2: build the replacement cache from the (now-mutated) db.
+    ap_library_cache *cache = calloc(1, sizeof(*cache));
+    if (!cache) {
+        sqlite3_close(db);
+        return NULL;
+    }
+    if (cache_load_photos(db, cache, sort) < 0) {
+        ap_library_cache_free(cache);
+        sqlite3_close(db);
+        return NULL;
+    }
+
+    // The sidecar passes are cancellable for RELOAD/RESCAN (no db
+    // mutation to reflect), but not for DELETE — its post-delete cache
+    // must be complete so the swap matches the files actually removed.
+    cache_build_ctx ctx = {
+        .cb          = progress,
+        .ud          = ud,
+        .done        = 0,
+        .total       = 2 * cache->photo_count,
+        .cancellable = (op != AP_LIBRARY_OP_DELETE),
+    };
+
+    int gr = cache_load_groups(db, cache, root, &ctx);
+    int cr = (gr == 0) ? cache_load_culling(db, cache, root, &ctx) : 0;
+    sqlite3_close(db);
+
+    if (gr < 0 || cr < 0 || gr == 1 || cr == 1) {
+        // <0 is an error, ==1 is a cancel during a cancellable build.
+        ap_library_cache_free(cache);
+        return NULL;
+    }
+    return cache;
+}
+
+void ap_library_cache_swap(ap_library *lib, ap_library_cache *fresh)
+{
+    if (!lib || !fresh) return;
+
+    int old_n = lib->cache ? lib->cache->photo_count : 0;
+    if (lib->thumbs) {
+        for (int i = 0; i < old_n; i++) {
+            ap_thumbnail_destroy(lib->thumbs[i]);
+        }
+        free(lib->thumbs);
+        lib->thumbs = NULL;
+    }
+    free(lib->thumb_failed);
+    lib->thumb_failed = NULL;
+    lib->thumb_cursor = 0;
+
+    if (lib->cache) {
+        cache_clear(lib->cache);
+        free(lib->cache);
+    }
+    lib->cache = fresh;
+
+    if (lib->cache->photo_count > 0) {
+        lib->thumbs = calloc((size_t)lib->cache->photo_count,
+                             sizeof(*lib->thumbs));
+        lib->thumb_failed = calloc((size_t)lib->cache->photo_count,
+                                   sizeof(*lib->thumb_failed));
+        if (!lib->thumbs || !lib->thumb_failed) {
+            AP_ERROR("library: thumbnail cache realloc failed after swap");
+        }
+    }
+}
+
+void ap_library_cache_free(ap_library_cache *cache)
+{
+    if (!cache) return;
+    cache_clear(cache);
+    free(cache);
 }
 
 // Index of a group name in the cache's registry, or -1.
