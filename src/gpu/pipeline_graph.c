@@ -1441,6 +1441,192 @@ int ap_pipeline_graph_render_once(ap_pipeline_graph *graph,
     return 0;
 }
 
+// Async off-screen render + readback. Records the compute chain + a copy
+// of display_image into a host-visible staging buffer in ONE command
+// buffer, submits it with a fence, and returns immediately — no
+// vkQueueWaitIdle / vkDeviceWaitIdle. The caller polls the fence on
+// later frames (ap_gpu_readback_poll) and maps the result when signaled.
+// This keeps the main thread unblocked during the (expensive, full-res)
+// export render, and keeps exactly one export GPU submission in flight.
+struct ap_gpu_readback {
+    struct ap_gpu *gpu;
+    VkCommandBuffer cmd;
+    VkBuffer        staging;
+    VkDeviceMemory  staging_mem;
+    VkFence         fence;
+    size_t          bytes;
+};
+
+static void readback_free(ap_gpu_readback *rb)
+{
+    struct ap_gpu *g = rb->gpu;
+    if (rb->fence)       vkDestroyFence(g->device, rb->fence, NULL);
+    if (rb->cmd)         vkFreeCommandBuffers(g->device, g->command_pool,
+                                              1, &rb->cmd);
+    if (rb->staging_mem) vkFreeMemory(g->device, rb->staging_mem, NULL);
+    if (rb->staging)     vkDestroyBuffer(g->device, rb->staging, NULL);
+    free(rb);
+}
+
+ap_gpu_readback *ap_pipeline_graph_readback_begin(ap_pipeline_graph *graph,
+                                                  const ap_edit_stack *stack)
+{
+    if (!graph) return NULL;
+    struct ap_gpu *g = graph->gpu;
+
+    ap_gpu_readback *rb = calloc(1, sizeof(*rb));
+    if (!rb) return NULL;
+    rb->gpu   = g;
+    rb->bytes = (size_t)graph->width * (size_t)graph->height * 4u;
+
+    VkBufferCreateInfo bci = {
+        .sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size        = rb->bytes,
+        .usage       = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    if (vkCreateBuffer(g->device, &bci, NULL, &rb->staging) != VK_SUCCESS) {
+        AP_ERROR("readback_begin: vkCreateBuffer failed");
+        goto fail;
+    }
+    VkMemoryRequirements mreq;
+    vkGetBufferMemoryRequirements(g->device, rb->staging, &mreq);
+    int mt = gpu_find_memory_type(g->physical, mreq.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (mt < 0) {
+        AP_ERROR("readback_begin: no host-visible memory type");
+        goto fail;
+    }
+    VkMemoryAllocateInfo mai = {
+        .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize  = mreq.size,
+        .memoryTypeIndex = (uint32_t)mt,
+    };
+    if (vkAllocateMemory(g->device, &mai, NULL, &rb->staging_mem) != VK_SUCCESS) {
+        AP_ERROR("readback_begin: vkAllocateMemory failed");
+        goto fail;
+    }
+    vkBindBufferMemory(g->device, rb->staging, rb->staging_mem, 0);
+
+    VkCommandBufferAllocateInfo cba = {
+        .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool        = g->command_pool,
+        .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    if (vkAllocateCommandBuffers(g->device, &cba, &rb->cmd) != VK_SUCCESS) {
+        AP_ERROR("readback_begin: command buffer alloc failed");
+        goto fail;
+    }
+
+    VkCommandBufferBeginInfo bi = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    vkBeginCommandBuffer(rb->cmd, &bi);
+
+    // Record the compute chain (writes display_image, leaves it GENERAL),
+    // then copy it to the staging buffer — one submission.
+    if (ap_pipeline_graph_record(graph, rb->cmd, stack) < 0) {
+        vkEndCommandBuffer(rb->cmd);
+        goto fail;
+    }
+
+    VkImageMemoryBarrier2 to_src = {
+        .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+                       | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        .dstStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+        .oldLayout     = VK_IMAGE_LAYOUT_GENERAL,
+        .newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = graph->display_image,
+        .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0, .levelCount = 1,
+            .baseArrayLayer = 0, .layerCount = 1 },
+    };
+    VkDependencyInfo dep = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &to_src,
+    };
+    vkCmdPipelineBarrier2(rb->cmd, &dep);
+
+    VkBufferImageCopy region = {
+        .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1 },
+        .imageExtent = { (uint32_t)graph->width, (uint32_t)graph->height, 1 },
+    };
+    vkCmdCopyImageToBuffer(rb->cmd, graph->display_image,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           rb->staging, 1, &region);
+    vkEndCommandBuffer(rb->cmd);
+
+    VkFenceCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+    if (vkCreateFence(g->device, &fci, NULL, &rb->fence) != VK_SUCCESS) {
+        AP_ERROR("readback_begin: fence create failed");
+        goto fail;
+    }
+    VkCommandBufferSubmitInfo csi = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+        .commandBuffer = rb->cmd,
+    };
+    VkSubmitInfo2 si = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+        .commandBufferInfoCount = 1, .pCommandBufferInfos = &csi,
+    };
+    if (vkQueueSubmit2(g->graphics_queue, 1, &si, rb->fence) != VK_SUCCESS) {
+        AP_ERROR("readback_begin: submit failed");
+        goto fail;
+    }
+    return rb;  // in flight; caller polls
+
+fail:
+    readback_free(rb);
+    return NULL;
+}
+
+int ap_gpu_readback_poll(ap_gpu_readback *rb, void *out_pixels, size_t out_size)
+{
+    if (!rb || !out_pixels) return -1;
+    if (out_size < rb->bytes) return -1;
+    struct ap_gpu *g = rb->gpu;
+
+    VkResult fs = vkGetFenceStatus(g->device, rb->fence);
+    if (fs == VK_NOT_READY) return 0;          // still rendering — retry later
+    if (fs != VK_SUCCESS) {                     // device lost etc.
+        AP_ERROR("readback_poll: fence status %s", gpu_vk_result_str(fs));
+        readback_free(rb);
+        return -1;
+    }
+
+    int rc = -1;
+    void *map = NULL;
+    if (vkMapMemory(g->device, rb->staging_mem, 0, rb->bytes, 0, &map)
+            == VK_SUCCESS) {
+        memcpy(out_pixels, map, rb->bytes);
+        vkUnmapMemory(g->device, rb->staging_mem);
+        rc = 1;
+    } else {
+        AP_ERROR("readback_poll: vkMapMemory failed");
+    }
+    readback_free(rb);
+    return rc;
+}
+
+void ap_gpu_readback_destroy(ap_gpu_readback *rb)
+{
+    if (!rb) return;
+    // The GPU may still be reading display_image into the staging buffer;
+    // wait before freeing the buffer/cmd it references.
+    if (rb->fence) {
+        vkWaitForFences(rb->gpu->device, 1, &rb->fence, VK_TRUE, UINT64_MAX);
+    }
+    readback_free(rb);
+}
+
 int ap_pipeline_graph_readback(ap_pipeline_graph *graph,
                                void *out_pixels, size_t out_size)
 {

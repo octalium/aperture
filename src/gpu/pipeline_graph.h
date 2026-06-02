@@ -64,6 +64,30 @@ int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
 int ap_pipeline_graph_set_stage_skip(ap_pipeline_graph *graph,
                                      int entry_idx, bool skip);
 
+// Async off-screen render + readback, for export: keeps the main thread
+// unblocked during the (expensive, full-res) render and keeps exactly one
+// export GPU submission in flight at a time.
+typedef struct ap_gpu_readback ap_gpu_readback;
+
+// Record the compute chain + a copy of display_image into a staging
+// buffer in one command buffer, submit it with a fence, and return
+// immediately (no GPU wait). Poll with ap_gpu_readback_poll. The graph
+// (its display_image) must stay alive until the poll returns done.
+// Returns NULL on error.
+ap_gpu_readback *ap_pipeline_graph_readback_begin(ap_pipeline_graph *graph,
+                                                  const ap_edit_stack *stack);
+
+// Poll an in-flight readback (non-blocking). Returns 0 while still
+// rendering (retry next frame), 1 when complete — copies the sRGB RGBA8
+// pixels into `out_pixels` (>= width*height*4 bytes) and frees the
+// handle (do not poll again) — or -1 on error (handle freed). Main thread.
+int ap_gpu_readback_poll(ap_gpu_readback *rb, void *out_pixels, size_t out_size);
+
+// Abandon an in-flight readback without retrieving pixels (cancel path).
+// Waits for the fence first (the GPU may still reference the staging
+// buffer), then frees. Safe on NULL.
+void ap_gpu_readback_destroy(ap_gpu_readback *rb);
+
 // Dispatch the compute chain once into display_image on a transient,
 // one-shot command buffer, decoupled from the swapchain frame loop.
 // Needed by off-screen consumers (export): a photo opened solely for
