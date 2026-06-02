@@ -30,6 +30,7 @@ struct ap_export_coord {
     char              gpu_out[4096];
 
     int                processed;       // items retired (progress)
+    int                written;         // encodes that actually wrote a file
     int                inflight_encode; // encode work items not yet completed
     size_t             bytes_inflight;  // summed RGBA buffers allocated
     int                max_inflight;    // concurrent-encode cap (worker count)
@@ -145,28 +146,46 @@ static uint8_t *frame_rgba(ap_photo *photo, uint8_t *rgba, int w, int h,
 static size_t process_open_photo(ap_app *app, ap_export_coord *c,
                                  const ap_export_item *it)
 {
+    // Read back the live open photo (its in-memory edits) — but only if
+    // app->photo is still the photo this item was resolved for. A photo
+    // navigation completing between resolve and now could have swapped
+    // app->photo; open the intended source from disk instead of exporting
+    // the wrong photo under this filename.
     ap_photo *photo = app->photo;
-    if (!photo) {
-        AP_WARN("export: open photo went away — skipping");
+    bool own_photo = false;
+    if (!photo || strcmp(ap_photo_path(photo), it->src_abs) != 0) {
+        photo = ap_photo_open(app->gpu, it->src_abs);
+        own_photo = true;
+        if (!photo) {
+            AP_WARN("export: cannot open %s — skipping", it->src_abs);
+            return 0;
+        }
+    }
+
+    int w = ap_photo_width(photo), h = ap_photo_height(photo);
+    if (w <= 0 || h <= 0) {
+        if (own_photo) ap_photo_close(photo);
         return 0;
     }
-    int w = ap_photo_width(photo), h = ap_photo_height(photo);
-    if (w <= 0 || h <= 0) return 0;
 
     size_t bytes = (size_t)w * (size_t)h * 4u;
     uint8_t *rgba = malloc(bytes);
     if (!rgba) {
         AP_ERROR("export: out of memory (%zu bytes)", bytes);
+        if (own_photo) ap_photo_close(photo);
         return 0;
     }
-    if (ap_photo_render(photo) != 0 ||
-        ap_pipeline_graph_readback(ap_photo_graph(photo), rgba, bytes) != 0) {
-        AP_WARN("export: render/readback failed for the open photo");
+    size_t result = 0;
+    if (ap_photo_render(photo) == 0 &&
+        ap_pipeline_graph_readback(ap_photo_graph(photo), rgba, bytes) == 0) {
+        rgba = frame_rgba(photo, rgba, w, h, &w, &h);
+        result = submit_encode(app, c, rgba, w, h, it->out_path);
+    } else {
+        AP_WARN("export: render/readback failed for %s", it->src_abs);
         free(rgba);
-        return 0;
     }
-    rgba = frame_rgba(photo, rgba, w, h, &w, &h);
-    return submit_encode(app, c, rgba, w, h, it->out_path);
+    if (own_photo) ap_photo_close(photo);
+    return result;
 }
 
 // Open a fresh photo (synchronous decode + upload), allocate the readback
@@ -253,9 +272,15 @@ void ap_export_coord_pump(ap_app *app)
         ap_job_finish(c->job, canceling ? AP_JOB_CANCELED : AP_JOB_DONE);
         if (canceling) {
             ap_status_notify(AP_STATUS_INFO, "Export canceled.");
-        } else {
+        } else if (c->written == c->count) {
             ap_status_notify(AP_STATUS_INFO, "Export complete: %d photo%s.",
-                             c->count, c->count == 1 ? "" : "s");
+                             c->written, c->written == 1 ? "" : "s");
+        } else {
+            // Some photos failed to decode / render / encode; reporting
+            // the full count would overstate success. The log has details.
+            ap_status_notify(AP_STATUS_ERROR,
+                             "Exported %d of %d photo%s — see the log.",
+                             c->written, c->count, c->count == 1 ? "" : "s");
         }
         coord_free(app, c);
         return;
@@ -287,13 +312,14 @@ void ap_export_coord_pump(ap_app *app)
     }
 }
 
-void ap_export_coord_encode_done(ap_app *app, size_t bytes)
+void ap_export_coord_encode_done(ap_app *app, size_t bytes, bool ok)
 {
     if (!app || !app->export_coord) return;
     ap_export_coord *c = app->export_coord;
     if (c->bytes_inflight >= bytes) c->bytes_inflight -= bytes;
     else                            c->bytes_inflight = 0;
     if (c->inflight_encode > 0) c->inflight_encode--;
+    if (ok) c->written++;
 }
 
 void ap_export_coord_abort(ap_app *app)
@@ -315,7 +341,7 @@ void ap_export_coord_abort(ap_app *app)
             if (!it) break;
             if (it->run == export_job_run && ((export_job *)it)->from_coord) {
                 export_job *j = (export_job *)it;
-                ap_export_coord_encode_done(app, j->rgba_bytes);
+                ap_export_coord_encode_done(app, j->rgba_bytes, j->ok);
                 free(j->rgba);
                 free(j);
             } else {

@@ -1506,7 +1506,11 @@ ap_gpu_readback *ap_pipeline_graph_readback_begin(ap_pipeline_graph *graph,
         AP_ERROR("readback_begin: vkAllocateMemory failed");
         goto fail;
     }
-    vkBindBufferMemory(g->device, rb->staging, rb->staging_mem, 0);
+    if (vkBindBufferMemory(g->device, rb->staging, rb->staging_mem, 0)
+            != VK_SUCCESS) {
+        AP_ERROR("readback_begin: vkBindBufferMemory failed");
+        goto fail;
+    }
 
     VkCommandBufferAllocateInfo cba = {
         .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -1523,7 +1527,10 @@ ap_gpu_readback *ap_pipeline_graph_readback_begin(ap_pipeline_graph *graph,
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
-    vkBeginCommandBuffer(rb->cmd, &bi);
+    if (vkBeginCommandBuffer(rb->cmd, &bi) != VK_SUCCESS) {
+        AP_ERROR("readback_begin: vkBeginCommandBuffer failed");
+        goto fail;
+    }
 
     // Record the compute chain (writes display_image, leaves it GENERAL),
     // then copy it to the staging buffer — one submission.
