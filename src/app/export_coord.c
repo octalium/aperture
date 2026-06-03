@@ -357,6 +357,13 @@ void ap_export_coord_pump(ap_app *app)
         } else if (submit_decode(app, c, c->cursor)) {
             c->decode_inflight = true;
             c->cursor++;
+        } else {
+            // Decode job alloc failed (OOM). Retire the item rather than
+            // spin on it forever — like every other per-item failure arm,
+            // so cursor reaches count and the batch can still terminate.
+            c->cursor++;
+            c->processed++;
+            ap_job_progress(c->job, c->processed, c->count);
         }
     }
 }
