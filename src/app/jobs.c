@@ -232,6 +232,14 @@ void install_loaded_photo(ap_app *app, photo_open_job *j)
 
 static void handle_photo_open_complete(ap_app *app, photo_open_job *j)
 {
+    // Background export decode: hand the raw to the coordinator (it takes
+    // or frees it) rather than installing it as the interactive photo.
+    if (j->from_coord) {
+        ap_export_coord_decode_complete(app, j);
+        free(j);
+        return;
+    }
+
     bool stale = (j->gen != app->photo_load_gen);
     if (stale) {
         ap_raw_image_free(&j->raw);
@@ -262,7 +270,7 @@ static void handle_export_complete(ap_app *app, export_job *j)
         // notify; here we only account the RGBA bytes back so the
         // budget gate releases and the pump can schedule the next photo.
         if (!j->ok) AP_ERROR("export: encode failed for %s", j->out_path);
-        ap_export_coord_encode_done(app, j->rgba_bytes);
+        ap_export_coord_encode_done(app, j->rgba_bytes, j->ok);
         free(j->rgba);
         free(j);
         return;
@@ -371,9 +379,23 @@ static void handle_selection_edit_complete(ap_app *app, selection_edit_job *j)
             int n = ap_library_photo_count(app->library);
             for (int k = 0; k < processed; k++) {
                 int idx = j->indices[k];
-                if (idx >= 0 && idx < n) {
-                    ap_library_invalidate_thumbnail(app->library, idx);
+                if (idx < 0 || idx >= n) continue;
+                // Unbind the grid descriptor BEFORE destroying the
+                // thumbnail's GPU views (ap_library_invalidate_thumbnail ->
+                // ap_thumbnail_destroy). The grid samples via an
+                // UPDATE_AFTER_BIND descriptor array; freeing a still-bound
+                // view makes the next grid render sample freed memory ->
+                // VK_ERROR_DEVICE_LOST one frame later. Mirrors the guard in
+                // handle_thumb_encode_complete. (For a large selection this
+                // would otherwise free many bound views at once — the crash.)
+                if (app->grid) {
+                    int cell = cell_for_photo(app, idx);
+                    if (cell >= 0) {
+                        ap_grid_set_thumbnail(app->grid, cell, VK_NULL_HANDLE,
+                                              VK_NULL_HANDLE, 0, 0);
+                    }
                 }
+                ap_library_invalidate_thumbnail(app->library, idx);
             }
         }
     }
@@ -528,12 +550,14 @@ void discard_completed_item(ap_app *app, ap_work_item *it)
     } else if (it->run == photo_open_job_run) {
         photo_open_job *j = (photo_open_job *)it;
         ap_raw_image_free(&j->raw);
-        ap_status_progress_finish(j->status_id, 0);
+        // Coordinator decodes own no status bar (the coordinator's own
+        // drain reclaims them); a generic drain here still frees the raw.
+        if (!j->from_coord) ap_status_progress_finish(j->status_id, 0);
         free(j);
     } else if (it->run == export_job_run) {
         export_job *j = (export_job *)it;
         if (j->from_coord) {
-            ap_export_coord_encode_done(app, j->rgba_bytes);
+            ap_export_coord_encode_done(app, j->rgba_bytes, j->ok);
         } else {
             if (app->export_inflight > 0) app->export_inflight--;
             ap_status_progress_finish(j->status_id, 0);

@@ -33,6 +33,12 @@ typedef struct photo_open_job {
     uint64_t     gen;
     ap_status_id status_id;
     int          ok;
+    // When set, this is a background raw decode owned by the export
+    // coordinator (not an interactive open): completion hands the decoded
+    // raw to the coordinator (ap_export_coord_decode_complete) instead of
+    // installing it as app->photo. coord_item is the export item index.
+    bool         from_coord;
+    int          coord_item;
 } photo_open_job;
 
 typedef struct {
