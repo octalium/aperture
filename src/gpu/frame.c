@@ -201,6 +201,14 @@ int gpu_frame_render(struct ap_gpu *g, const ap_edit_stack *stack)
         .signalSemaphoreInfoCount = 1,
         .pSignalSemaphoreInfos = &signal_si,
     };
+    // Reset the fence to unsignaled only now that we are committed to
+    // submitting (acquire + record both succeeded) — the early returns
+    // above intentionally leave it signaled so a skipped frame doesn't
+    // deadlock the next wait. Without this reset the per-frame wait at the
+    // top is a permanent no-op (the fence is created SIGNALED and never
+    // reset) and the submit hands the GPU an already-signaled fence (UB),
+    // so two frames never truly pipeline.
+    VK_CHECK(vkResetFences(g->device, 1, &f->in_flight));
     VK_CHECK(vkQueueSubmit2(g->graphics_queue, 1, &submit, f->in_flight));
 
     VkPresentInfoKHR present = {
