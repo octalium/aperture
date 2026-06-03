@@ -232,6 +232,14 @@ void install_loaded_photo(ap_app *app, photo_open_job *j)
 
 static void handle_photo_open_complete(ap_app *app, photo_open_job *j)
 {
+    // Background export decode: hand the raw to the coordinator (it takes
+    // or frees it) rather than installing it as the interactive photo.
+    if (j->from_coord) {
+        ap_export_coord_decode_complete(app, j);
+        free(j);
+        return;
+    }
+
     bool stale = (j->gen != app->photo_load_gen);
     if (stale) {
         ap_raw_image_free(&j->raw);
@@ -528,7 +536,9 @@ void discard_completed_item(ap_app *app, ap_work_item *it)
     } else if (it->run == photo_open_job_run) {
         photo_open_job *j = (photo_open_job *)it;
         ap_raw_image_free(&j->raw);
-        ap_status_progress_finish(j->status_id, 0);
+        // Coordinator decodes own no status bar (the coordinator's own
+        // drain reclaims them); a generic drain here still frees the raw.
+        if (!j->from_coord) ap_status_progress_finish(j->status_id, 0);
         free(j);
     } else if (it->run == export_job_run) {
         export_job *j = (export_job *)it;
