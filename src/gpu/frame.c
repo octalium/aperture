@@ -54,6 +54,73 @@ void gpu_frames_destroy(struct ap_gpu *g)
     }
 }
 
+int gpu_render_create(struct ap_gpu *g)
+{
+    VkCommandPoolCreateInfo pool_ci = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        .queueFamilyIndex = g->graphics_family,
+    };
+    VK_CHECK(vkCreateCommandPool(g->device, &pool_ci, NULL, &g->render_pool));
+
+    VkCommandBufferAllocateInfo cb_ai = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = g->render_pool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    VK_CHECK(vkAllocateCommandBuffers(g->device, &cb_ai, &g->render_cmd));
+
+    VkFenceCreateInfo fence_ci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+    VK_CHECK(vkCreateFence(g->device, &fence_ci, NULL, &g->render_fence));
+    return 0;
+}
+
+void gpu_render_destroy(struct ap_gpu *g)
+{
+    if (g->render_fence) {
+        vkDestroyFence(g->device, g->render_fence, NULL);
+        g->render_fence = VK_NULL_HANDLE;
+    }
+    if (g->render_pool) {
+        vkDestroyCommandPool(g->device, g->render_pool, NULL);
+        g->render_pool = VK_NULL_HANDLE;
+    }
+}
+
+int gpu_render_graph_sync(struct ap_gpu *g, const ap_edit_stack *stack)
+{
+    if (!g->current_graph) return 0;
+
+    VkCommandBuffer cmd = g->render_cmd;
+    VK_CHECK(vkResetCommandBuffer(cmd, 0));
+
+    VkCommandBufferBeginInfo bi = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    VK_CHECK(vkBeginCommandBuffer(cmd, &bi));
+    // When the edit stack is unchanged this records nothing (the display
+    // image from the last render is still valid); the empty submit + wait
+    // is cheap. The async step replaces this with a dirty-driven kick.
+    ap_pipeline_graph_record(g->current_graph, cmd, stack);
+    VK_CHECK(vkEndCommandBuffer(cmd));
+
+    VkCommandBufferSubmitInfo cmd_si = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+        .commandBuffer = cmd,
+    };
+    VkSubmitInfo2 submit = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+        .commandBufferInfoCount = 1,
+        .pCommandBufferInfos = &cmd_si,
+    };
+    VK_CHECK(vkResetFences(g->device, 1, &g->render_fence));
+    VK_CHECK(vkQueueSubmit2(g->graphics_queue, 1, &submit, g->render_fence));
+    VK_CHECK(vkWaitForFences(g->device, 1, &g->render_fence, VK_TRUE, UINT64_MAX));
+    return 0;
+}
+
 static void image_barrier(VkCommandBuffer cmd, VkImage image,
                           VkImageLayout old_layout, VkImageLayout new_layout,
                           VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
@@ -85,15 +152,14 @@ static void image_barrier(VkCommandBuffer cmd, VkImage image,
 }
 
 static int record_frame(struct ap_gpu *g, VkCommandBuffer cmd,
-                        uint32_t image_index, const ap_edit_stack *stack)
+                        uint32_t image_index)
 {
     VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     VK_CHECK(vkBeginCommandBuffer(cmd, &bi));
 
-    if (g->current_graph) {
-        ap_pipeline_graph_record(g->current_graph, cmd, stack);
-    }
-
+    // The photo graph's compute chain is no longer recorded here — it runs
+    // on its own render submission (gpu_render_graph_sync) before this
+    // compositor frame. This frame only samples the finished display image.
     VkImage target  = g->swapchain_images[image_index].image;
     VkImageView vw  = g->swapchain_images[image_index].view;
 
@@ -143,7 +209,7 @@ static int record_frame(struct ap_gpu *g, VkCommandBuffer cmd,
     return 0;
 }
 
-int gpu_frame_render(struct ap_gpu *g, const ap_edit_stack *stack)
+int gpu_frame_render(struct ap_gpu *g)
 {
     gpu_frame *f = &g->frames[g->current_frame];
 
@@ -169,7 +235,7 @@ int gpu_frame_render(struct ap_gpu *g, const ap_edit_stack *stack)
 
     VK_CHECK(vkResetCommandBuffer(f->cmd, 0));
 
-    if (record_frame(g, f->cmd, image_index, stack) < 0) {
+    if (record_frame(g, f->cmd, image_index) < 0) {
         // record failed before any submit. in_flight is still signaled
         // (it's reset just before the submit below), so a retry or
         // teardown never waits on a fence nothing will signal.

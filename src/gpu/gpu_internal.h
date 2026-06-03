@@ -58,6 +58,15 @@ struct ap_gpu {
     gpu_frame frames[APERTURE_FRAMES_IN_FLIGHT];
     uint32_t current_frame;
 
+    // Pipeline-render submission, decoupled from the swapchain compositor
+    // frame. The photo graph's compute chain is recorded + submitted here
+    // (its own command buffer), so the swapchain frame only samples the
+    // finished display image. Synchronous for now (a fence wait per
+    // render); a later step makes it async + coalesced.
+    VkCommandPool   render_pool;
+    VkCommandBuffer render_cmd;
+    VkFence         render_fence;
+
     // Session-wide compute-pipeline cache. Each unique stage shader is
     // compiled by the driver once; subsequent graph rebuilds (every edit)
     // reuse the cached pipeline instead of recompiling from scratch.
@@ -85,7 +94,15 @@ int  gpu_swapchain_recreate(struct ap_gpu *g);
 
 int  gpu_frames_create(struct ap_gpu *g);
 void gpu_frames_destroy(struct ap_gpu *g);
-int  gpu_frame_render(struct ap_gpu *g, const ap_edit_stack *stack);
+int  gpu_frame_render(struct ap_gpu *g);
+
+int  gpu_render_create(struct ap_gpu *g);
+void gpu_render_destroy(struct ap_gpu *g);
+// Record + submit the current graph's compute chain on the dedicated
+// render command buffer and (for now) wait for it before returning, so
+// the swapchain compositor frame samples a finished display image. No-op
+// when no graph is bound. Returns 0 on success.
+int  gpu_render_graph_sync(struct ap_gpu *g, const ap_edit_stack *stack);
 
 #define VK_CHECK(call)                                                  \
     do {                                                                \

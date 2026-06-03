@@ -73,6 +73,7 @@ ap_gpu *ap_gpu_create(int width, int height, const char *title)
 
     if (gpu_swapchain_create(g) < 0)                      goto fail;
     if (gpu_frames_create(g) < 0)                         goto fail;
+    if (gpu_render_create(g) < 0)                         goto fail;
 
     if (!ap_imgui_init(g->window, g->instance, g->physical, g->device,
                        g->graphics_family, g->graphics_queue,
@@ -97,6 +98,7 @@ void ap_gpu_destroy(ap_gpu *g)
 
     ap_imgui_shutdown();
 
+    gpu_render_destroy(g);
     gpu_frames_destroy(g);
     gpu_swapchain_destroy(g);
     if (g->pipeline_cache) {
@@ -123,7 +125,11 @@ bool ap_gpu_should_run(ap_gpu *g)
 
 int ap_gpu_render_frame(ap_gpu *g, const ap_edit_stack *stack)
 {
-    return gpu_frame_render(g, stack);
+    // Render the photo pipeline into its display image on a dedicated
+    // submission first, then composite the finished image in the swapchain
+    // frame. Keeps the heavy compute off the swapchain frame's recording.
+    gpu_render_graph_sync(g, stack);
+    return gpu_frame_render(g);
 }
 
 void ap_gpu_set_graph(ap_gpu *g, ap_pipeline_graph *graph)
