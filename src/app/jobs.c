@@ -379,9 +379,23 @@ static void handle_selection_edit_complete(ap_app *app, selection_edit_job *j)
             int n = ap_library_photo_count(app->library);
             for (int k = 0; k < processed; k++) {
                 int idx = j->indices[k];
-                if (idx >= 0 && idx < n) {
-                    ap_library_invalidate_thumbnail(app->library, idx);
+                if (idx < 0 || idx >= n) continue;
+                // Unbind the grid descriptor BEFORE destroying the
+                // thumbnail's GPU views (ap_library_invalidate_thumbnail ->
+                // ap_thumbnail_destroy). The grid samples via an
+                // UPDATE_AFTER_BIND descriptor array; freeing a still-bound
+                // view makes the next grid render sample freed memory ->
+                // VK_ERROR_DEVICE_LOST one frame later. Mirrors the guard in
+                // handle_thumb_encode_complete. (For a large selection this
+                // would otherwise free many bound views at once — the crash.)
+                if (app->grid) {
+                    int cell = cell_for_photo(app, idx);
+                    if (cell >= 0) {
+                        ap_grid_set_thumbnail(app->grid, cell, VK_NULL_HANDLE,
+                                              VK_NULL_HANDLE, 0, 0);
+                    }
                 }
+                ap_library_invalidate_thumbnail(app->library, idx);
             }
         }
     }
