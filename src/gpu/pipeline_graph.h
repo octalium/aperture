@@ -123,6 +123,19 @@ int ap_pipeline_graph_readback_thumb(ap_pipeline_graph *graph,
 int ap_pipeline_graph_thumb_width(const ap_pipeline_graph *graph);
 int ap_pipeline_graph_thumb_height(const ap_pipeline_graph *graph);
 
+// Presentation ring. The render target (display image) is copied into one
+// of AP_DISPLAY_SLOTS slots so the swapchain compositor can sample a
+// finished image while a new render proceeds, instead of sampling the live
+// render target. ap_pipeline_graph_present_copy records that copy (display
+// image -> slot) plus the barriers that leave the slot ready for fragment
+// sampling; the caller selects the slot and owns the CPU-side recycle gate
+// (do not copy into a slot an in-flight frame still samples). slot_count /
+// slot_view expose the slots for descriptor setup.
+void ap_pipeline_graph_present_copy(ap_pipeline_graph *graph,
+                                    VkCommandBuffer cmd, int slot);
+int         ap_pipeline_graph_slot_count(const ap_pipeline_graph *graph);
+VkImageView ap_pipeline_graph_slot_view(const ap_pipeline_graph *graph, int slot);
+
 // The display image (final output) - for sampling via ImGui or canvas.
 VkImageView   ap_pipeline_graph_output_view(const ap_pipeline_graph *graph);
 VkSampler     ap_pipeline_graph_output_sampler(const ap_pipeline_graph *graph);

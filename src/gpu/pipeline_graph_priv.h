@@ -14,6 +14,13 @@
 
 #define MAX_STAGES 32
 
+// Presentation ring depth. The display image is the single render target;
+// each completed render is copied into one of these slots, and the
+// swapchain compositor samples the most-recently-completed slot. Sized so
+// up to APERTURE_FRAMES_IN_FLIGHT (2) frames can still be sampling an older
+// slot while a new render targets a free one: 2 + 1 = 3.
+#define AP_DISPLAY_SLOTS 3
+
 typedef struct {
     const ap_module       *module;
     int                    entry_idx;
@@ -79,6 +86,18 @@ struct ap_pipeline_graph {
     VkImageView    display_view_srgb;
     VkImageView    display_view_uint;  // R8G8B8A8_UINT reinterpret for histogram
     VkSampler      display_sampler;
+
+    // Presentation ring: the render copies display_image into one of these
+    // slots so the swapchain compositor can sample a finished image while a
+    // new render proceeds. Each is R8G8B8A8_UNORM (sRGB view for sampling),
+    // written only by a transfer copy and read only by the canvas. front
+    // is the slot the compositor currently samples; next is the slot the
+    // upcoming present-copy will target (round-robin).
+    VkImage        slot_image[AP_DISPLAY_SLOTS];
+    VkDeviceMemory slot_memory[AP_DISPLAY_SLOTS];
+    VkImageView    slot_view_srgb[AP_DISPLAY_SLOTS];
+    int            front_slot;
+    int            next_slot;
 
     VkImage        thumb_image;
     VkDeviceMemory thumb_memory;
