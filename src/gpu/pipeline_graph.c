@@ -206,7 +206,6 @@ static int create_buffers(ap_pipeline_graph *graph, int width, int height)
                         VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_USAGE_SAMPLED_BIT,
                         &graph->slot_view_srgb[i]) < 0) return -1;
     }
-    graph->front_slot = 0;
     graph->next_slot  = 0;
 
     // Aspect-preserving downscale to THUMB_MAX_EDGE on the long side.
@@ -1414,9 +1413,12 @@ void ap_pipeline_graph_present_copy(ap_pipeline_graph *graph,
 
     // Make the render target's final write available to a transfer read,
     // and ready the destination slot as a copy target (its prior contents
-    // are discarded — the copy overwrites the whole image; the CPU-side
-    // recycle gate guarantees no in-flight compositor frame still samples
-    // this slot). Both images stay in GENERAL, so no layout churn.
+    // are discarded — the copy overwrites the whole image). Safe to reuse
+    // this slot because the round-robin spans AP_DISPLAY_SLOTS (= frames in
+    // flight + 1) on a single queue: the per-frame in_flight fence retires
+    // the compositor frame that last sampled this slot before it is reused,
+    // so no in-flight frame still reads it. Both images stay in GENERAL, so
+    // no layout churn.
     VkImageMemoryBarrier2 pre[2] = {
         {
             .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -1507,18 +1509,10 @@ int ap_pipeline_graph_next_slot(ap_pipeline_graph *g)
     if (!g) return 0;
     int s = g->next_slot;
     g->next_slot = (s + 1) % AP_DISPLAY_SLOTS;
-    g->front_slot = s;
     return s;
 }
 
-int ap_pipeline_graph_front_slot(const ap_pipeline_graph *g)
-{
-    return g ? g->front_slot : 0;
-}
-
-VkImageView   ap_pipeline_graph_output_view(const ap_pipeline_graph *g)    { return g->display_view_srgb; }
 VkSampler     ap_pipeline_graph_output_sampler(const ap_pipeline_graph *g) { return g->display_sampler; }
-VkImageLayout ap_pipeline_graph_output_layout(const ap_pipeline_graph *g)  { (void)g; return VK_IMAGE_LAYOUT_GENERAL; }
 int           ap_pipeline_graph_output_width(const ap_pipeline_graph *g)   { return g->width; }
 int           ap_pipeline_graph_output_height(const ap_pipeline_graph *g)  { return g->height; }
 

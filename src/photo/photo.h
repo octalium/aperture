@@ -52,9 +52,9 @@ bool ap_photo_respect_orientation(const ap_photo *photo);
 void ap_photo_set_respect_orientation(ap_photo *photo, bool yes);
 
 // Rebuild the pipeline graph from the current stack. The display
-// image's view + sampler change, so the caller must rebind the
-// canvas to the new outputs (ap_canvas_set_input). Returns 0 on
-// success; the photo's previous graph is destroyed first.
+// image's views + slots change, so the caller must rebind the canvas
+// to the new graph (ap_canvas_bind_graph). Returns 0 on success; the
+// photo's previous graph is destroyed first.
 int ap_photo_rebuild_graph(ap_photo *photo);
 
 // Render the photo's graph off-screen (dispatch the compute chain into

@@ -6,6 +6,12 @@
 #include "gpu/pipeline_graph.h"
 #include "ui/imgui.h"
 
+// render_slot_value[] (sized APERTURE_FRAMES_IN_FLIGHT + 1 in ap_gpu) is
+// indexed by the graph's present slot, which round-robins over
+// AP_DISPLAY_SLOTS. Keep the array large enough to index every slot.
+_Static_assert(AP_DISPLAY_SLOTS <= APERTURE_FRAMES_IN_FLIGHT + 1,
+               "render_slot_value[] too small for AP_DISPLAY_SLOTS");
+
 int gpu_frames_create(struct ap_gpu *g)
 {
     VkCommandPoolCreateInfo pool_ci = {
@@ -228,8 +234,8 @@ static int record_frame(struct ap_gpu *g, VkCommandBuffer cmd,
     VK_CHECK(vkBeginCommandBuffer(cmd, &bi));
 
     // The photo graph's compute chain is no longer recorded here — it runs
-    // on its own render submission (gpu_render_graph_sync) before this
-    // compositor frame. This frame only samples the finished display image.
+    // on its own render submission (gpu_render_pump) before this compositor
+    // frame, which only samples the finished presentation slot.
     VkImage target  = g->swapchain_images[image_index].image;
     VkImageView vw  = g->swapchain_images[image_index].view;
 

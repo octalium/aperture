@@ -152,16 +152,15 @@ int         ap_pipeline_graph_slot_count(const ap_pipeline_graph *graph);
 VkImageView ap_pipeline_graph_slot_view(const ap_pipeline_graph *graph, int slot);
 
 // Advance the round-robin present slot: returns the slot index the next
-// present-copy should target and records it as the new front slot. The
-// caller copies into that slot (ap_pipeline_graph_present_copy) and binds
-// the compositor to it. front_slot reports the slot last presented.
+// present-copy should target. The caller copies into that slot
+// (ap_pipeline_graph_present_copy) and binds the compositor to it; the
+// compositor's live front-slot tracking lives on ap_gpu.
 int ap_pipeline_graph_next_slot(ap_pipeline_graph *graph);
-int ap_pipeline_graph_front_slot(const ap_pipeline_graph *graph);
 
-// The display image (final output) - for sampling via ImGui or canvas.
-VkImageView   ap_pipeline_graph_output_view(const ap_pipeline_graph *graph);
+// Render-target geometry + sampler. The compositor samples the
+// presentation slots (ap_pipeline_graph_slot_view), not the render target
+// directly, so only the sampler + dims are exposed here.
 VkSampler     ap_pipeline_graph_output_sampler(const ap_pipeline_graph *graph);
-VkImageLayout ap_pipeline_graph_output_layout(const ap_pipeline_graph *graph);
 int           ap_pipeline_graph_output_width(const ap_pipeline_graph *graph);
 int           ap_pipeline_graph_output_height(const ap_pipeline_graph *graph);
 
