@@ -17,6 +17,11 @@ extern "C" {
 
 typedef struct ap_pipeline_graph ap_pipeline_graph;
 
+// Presentation ring depth: the display render target is copied into one of
+// these slots per render so the swapchain compositor can sample a finished
+// image while a new render proceeds. 2 frames-in-flight + 1 render = 3.
+#define AP_DISPLAY_SLOTS 3
+
 // Forward decl from modules/module.h to avoid pulling the header from a
 // gpu-layer file. Callers include modules/module.h to get the full type.
 typedef struct ap_module ap_module;
@@ -49,7 +54,10 @@ void ap_pipeline_graph_destroy(ap_pipeline_graph *graph);
 
 // Records the full chain for one frame. Each module's pack_push gets
 // the parameter slots of the edit-stack entry that scheduled it
-// (NULL for transport modules), then a dispatch + a barrier.
+// (NULL for transport modules), then a dispatch + a barrier. Returns 1
+// when it recorded a dispatch (the caller should present-copy the result),
+// 0 when nothing changed and it recorded nothing (the previous render is
+// still valid), or -1 on error.
 int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
                              const ap_edit_stack *stack);
 
@@ -135,6 +143,13 @@ void ap_pipeline_graph_present_copy(ap_pipeline_graph *graph,
                                     VkCommandBuffer cmd, int slot);
 int         ap_pipeline_graph_slot_count(const ap_pipeline_graph *graph);
 VkImageView ap_pipeline_graph_slot_view(const ap_pipeline_graph *graph, int slot);
+
+// Advance the round-robin present slot: returns the slot index the next
+// present-copy should target and records it as the new front slot. The
+// caller copies into that slot (ap_pipeline_graph_present_copy) and binds
+// the compositor to it. front_slot reports the slot last presented.
+int ap_pipeline_graph_next_slot(ap_pipeline_graph *graph);
+int ap_pipeline_graph_front_slot(const ap_pipeline_graph *graph);
 
 // The display image (final output) - for sampling via ImGui or canvas.
 VkImageView   ap_pipeline_graph_output_view(const ap_pipeline_graph *graph);

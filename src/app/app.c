@@ -235,7 +235,7 @@ void release_photo(ap_app *app)
     app->canvas_tool_entry = -1;
     app->crop_drag_handle  = CROP_HANDLE_NONE;
     ap_app_wait_idle(app);
-    ap_canvas_set_input(app->canvas, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0);
+    ap_canvas_bind_graph(app->canvas, NULL);
     ap_gpu_set_graph(app->gpu, NULL);
     ap_photo_close(app->photo);
     app->photo = NULL;
@@ -335,11 +335,7 @@ void ap_app_rebuild_photo_graph(ap_app *app)
     // next time a frame is recorded.
     ap_pipeline_graph *graph = ap_photo_graph(app->photo);
     ap_gpu_set_graph(app->gpu, graph);
-    ap_canvas_set_input(app->canvas,
-                        ap_pipeline_graph_output_view(graph),
-                        ap_pipeline_graph_output_sampler(graph),
-                        ap_pipeline_graph_output_width(graph),
-                        ap_pipeline_graph_output_height(graph));
+    ap_canvas_bind_graph(app->canvas, graph);
 
     // If the before/after compare was active when the graph was rebuilt,
     // re-apply the bypass to the new graph. The rebuild produced fresh

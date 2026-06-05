@@ -100,11 +100,20 @@ int gpu_render_graph_sync(struct ap_gpu *g, const ap_edit_stack *stack)
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
     VK_CHECK(vkBeginCommandBuffer(cmd, &bi));
-    // When the edit stack is unchanged this records nothing (the display
-    // image from the last render is still valid); the empty submit + wait
-    // is cheap. The async step replaces this with a dirty-driven kick.
-    ap_pipeline_graph_record(g->current_graph, cmd, stack);
+    // record returns 1 only when it actually dispatched (the edit stack
+    // changed). When it skips, the previous slot is still valid and bound,
+    // so there is nothing to submit.
+    int rc = ap_pipeline_graph_record(g->current_graph, cmd, stack);
+    int slot = -1;
+    if (rc == 1) {
+        slot = ap_pipeline_graph_next_slot(g->current_graph);
+        ap_pipeline_graph_present_copy(g->current_graph, cmd, slot);
+    }
     VK_CHECK(vkEndCommandBuffer(cmd));
+
+    if (rc != 1) {
+        return rc < 0 ? -1 : 0;
+    }
 
     VkCommandBufferSubmitInfo cmd_si = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
@@ -118,6 +127,12 @@ int gpu_render_graph_sync(struct ap_gpu *g, const ap_edit_stack *stack)
     VK_CHECK(vkResetFences(g->device, 1, &g->render_fence));
     VK_CHECK(vkQueueSubmit2(g->graphics_queue, 1, &submit, g->render_fence));
     VK_CHECK(vkWaitForFences(g->device, 1, &g->render_fence, VK_TRUE, UINT64_MAX));
+
+    // The render (incl. the present-copy into `slot`) is complete; point
+    // the compositor at the freshly-finished slot for this frame.
+    if (g->current_canvas) {
+        ap_canvas_bind_slot(g->current_canvas, slot);
+    }
     return 0;
 }
 

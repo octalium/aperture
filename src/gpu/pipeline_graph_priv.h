@@ -14,13 +14,6 @@
 
 #define MAX_STAGES 32
 
-// Presentation ring depth. The display image is the single render target;
-// each completed render is copied into one of these slots, and the
-// swapchain compositor samples the most-recently-completed slot. Sized so
-// up to APERTURE_FRAMES_IN_FLIGHT (2) frames can still be sampling an older
-// slot while a new render targets a free one: 2 + 1 = 3.
-#define AP_DISPLAY_SLOTS 3
-
 typedef struct {
     const ap_module       *module;
     int                    entry_idx;

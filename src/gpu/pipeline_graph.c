@@ -1372,7 +1372,7 @@ int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
         // No histogram pass: still need the sample barrier for the canvas.
         compute_to_sample_barrier(cmd, graph->display_image);
     }
-    return 0;
+    return 1;   // dispatched (caller should present-copy this render)
 }
 
 int ap_pipeline_graph_set_stage_skip(ap_pipeline_graph *graph,
@@ -1489,6 +1489,20 @@ VkImageView ap_pipeline_graph_slot_view(const ap_pipeline_graph *g, int i)
 {
     if (!g || i < 0 || i >= AP_DISPLAY_SLOTS) return VK_NULL_HANDLE;
     return g->slot_view_srgb[i];
+}
+
+int ap_pipeline_graph_next_slot(ap_pipeline_graph *g)
+{
+    if (!g) return 0;
+    int s = g->next_slot;
+    g->next_slot = (s + 1) % AP_DISPLAY_SLOTS;
+    g->front_slot = s;
+    return s;
+}
+
+int ap_pipeline_graph_front_slot(const ap_pipeline_graph *g)
+{
+    return g ? g->front_slot : 0;
 }
 
 VkImageView   ap_pipeline_graph_output_view(const ap_pipeline_graph *g)    { return g->display_view_srgb; }
