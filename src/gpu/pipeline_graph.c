@@ -1144,6 +1144,17 @@ static bool stack_render_equal(const ap_edit_stack *a,
     return true;
 }
 
+bool ap_pipeline_graph_needs_render(const ap_pipeline_graph *graph,
+                                    const ap_edit_stack *stack)
+{
+    if (!graph || graph->stage_count == 0) return false;
+    if (!graph->has_recorded)              return true;
+    if (!stack)                            return true;
+    // Mirrors the short-circuit in ap_pipeline_graph_record: a render is
+    // needed iff something that feeds the compute chain changed.
+    return !stack_render_equal(&graph->record_snapshot, stack);
+}
+
 int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
                              const ap_edit_stack *stack)
 {

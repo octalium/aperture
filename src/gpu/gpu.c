@@ -125,16 +125,21 @@ bool ap_gpu_should_run(ap_gpu *g)
 
 int ap_gpu_render_frame(ap_gpu *g, const ap_edit_stack *stack)
 {
-    // Render the photo pipeline into its display image on a dedicated
-    // submission first, then composite the finished image in the swapchain
-    // frame. Keeps the heavy compute off the swapchain frame's recording.
-    gpu_render_graph_sync(g, stack);
+    // Pump the background render (promote a finished one, kick a new one if
+    // the edits changed) — never blocking — then composite the latest
+    // finished slot in the swapchain frame.
+    gpu_render_pump(g, stack);
     return gpu_frame_render(g);
 }
 
 void ap_gpu_set_graph(ap_gpu *g, ap_pipeline_graph *graph)
 {
+    // Callers swap the graph only with the device idle (close / rebuild),
+    // so any in-flight render has finished; reset the scheduler so the next
+    // pump renders the new graph from scratch rather than promoting a slot
+    // of the outgoing one.
     g->current_graph = graph;
+    gpu_render_reset(g);
 }
 
 void ap_gpu_set_canvas(ap_gpu *g, ap_canvas *canvas)

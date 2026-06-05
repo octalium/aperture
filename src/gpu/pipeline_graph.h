@@ -52,6 +52,13 @@ ap_pipeline_graph *ap_pipeline_graph_create(ap_gpu *g,
                                             const ap_raw_metadata *meta);
 void ap_pipeline_graph_destroy(ap_pipeline_graph *graph);
 
+// Whether a render is needed: true if the chain has never been recorded
+// or the edit stack changed since the last record (mirrors the record
+// short-circuit). The async pump uses this to avoid recording an empty
+// command buffer every idle frame.
+bool ap_pipeline_graph_needs_render(const ap_pipeline_graph *graph,
+                                    const ap_edit_stack *stack);
+
 // Records the full chain for one frame. Each module's pack_push gets
 // the parameter slots of the edit-stack entry that scheduled it
 // (NULL for transport modules), then a dispatch + a barrier. Returns 1

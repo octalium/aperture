@@ -73,11 +73,31 @@ int gpu_render_create(struct ap_gpu *g)
 
     VkFenceCreateInfo fence_ci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
     VK_CHECK(vkCreateFence(g->device, &fence_ci, NULL, &g->render_fence));
+
+    VkSemaphoreTypeCreateInfo type_ci = {
+        .sType         = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+        .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+        .initialValue  = 0,
+    };
+    VkSemaphoreCreateInfo sem_ci = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+        .pNext = &type_ci,
+    };
+    VK_CHECK(vkCreateSemaphore(g->device, &sem_ci, NULL, &g->render_timeline));
+
+    g->render_value         = 0;
+    g->render_inflight_slot = -1;
+    g->render_front_slot    = -1;
+    g->render_front_value   = 0;
     return 0;
 }
 
 void gpu_render_destroy(struct ap_gpu *g)
 {
+    if (g->render_timeline) {
+        vkDestroySemaphore(g->device, g->render_timeline, NULL);
+        g->render_timeline = VK_NULL_HANDLE;
+    }
     if (g->render_fence) {
         vkDestroyFence(g->device, g->render_fence, NULL);
         g->render_fence = VK_NULL_HANDLE;
@@ -88,51 +108,86 @@ void gpu_render_destroy(struct ap_gpu *g)
     }
 }
 
-int gpu_render_graph_sync(struct ap_gpu *g, const ap_edit_stack *stack)
+void gpu_render_reset(struct ap_gpu *g)
+{
+    // The bound graph is changing; the device is idle, so any in-flight
+    // render has completed. Discard it rather than promote a slot of the
+    // outgoing graph, and forget the front slot (the new graph's slots
+    // hold no content until its first render promotes).
+    g->render_inflight_slot = -1;
+    g->render_front_slot    = -1;
+    g->render_front_value   = 0;
+}
+
+int gpu_render_pump(struct ap_gpu *g, const ap_edit_stack *stack)
 {
     if (!g->current_graph) return 0;
 
+    // 1. Promote a finished in-flight render to the compositor. Poll the
+    //    fence — never wait. While a render is in flight, do not kick
+    //    another (one in flight; the next picks up the latest stack, which
+    //    coalesces a fast slider drag down to a single follow-up render).
+    if (g->render_inflight_slot >= 0) {
+        VkResult fs = vkGetFenceStatus(g->device, g->render_fence);
+        if (fs == VK_NOT_READY) {
+            return 0;
+        }
+        if (fs != VK_SUCCESS) {
+            AP_ERROR("render: vkGetFenceStatus -> %s", gpu_vk_result_str(fs));
+            return -1;
+        }
+        g->render_front_slot  = g->render_inflight_slot;
+        g->render_front_value = g->render_slot_value[g->render_front_slot];
+        if (g->current_canvas) {
+            ap_canvas_bind_slot(g->current_canvas, g->render_front_slot);
+        }
+        g->render_inflight_slot = -1;
+    }
+
+    // 2. Kick a new render only when the edit stack actually changed.
+    if (!ap_pipeline_graph_needs_render(g->current_graph, stack)) {
+        return 0;
+    }
+
     VkCommandBuffer cmd = g->render_cmd;
     VK_CHECK(vkResetCommandBuffer(cmd, 0));
-
     VkCommandBufferBeginInfo bi = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
     VK_CHECK(vkBeginCommandBuffer(cmd, &bi));
-    // record returns 1 only when it actually dispatched (the edit stack
-    // changed). When it skips, the previous slot is still valid and bound,
-    // so there is nothing to submit.
     int rc = ap_pipeline_graph_record(g->current_graph, cmd, stack);
-    int slot = -1;
-    if (rc == 1) {
-        slot = ap_pipeline_graph_next_slot(g->current_graph);
-        ap_pipeline_graph_present_copy(g->current_graph, cmd, slot);
-    }
-    VK_CHECK(vkEndCommandBuffer(cmd));
-
     if (rc != 1) {
+        VK_CHECK(vkEndCommandBuffer(cmd));
         return rc < 0 ? -1 : 0;
     }
+    int slot = ap_pipeline_graph_next_slot(g->current_graph);
+    ap_pipeline_graph_present_copy(g->current_graph, cmd, slot);
+    VK_CHECK(vkEndCommandBuffer(cmd));
+
+    uint64_t value = ++g->render_value;
+    g->render_slot_value[slot] = value;
 
     VkCommandBufferSubmitInfo cmd_si = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
         .commandBuffer = cmd,
     };
+    VkSemaphoreSubmitInfo signal_si = {
+        .sType     = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+        .semaphore = g->render_timeline,
+        .value     = value,
+        .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+    };
     VkSubmitInfo2 submit = {
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-        .commandBufferInfoCount = 1,
-        .pCommandBufferInfos = &cmd_si,
+        .commandBufferInfoCount   = 1,
+        .pCommandBufferInfos      = &cmd_si,
+        .signalSemaphoreInfoCount = 1,
+        .pSignalSemaphoreInfos    = &signal_si,
     };
     VK_CHECK(vkResetFences(g->device, 1, &g->render_fence));
     VK_CHECK(vkQueueSubmit2(g->graphics_queue, 1, &submit, g->render_fence));
-    VK_CHECK(vkWaitForFences(g->device, 1, &g->render_fence, VK_TRUE, UINT64_MAX));
-
-    // The render (incl. the present-copy into `slot`) is complete; point
-    // the compositor at the freshly-finished slot for this frame.
-    if (g->current_canvas) {
-        ap_canvas_bind_slot(g->current_canvas, slot);
-    }
+    g->render_inflight_slot = slot;
     return 0;
 }
 
@@ -259,11 +314,28 @@ int gpu_frame_render(struct ap_gpu *g)
 
     VkSemaphore render_finished = g->swapchain_images[image_index].render_finished;
 
-    VkSemaphoreSubmitInfo wait_si = {
-        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-        .semaphore = f->image_available,
-        .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+    // Wait for the acquired swapchain image, and — once a render has been
+    // promoted — for that render to be done on the GPU before the canvas
+    // fragment shader samples its slot. The timeline value is already
+    // reached (we only promote after the render fence signalled), so this
+    // wait never blocks; it makes the render->sample dependency explicit.
+    VkSemaphoreSubmitInfo waits[2] = {
+        {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+            .semaphore = f->image_available,
+            .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        },
     };
+    uint32_t wait_count = 1;
+    if (g->render_front_slot >= 0) {
+        waits[1] = (VkSemaphoreSubmitInfo){
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+            .semaphore = g->render_timeline,
+            .value     = g->render_front_value,
+            .stageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        };
+        wait_count = 2;
+    }
     VkSemaphoreSubmitInfo signal_si = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
         .semaphore = render_finished,
@@ -275,8 +347,8 @@ int gpu_frame_render(struct ap_gpu *g)
     };
     VkSubmitInfo2 submit = {
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-        .waitSemaphoreInfoCount = 1,
-        .pWaitSemaphoreInfos = &wait_si,
+        .waitSemaphoreInfoCount = wait_count,
+        .pWaitSemaphoreInfos = waits,
         .commandBufferInfoCount = 1,
         .pCommandBufferInfos = &cmd_si,
         .signalSemaphoreInfoCount = 1,
