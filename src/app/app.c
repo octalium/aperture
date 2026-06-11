@@ -185,6 +185,8 @@ void ap_app_destroy(ap_app *app)
         ap_gpu_destroy(app->gpu);
         app->gpu = NULL;
     }
+    // workers are gone, so nothing else can touch the shared handle.
+    ap_registry_close();
     free(app);
 }
 
@@ -1134,7 +1136,8 @@ int ap_app_apply_pipeline_to_selection(ap_app *app, int64_t pipeline_id)
         return (app && app->library && app->grid) ? 0 : -1;
     }
     // Resolve the pipeline to a concrete stack here, on the main thread,
-    // so the worker never touches the pipeline db connection.
+    // so every photo gets the same snapshot and the worker skips a
+    // registry round-trip per item.
     if (ap_pipeline_apply_to_stack(pipeline_id, &j->stack) != 0) {
         abandon_selection_edit_job(j);
         return -1;

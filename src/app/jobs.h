@@ -87,10 +87,12 @@ typedef struct import_job {
 
 // Which worker-safe sidecar op a selection_edit_job runs. Each maps to
 // a pure path-based ap_library_* per-item function (no GPU, no in-memory
-// library cache mutation, no shared db handle, no sqlite). PIPELINE is
+// library cache mutation, no per-library db handle). PIPELINE is
 // resolved to a concrete edit stack at submit on the main thread and
-// runs as STACK on the worker, so the worker never touches the pipeline
-// db connection.
+// runs as STACK on the worker. The only sqlite a worker can reach is
+// the shared registry connection, via the default-stack seed for photos
+// without a sidecar — safe because that handle is opened serialized
+// (FULLMUTEX, see registry_get in library.c).
 typedef enum {
     AP_SEL_EDIT_PIPELINE = 0,  // apply a pipeline to each photo's stack
     AP_SEL_EDIT_STACK,         // write a copied edit stack to each photo
