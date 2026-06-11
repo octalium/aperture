@@ -15,8 +15,13 @@
 #include <string.h>
 
 // library does not actually allocate thumbnails in these tests — every
-// thumbs[] slot stays NULL. ap_thumbnail_destroy(NULL) is a no-op.
+// thumbs[] slot stays NULL. ap_thumbnail_destroy/retire(NULL) are no-ops.
 void ap_thumbnail_destroy(ap_thumbnail *t)
+{
+    (void)t;
+}
+
+void ap_thumbnail_retire(ap_thumbnail *t)
 {
     (void)t;
 }

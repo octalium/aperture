@@ -431,6 +431,13 @@ void ap_thumbnail_destroy(ap_thumbnail *t)
     free(t);
 }
 
+void ap_thumbnail_retire(ap_thumbnail *t)
+{
+    if (!t) return;
+    if (t->tex) ap_texture_retire(t->tex);
+    free(t);
+}
+
 VkImageView ap_thumbnail_view(const ap_thumbnail *t)
 {
     return t ? ap_texture_view(t->tex) : VK_NULL_HANDLE;

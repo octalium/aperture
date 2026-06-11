@@ -26,6 +26,12 @@ ap_texture *ap_texture_create_r16(ap_gpu *g, const uint16_t *pixels,
                                   int width, int height);
 void ap_texture_destroy(ap_texture *t);
 
+// Deferred destroy: hand the texture's Vulkan handles to the gpu's retire
+// list (destroyed once no submitted work can still sample them) and free
+// the wrapper. Use instead of ap_texture_destroy whenever the texture may
+// be referenced by in-flight frames (e.g. a grid-bound thumbnail).
+void ap_texture_retire(ap_texture *t);
+
 VkImageView   ap_texture_view(const ap_texture *t);
 VkSampler     ap_texture_sampler(const ap_texture *t);
 VkImageLayout ap_texture_layout(const ap_texture *t);

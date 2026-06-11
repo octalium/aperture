@@ -307,6 +307,13 @@ void ap_texture_destroy(ap_texture *t)
     free(t);
 }
 
+void ap_texture_retire(ap_texture *t)
+{
+    if (!t) return;
+    gpu_retire_push(t->gpu, NULL, t->sampler, t->view, t->image, t->memory);
+    free(t);
+}
+
 VkImageView   ap_texture_view(const ap_texture *t)    { return t->view; }
 VkSampler     ap_texture_sampler(const ap_texture *t) { return t->sampler; }
 VkImageLayout ap_texture_layout(const ap_texture *t)  { return t->layout; }
