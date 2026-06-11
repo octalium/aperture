@@ -822,6 +822,7 @@ static void draw_apply_pipeline_modal(ap_app *app, ap_photo *photo,
         igOpenPopup_Str("Apply Pipeline", 0);
         g_apply_open = false;
         g_apply_list_count = ap_pipeline_list(g_apply_list, APPLY_LIST_MAX);
+        if (g_apply_list_count < 0) g_apply_list_count = 0;
     }
     if (!igBeginPopupModal("Apply Pipeline", NULL, 0)) return;
 
