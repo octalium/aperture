@@ -9,21 +9,36 @@
 //     -1  → no undo applied; live state is beyond the tip of the ring.
 //     k≥0 → the snapshot at ring position k has been restored.
 //
-// Concrete example with AP_HISTORY_CAP=4:
+// Concrete example with AP_HISTORY_CAP=4 (S = live state at undo time):
 //   snapshot(A) → size=1, cursor=-1, ring=[A]
 //   snapshot(B) → size=2, cursor=-1, ring=[A,B]
 //   snapshot(C) → size=3, cursor=-1, ring=[A,B,C]
-//   undo        → cursor=-1→ restore ring[size-1]=C, cursor=size-2=1
-//   undo        → restore ring[cursor=1]=B, cursor=0
-//   undo        → restore ring[cursor=0]=A, cursor=-1 (exhausted)
-//   redo        → cursor=-1+1=0, restore ring[0]=A
-//   redo        → cursor=0+1=1, restore ring[1]=B
-//   redo        → cursor=1+1=2, restore ring[2]=C
-//   redo        → cursor=2, size=3, cursor==size-1: nothing to redo.
+//   undo        → push live S → ring=[A,B,C,S]; restore ring[2]=C, cursor=2
+//   undo        → restore ring[1]=B, cursor=1
+//   undo        → restore ring[0]=A, cursor=0 (exhausted)
+//   redo        → cursor=1, restore ring[1]=B
+//   redo        → cursor=2, restore ring[2]=C
+//   redo        → cursor=3, restore ring[3]=S (back to the live state)
+//   redo        → cursor==size-1: nothing to redo.
 //
-// Note: after all undos (cursor=-1), the oldest redo is ring[0]=A, not
-// the "live" S3. That state is not stored; redo returns the user to the
-// most recent snapshot. This is the accepted v1 trade-off.
+// The first undo from the live end (cursor == -1) lazily pushes the
+// live state onto the ring before stepping back, so redo can return to
+// it. When the ring is full this evicts the oldest snapshot, same as
+// any other push.
+
+// append `stack` at the tip of the ring, evicting the oldest entry
+// when the ring is full.
+static void ring_push(ap_edit_history *h, const ap_edit_stack *stack)
+{
+    if (h->size < AP_HISTORY_CAP) {
+        int slot = (h->base + h->size) % AP_HISTORY_CAP;
+        h->entries[slot] = *stack;
+        h->size++;
+    } else {
+        h->entries[h->base] = *stack;
+        h->base = (h->base + 1) % AP_HISTORY_CAP;
+    }
+}
 
 void ap_edit_history_init(ap_edit_history *h)
 {
@@ -47,15 +62,7 @@ void ap_edit_history_snapshot(ap_edit_history *h, const ap_edit_stack *stack)
     // cursor resets to -1: the live state is now beyond the new tip.
     h->cursor = -1;
 
-    if (h->size < AP_HISTORY_CAP) {
-        int slot = (h->base + h->size) % AP_HISTORY_CAP;
-        h->entries[slot] = *stack;
-        h->size++;
-    } else {
-        // Ring full: evict the oldest entry by advancing base.
-        h->entries[h->base] = *stack;
-        h->base = (h->base + 1) % AP_HISTORY_CAP;
-    }
+    ring_push(h, stack);
 }
 
 bool ap_edit_history_can_undo(const ap_edit_history *h)
@@ -79,8 +86,11 @@ bool ap_edit_history_undo(ap_edit_history *h, ap_edit_stack *stack)
     if (!ap_edit_history_can_undo(h) || !stack) return false;
 
     if (h->cursor == -1) {
-        // First undo: jump to the newest snapshot (tip of the ring).
-        h->cursor = h->size - 1;
+        // First undo from the live end: capture the live state as the
+        // new tip so redo can return to it, then step back to the
+        // newest snapshot.
+        ring_push(h, stack);
+        h->cursor = h->size - 2;
     } else {
         h->cursor--;
     }
