@@ -42,7 +42,10 @@ static void fill_inputs(ap_edit_stack *stack,
     e->params[7] = 0.90f;  // gain_g
     e->params[8] = 1.20f;  // gain_b
     e->enabled = true;
-    snprintf(e->display_name, sizeof(e->display_name), "warm grade");
+    // quotes + backslash in a user-chosen name must survive the trip
+    // without corrupting the document (issue #570).
+    snprintf(e->display_name, sizeof(e->display_name),
+             "warm \"grade\" \\ v2");
 
     idx = ap_edit_stack_add(stack, "lens_correction");
     AP_TEST_ASSERT(idx == 1, "lens add idx=%d", idx);
@@ -296,11 +299,61 @@ static void test_load_culling_groups(void)
     aptest_tmpdir_rm(tmp);
 }
 
+// The loaders must distinguish a missing sidecar (callers seed
+// defaults and may write a fresh one) from an unreadable one (callers
+// must refuse to write it back) — conflating the two is how a corrupt
+// sidecar used to get silently wiped (issue #570).
+static void test_load_status(void)
+{
+    char tmp[4096];
+    aptest_tmpdir_make(tmp, sizeof(tmp));
+    char raw[4200];
+    snprintf(raw, sizeof(raw), "%s/photo.cr3", tmp);
+    FILE *touch = fopen(raw, "wb");
+    AP_TEST_ASSERT(touch != NULL, "touch %s", raw);
+    fclose(touch);
+
+    ap_edit_stack stack;
+    ap_edit_stack_init(&stack);
+    bool ro = true;
+    ap_photo_metadata meta;
+    bool meta_set[AP_META_FIELD_COUNT];
+    ap_photo_culling culling;
+    ap_photo_groups groups;
+    ap_photo_keywords keywords;
+
+    ap_sidecar_status st = ap_sidecar_load(raw, &stack, &ro, &meta, meta_set,
+                                           &culling, &groups, &keywords);
+    AP_TEST_ASSERT(st == AP_SIDECAR_ABSENT, "missing: load st=%d", (int)st);
+    st = ap_sidecar_load_culling(raw, &culling);
+    AP_TEST_ASSERT(st == AP_SIDECAR_ABSENT, "missing: culling st=%d", (int)st);
+    st = ap_sidecar_load_groups(raw, &groups);
+    AP_TEST_ASSERT(st == AP_SIDECAR_ABSENT, "missing: groups st=%d", (int)st);
+
+    char side[4300];
+    snprintf(side, sizeof(side), "%s.aperture", raw);
+    FILE *f = fopen(side, "wb");
+    AP_TEST_ASSERT(f != NULL, "create %s", side);
+    fputs("[aperture\nrespect_orientation = \"unterminated\n", f);
+    fclose(f);
+
+    st = ap_sidecar_load(raw, &stack, &ro, &meta, meta_set,
+                         &culling, &groups, &keywords);
+    AP_TEST_ASSERT(st == AP_SIDECAR_ERROR, "corrupt: load st=%d", (int)st);
+    st = ap_sidecar_load_culling(raw, &culling);
+    AP_TEST_ASSERT(st == AP_SIDECAR_ERROR, "corrupt: culling st=%d", (int)st);
+    st = ap_sidecar_load_groups(raw, &groups);
+    AP_TEST_ASSERT(st == AP_SIDECAR_ERROR, "corrupt: groups st=%d", (int)st);
+
+    aptest_tmpdir_rm(tmp);
+}
+
 int main(void)
 {
     test_round_trip();
     test_empty_round_trip();
     test_load_culling_groups();
+    test_load_status();
     printf("sidecar/sidecar: OK\n");
     return 0;
 }

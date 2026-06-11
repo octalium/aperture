@@ -208,12 +208,67 @@ static void test_non_raw_ignored(void)
     aptest_tmpdir_rm(approot);
 }
 
+// Every load-modify-save sidecar write must refuse to touch a sidecar
+// that exists but cannot be parsed — overwriting it would wipe the
+// photo's recoverable edit history (issue #570).
+static void test_unreadable_sidecar_never_overwritten(void)
+{
+    char libroot[4096];
+    aptest_tmpdir_make(libroot, sizeof(libroot));
+    touch_raw(libroot, "a.cr3");
+    char raw[4200];
+    snprintf(raw, sizeof(raw), "%s/a.cr3", libroot);
+
+    const char *garbage = "[aperture\nrespect_orientation = \"broken\n";
+    char side[4300];
+    snprintf(side, sizeof(side), "%s.aperture", raw);
+    FILE *f = fopen(side, "wb");
+    AP_TEST_ASSERT(f != NULL, "create %s", side);
+    fputs(garbage, f);
+    fclose(f);
+
+    ap_photo_culling culling;
+    ap_photo_culling_clear(&culling);
+    culling.rating = 5;
+    AP_TEST_ASSERT(ap_library_write_culling_to_path(raw, culling) != 0,
+                   "write_culling must fail on an unreadable sidecar");
+
+    ap_photo_metadata patch;
+    ap_photo_metadata_clear(&patch);
+    bool patch_set[AP_META_FIELD_COUNT] = {0};
+    ap_photo_metadata_set(&patch, AP_META_ARTIST, "Someone");
+    patch_set[AP_META_ARTIST] = true;
+    AP_TEST_ASSERT(
+        ap_library_apply_metadata_patch_to_path(raw, &patch, patch_set) != 0,
+        "metadata patch must fail on an unreadable sidecar");
+
+    AP_TEST_ASSERT(
+        ap_library_modify_group_in_sidecar(raw, "portraits", true) != 0,
+        "group modify must fail on an unreadable sidecar");
+
+    ap_edit_stack stack;
+    ap_edit_stack_init(&stack);
+    AP_TEST_ASSERT(ap_library_apply_stack_to_path(raw, &stack, NULL) != 0,
+                   "stack apply must fail on an unreadable sidecar");
+
+    char back[256] = {0};
+    f = fopen(side, "rb");
+    AP_TEST_ASSERT(f != NULL, "reopen %s", side);
+    size_t n = fread(back, 1, sizeof(back) - 1, f);
+    fclose(f);
+    AP_TEST_ASSERT(n == strlen(garbage) && strcmp(back, garbage) == 0,
+                   "unreadable sidecar was modified on disk");
+
+    aptest_tmpdir_rm(libroot);
+}
+
 int main(void)
 {
     test_schema_created();
     test_dedupe_on_reopen();
     test_photo_remove();
     test_non_raw_ignored();
+    test_unreadable_sidecar_never_overwritten();
     printf("library/library: OK\n");
     return 0;
 }
