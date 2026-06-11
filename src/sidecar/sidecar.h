@@ -87,6 +87,15 @@ int ap_sidecar_load_culling(const char *source_path, ap_photo_culling *out);
 // when the sidecar is missing or unparseable (`*out` left empty).
 int ap_sidecar_load_groups(const char *source_path, ap_photo_groups *out);
 
+// Read group membership and culling from a sidecar in ONE parse — the
+// library cache build calls this once per photo instead of the two
+// single-purpose loaders above. Both outputs are cleared first.
+// Returns 0 on success, nonzero when the sidecar is missing or
+// unparseable (outputs left at their defaults).
+int ap_sidecar_load_groups_culling(const char *source_path,
+                                   ap_photo_groups *groups,
+                                   ap_photo_culling *culling);
+
 // Delete the photo's sidecar file (`<source_path>.aperture`) from
 // disk. Returns 0 on success or when the sidecar is already absent,
 // nonzero on a real removal error.

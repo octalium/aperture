@@ -101,9 +101,15 @@ int ap_settings_set(const char *key, const char *value);
 //   - Resolves `path` to an absolute root.
 //   - Opens or creates `<root>/library.db` (SQLite).
 //   - Runs schema-create-if-needed for the v1 tables.
-//   - Recursively scans the tree for raw files; inserts new ones
-//     into the photos table.
-//   - Caches the photo list in memory for browsing.
+//   - Caches the photo list + group/culling state from the db's rows
+//     in memory for browsing.
+//
+// Db-only and therefore fast regardless of library size: no disk
+// scan and no sidecar parsing happen here. Run an off-thread
+// AP_LIBRARY_OP_RESCAN cache build (ap_library_cache_build +
+// ap_library_cache_swap) after opening to reconcile the db with the
+// filesystem and the sidecars; until it lands the library reflects
+// the previous session (empty for a brand-new library folder).
 //
 // Returns NULL on failure (path not a directory, db open failure,
 // out of memory, etc.). On success the caller owns the returned
@@ -297,15 +303,17 @@ void ap_library_mark_thumbnail_failed(ap_library *lib, int index);
 
 // Fetch the n-th photo's edit-render JPEG if it's fresh — i.e. the
 // stored render is at least as new as the photo's `.aperture`
-// sidecar. On success allocates `*out_jpeg` (caller frees) and
-// returns 0. Returns -1 when there's no row, the render is stale,
-// or the sidecar is gone.
+// sidecar, compared at nanosecond resolution so a same-second edit
+// can't pin a stale render. On success allocates `*out_jpeg` (caller
+// frees) and returns 0. Returns -1 when there's no row, the render
+// is stale, or the sidecar is gone.
 int  ap_library_thumbnail_blob(const ap_library *lib, int index,
                                unsigned char **out_jpeg, size_t *out_size);
 
-// Upsert the n-th photo's edit-render JPEG, stamping updated_at to
-// now. Call this *after* the photo's sidecar has been written so
-// the freshness comparison holds. Returns 0 on success.
+// Upsert the n-th photo's edit-render JPEG, stamping updated_at with
+// the wall clock in nanoseconds. Call this *after* the photo's
+// sidecar has been written so the freshness comparison holds.
+// Returns 0 on success.
 int  ap_library_store_thumbnail(ap_library *lib, int index,
                                 const unsigned char *jpeg, size_t size);
 

@@ -1,6 +1,10 @@
 // Library schema + dedupe smoke tests. Opens a tmpdir as a library,
 // checks that the schema tables are created and that re-opening with
 // the same raw file on disk does not duplicate the row.
+//
+// ap_library_open is db-only; the disk scan runs through the same
+// off-thread cache build the app uses (here driven synchronously via
+// scan_library), so these tests cover both halves of the open flow.
 
 #define _GNU_SOURCE
 
@@ -27,6 +31,17 @@ static void redirect_app_root(const char *root)
     setenv("XDG_DATA_HOME", root, 1);
     setenv("HOME", root, 1);
     unsetenv("APPDATA");
+}
+
+// Reconcile the library with the filesystem the way the app does after
+// open: build a RESCAN cache off the db and swap it in.
+static void scan_library(ap_library *lib)
+{
+    ap_library_cache *cache = ap_library_cache_build(
+        ap_library_root(lib), AP_LIBRARY_OP_RESCAN, AP_SORT_PATH,
+        NULL, 0, NULL, NULL);
+    AP_TEST_ASSERT(cache != NULL, "ap_library_cache_build returned NULL");
+    ap_library_cache_swap(lib, cache);
 }
 
 static void touch_raw(const char *dir, const char *name)
@@ -94,6 +109,10 @@ static void test_schema_created(void)
 
     ap_library *lib = ap_library_open(libroot);
     AP_TEST_ASSERT(lib != NULL, "ap_library_open(%s) returned NULL", libroot);
+    AP_TEST_ASSERT(ap_library_photo_count(lib) == 0,
+                   "open is db-only; expected 0 photos before the scan, got %d",
+                   ap_library_photo_count(lib));
+    scan_library(lib);
     AP_TEST_ASSERT(ap_library_photo_count(lib) == 1,
                    "expected 1 photo, got %d", ap_library_photo_count(lib));
     ap_library_close(lib);
@@ -124,15 +143,22 @@ static void test_dedupe_on_reopen(void)
 
     ap_library *lib = ap_library_open(libroot);
     AP_TEST_ASSERT(lib != NULL, "open 1");
+    scan_library(lib);
     AP_TEST_ASSERT(ap_library_photo_count(lib) == 3,
                    "first open: count=%d", ap_library_photo_count(lib));
     ap_library_close(lib);
     AP_TEST_ASSERT(photo_count_in_db(libroot) == 3,
                    "db count after first open != 3");
 
-    // Re-open: same files on disk, must not produce duplicate rows.
+    // Re-open: the db-only open must surface the previous session's
+    // rows immediately, and a rescan of the same files must not
+    // produce duplicate rows.
     lib = ap_library_open(libroot);
     AP_TEST_ASSERT(lib != NULL, "open 2");
+    AP_TEST_ASSERT(ap_library_photo_count(lib) == 3,
+                   "second open before scan: count=%d",
+                   ap_library_photo_count(lib));
+    scan_library(lib);
     AP_TEST_ASSERT(ap_library_photo_count(lib) == 3,
                    "second open: count=%d", ap_library_photo_count(lib));
     ap_library_close(lib);
@@ -157,6 +183,7 @@ static void test_photo_remove(void)
 
     ap_library *lib = ap_library_open(libroot);
     AP_TEST_ASSERT(lib != NULL, "open");
+    scan_library(lib);
     AP_TEST_ASSERT(ap_library_photo_count(lib) == 2,
                    "init count=%d", ap_library_photo_count(lib));
 
@@ -204,6 +231,7 @@ static void test_non_raw_ignored(void)
 
     ap_library *lib = ap_library_open(libroot);
     AP_TEST_ASSERT(lib != NULL, "open");
+    scan_library(lib);
     AP_TEST_ASSERT(ap_library_photo_count(lib) == 1,
                    "expected only the raw to be imported, count=%d",
                    ap_library_photo_count(lib));
@@ -214,12 +242,65 @@ static void test_non_raw_ignored(void)
     aptest_tmpdir_rm(approot);
 }
 
+// The cache build's sidecar pass must reconcile culling into the db
+// columns, and a later db-only open must surface them without touching
+// the sidecar.
+static void test_culling_reconcile(void)
+{
+    char approot[4096];
+    aptest_tmpdir_make(approot, sizeof(approot));
+    redirect_app_root(approot);
+
+    char libroot[4096];
+    aptest_tmpdir_make(libroot, sizeof(libroot));
+    touch_raw(libroot, "rated.cr3");
+
+    // Sidecar with a rating, written before the library ever sees the
+    // photo — as if culled by another machine.
+    char raw[4200];
+    snprintf(raw, sizeof(raw), "%s/rated.cr3", libroot);
+    ap_edit_stack stack; ap_edit_stack_init(&stack);
+    ap_photo_metadata meta; ap_photo_metadata_clear(&meta);
+    bool meta_set[AP_META_FIELD_COUNT] = {0};
+    ap_photo_culling c; ap_photo_culling_clear(&c);
+    c.rating = 4;
+    ap_photo_groups g; g.count = 0;
+    ap_photo_keywords k; ap_photo_keywords_clear(&k);
+    AP_TEST_ASSERT(ap_sidecar_save(raw, &stack, true, &meta, meta_set,
+                                   &c, &g, &k) == 0, "sidecar save");
+
+    ap_library *lib = ap_library_open(libroot);
+    AP_TEST_ASSERT(lib != NULL, "open 1");
+    scan_library(lib);
+    AP_TEST_ASSERT(ap_library_photo_count(lib) == 1,
+                   "count=%d", ap_library_photo_count(lib));
+    ap_photo_culling got = ap_library_photo_culling(lib, 0);
+    AP_TEST_ASSERT(got.rating == 4,
+                   "post-scan rating=%d, want 4", got.rating);
+    ap_library_close(lib);
+
+    // Re-open without scanning: the rating must come straight from the
+    // db columns the scan reconciled.
+    lib = ap_library_open(libroot);
+    AP_TEST_ASSERT(lib != NULL, "open 2");
+    AP_TEST_ASSERT(ap_library_photo_count(lib) == 1,
+                   "reopen count=%d", ap_library_photo_count(lib));
+    got = ap_library_photo_culling(lib, 0);
+    AP_TEST_ASSERT(got.rating == 4,
+                   "db-seeded rating=%d, want 4", got.rating);
+    ap_library_close(lib);
+
+    aptest_tmpdir_rm(libroot);
+    aptest_tmpdir_rm(approot);
+}
+
 int main(void)
 {
     test_schema_created();
     test_dedupe_on_reopen();
     test_photo_remove();
     test_non_raw_ignored();
+    test_culling_reconcile();
     printf("library/library: OK\n");
     return 0;
 }
