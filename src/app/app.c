@@ -137,12 +137,14 @@ ap_app *ap_app_create(int width, int height, const char *title)
     // re-loads / re-saves through it.
     ap_quick_export_load(&app->quick_export_settings);
 
-    // Update-check preferences; auto-fire a launch check when on.
+    // Update-check preferences; auto-fire a launch check when on. Only
+    // mark the check in flight on a successful submit — a wedged flag
+    // would block manual rechecks for the whole session.
     ap_update_settings_load(&app->update.settings);
-    if (app->update.settings.check_on_launch) {
+    if (app->update.settings.check_on_launch &&
         ap_update_check_submit(app->workers,
                                app->update.settings.manifest_url,
-                               AP_VERSION_STRING);
+                               AP_VERSION_STRING) == 0) {
         app->update.check_inflight = true;
     }
 
