@@ -12,10 +12,12 @@
 #include <setjmp.h>
 
 // Drive compression for a cinfo whose destination has already been
-// wired up (stdio or memory). RGBA in, RGB JPEG out.
-static int encode_rgba(struct jpeg_compress_struct *cinfo,
-                       const uint8_t *rgba, int width, int height,
-                       int quality)
+// wired up (stdio or memory). RGBA in, RGB JPEG out. `row` is a caller
+// owned scratch buffer of width * 3 bytes; fatal libjpeg errors longjmp
+// out to the caller's trampoline, so nothing here may own resources.
+static void encode_rgba(struct jpeg_compress_struct *cinfo,
+                        const uint8_t *rgba, int width, int height,
+                        int quality, uint8_t *row)
 {
     cinfo->image_width      = (JDIMENSION)width;
     cinfo->image_height     = (JDIMENSION)height;
@@ -26,11 +28,6 @@ static int encode_rgba(struct jpeg_compress_struct *cinfo,
     jpeg_set_quality(cinfo, quality, TRUE);
     jpeg_start_compress(cinfo, TRUE);
 
-    uint8_t *row = malloc((size_t)width * 3);
-    if (!row) {
-        AP_ERROR("jpeg: row buffer alloc failed");
-        return -1;
-    }
     while (cinfo->next_scanline < cinfo->image_height) {
         const uint8_t *src = rgba + (size_t)cinfo->next_scanline
                                   * (size_t)width * 4;
@@ -43,8 +40,41 @@ static int encode_rgba(struct jpeg_compress_struct *cinfo,
         jpeg_write_scanlines(cinfo, &p, 1);
     }
     jpeg_finish_compress(cinfo);
+}
+
+// Run one full compression with the setjmp error trampoline installed.
+// Writes to stdio `f` when non-NULL, otherwise to a malloc'd memory
+// buffer via `buf`/`size` (which live in the caller, so their values
+// stay determinate after a longjmp). Owns the row scratch buffer: it is
+// allocated before setjmp and freed on both the success and error path.
+static int run_compress(const uint8_t *rgba, int width, int height,
+                        int quality, FILE *f,
+                        unsigned char **buf, unsigned long *size)
+{
+    uint8_t *row = malloc((size_t)width * 3);
+    if (!row) {
+        AP_ERROR("jpeg: row buffer alloc failed");
+        return -1;
+    }
+
+    struct jpeg_compress_struct cinfo = {0};
+    ap_jpeg_error err;
+    cinfo.err = ap_jpeg_error_install(&err, "export");
+
+    volatile int rc = -1;
+    if (setjmp(err.jump) == 0) {
+        jpeg_create_compress(&cinfo);
+        if (f) {
+            jpeg_stdio_dest(&cinfo, f);
+        } else {
+            jpeg_mem_dest(&cinfo, buf, size);
+        }
+        encode_rgba(&cinfo, rgba, width, height, quality, row);
+        rc = 0;
+    }
+    jpeg_destroy_compress(&cinfo);
     free(row);
-    return 0;
+    return rc;
 }
 
 int ap_export_jpeg(const uint8_t *rgba, int width, int height,
@@ -64,20 +94,7 @@ int ap_export_jpeg(const uint8_t *rgba, int width, int height,
     }
     FILE *f = ap_atomic_file(a);
 
-    struct jpeg_compress_struct cinfo = {0};
-    ap_jpeg_error err;
-    cinfo.err = ap_jpeg_error_install(&err, "export");
-
-    int rc = -1;
-    if (setjmp(err.jump) != 0) {
-        goto done;
-    }
-    jpeg_create_compress(&cinfo);
-    jpeg_stdio_dest(&cinfo, f);
-    rc = encode_rgba(&cinfo, rgba, width, height, quality);
-
-done:
-    jpeg_destroy_compress(&cinfo);
+    int rc = run_compress(rgba, width, height, quality, f, NULL, NULL);
     if (rc == 0) {
         if (ap_atomic_commit(a) != 0) rc = -1;
     } else {
@@ -99,25 +116,12 @@ int ap_export_jpeg_mem(const uint8_t *rgba, int width, int height,
     if (quality < 0)   quality = 0;
     if (quality > 100) quality = 100;
 
-    struct jpeg_compress_struct cinfo = {0};
-    ap_jpeg_error err;
-    cinfo.err = ap_jpeg_error_install(&err, "export");
-
     // libjpeg-turbo malloc's this buffer and grows it as needed; the
     // caller owns it after a successful return.
     unsigned char *buf = NULL;
     unsigned long  size = 0;
 
-    int rc = -1;
-    if (setjmp(err.jump) != 0) {
-        goto done;
-    }
-    jpeg_create_compress(&cinfo);
-    jpeg_mem_dest(&cinfo, &buf, &size);
-    rc = encode_rgba(&cinfo, rgba, width, height, quality);
-
-done:
-    jpeg_destroy_compress(&cinfo);
+    int rc = run_compress(rgba, width, height, quality, NULL, &buf, &size);
     if (rc == 0 && buf && size > 0) {
         *out      = buf;
         *out_size = (size_t)size;
