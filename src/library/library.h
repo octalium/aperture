@@ -292,15 +292,17 @@ void ap_library_mark_thumbnail_failed(ap_library *lib, int index);
 
 // Fetch the n-th photo's edit-render JPEG if it's fresh — i.e. the
 // stored render is at least as new as the photo's `.aperture`
-// sidecar. On success allocates `*out_jpeg` (caller frees) and
-// returns 0. Returns -1 when there's no row, the render is stale,
-// or the sidecar is gone.
+// sidecar, compared at nanosecond resolution so a same-second edit
+// can't pin a stale render. On success allocates `*out_jpeg` (caller
+// frees) and returns 0. Returns -1 when there's no row, the render
+// is stale, or the sidecar is gone.
 int  ap_library_thumbnail_blob(const ap_library *lib, int index,
                                unsigned char **out_jpeg, size_t *out_size);
 
-// Upsert the n-th photo's edit-render JPEG, stamping updated_at to
-// now. Call this *after* the photo's sidecar has been written so
-// the freshness comparison holds. Returns 0 on success.
+// Upsert the n-th photo's edit-render JPEG, stamping updated_at with
+// the wall clock in nanoseconds. Call this *after* the photo's
+// sidecar has been written so the freshness comparison holds.
+// Returns 0 on success.
 int  ap_library_store_thumbnail(ap_library *lib, int index,
                                 const unsigned char *jpeg, size_t size);
 

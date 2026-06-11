@@ -2290,8 +2290,11 @@ int ap_library_thumbnail_blob(const ap_library *lib, int index,
 
     int rc = -1;
     if (sqlite3_step(stmt) == SQLITE_ROW) {
+        // Both sides in nanoseconds: a whole-second compare kept a
+        // stale render "fresh" forever when the sidecar was edited in
+        // the same second it was stamped.
         int64_t updated_at = sqlite3_column_int64(stmt, 1);
-        if (updated_at >= (int64_t)side_st.st_mtime) {
+        if (updated_at >= (int64_t)ap_stat_mtime_ns(&side_st)) {
             const void *blob = sqlite3_column_blob(stmt, 0);
             int          len = sqlite3_column_bytes(stmt, 0);
             if (blob && len > 0) {
@@ -2324,9 +2327,16 @@ int ap_library_store_thumbnail(ap_library *lib, int index,
         AP_ERROR("library: prepare thumb upsert: %s", sqlite3_errmsg(lib->db));
         return -1;
     }
+    // Stamp at nanosecond resolution to match the sidecar-mtime
+    // freshness compare in ap_library_thumbnail_blob. timespec_get may
+    // only resolve seconds on some platforms; that still scales to ns.
+    struct timespec now = {0};
+    timespec_get(&now, TIME_UTC);
+    int64_t now_ns = (int64_t)now.tv_sec * 1000000000LL
+                   + (int64_t)now.tv_nsec;
     sqlite3_bind_text(stmt, 1, lib->cache->photo_paths[index], -1, SQLITE_STATIC);
     sqlite3_bind_blob(stmt, 2, jpeg, (int)size, SQLITE_STATIC);
-    sqlite3_bind_int64(stmt, 3, (int64_t)time(NULL));
+    sqlite3_bind_int64(stmt, 3, now_ns);
     int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
     if (rc != SQLITE_DONE) {

@@ -60,6 +60,13 @@ int ap_atomic_commit_temp(const char *temp_path, const char *final_path);
 // Discard a temp from ap_atomic_temp_path (unlink). Safe on NULL.
 void ap_atomic_discard_temp(const char *temp_path);
 
+// nanosecond-resolution mtime from a stat buffer. POSIX exposes the
+// timespec as st_mtim (st_mtimespec on macOS); MSVC's stat carries
+// whole seconds only, which scale to ns so callers compare one unit
+// everywhere.
+struct stat;
+long long ap_stat_mtime_ns(const struct stat *st);
+
 #ifdef __cplusplus
 }
 #endif
