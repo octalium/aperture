@@ -761,6 +761,7 @@ static void draw_save_as_pipeline_modal(ap_app *app, ap_photo *photo,
                     snprintf(g_save_status, sizeof(g_save_status),
                              "Pipeline \"%s\" overwritten.",
                              g_save_as_name);
+                    ap_panel_pipelines_generation++;
                     igCloseCurrentPopup();
                     g_save_as_pending_overwrite = false;
                 } else {
@@ -779,6 +780,7 @@ static void draw_save_as_pipeline_modal(ap_app *app, ap_photo *photo,
             if (ap_pipeline_create(g_save_as_name, stack, &new_id) == 0) {
                 snprintf(g_save_status, sizeof(g_save_status),
                          "Saved as \"%s\".", g_save_as_name);
+                ap_panel_pipelines_generation++;
                 igCloseCurrentPopup();
             } else {
                 // Probably a name collision — flip into overwrite mode

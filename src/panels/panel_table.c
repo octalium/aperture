@@ -12,6 +12,8 @@ bool ap_panel_visible_library_metadata  = false;
 bool ap_panel_visible_library_pipelines = false;
 bool ap_panel_visible_library_groups    = false;
 
+unsigned ap_panel_pipelines_generation = 1;
+
 extern const ap_panel panel_photo_edit;
 extern const ap_panel panel_photo_keywords;
 extern const ap_panel panel_photo_metadata;
