@@ -208,6 +208,9 @@ static int parse_headers(const char *buf, size_t len, resp_headers *h)
     const char *digits = d;
     long status = 0;
     while (d < status_eol && *d >= '0' && *d <= '9') {
+        // a status code is exactly 3 digits; reject longer runs before
+        // the accumulator can overflow.
+        if (d - digits >= 3) return -1;
         status = status * 10 + (*d - '0');
         d++;
     }
@@ -399,7 +402,7 @@ static int read_body_identity(tls_ctx          *t,
     }
     if (content_length >= 0 && (long)total != content_length) {
         snprintf(err, err_cap,
-                 "body truncated: got %zu of %ld bytes",
+                 "body length mismatch: got %zu of %ld bytes",
                  total, content_length);
         return -1;
     }
