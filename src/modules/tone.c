@@ -82,8 +82,10 @@ static int tone_pack_sigmoid(const ap_module *self,
     (void)str_params;
     (void)meta;
     tone_sigmoid_push_t *pc = push_out;
-    pc->contrast = params ? params[SLOT_CONTRAST] : 1.0f;
-    pc->pivot    = params ? params[SLOT_PIVOT]    : 0.18f;
+    pc->contrast = ap_clampf(params ? params[SLOT_CONTRAST] : 1.0f,
+                             0.5f, 4.0f);
+    pc->pivot    = ap_clampf(params ? params[SLOT_PIVOT] : 0.18f,
+                             0.05f, 0.5f);
     return 0;
 }
 
@@ -97,14 +99,22 @@ static int tone_pack_filmic(const ap_module *self,
     (void)meta;
     tone_filmic_push_t *pc = push_out;
     const float *d = self->params_default;
-    pc->exposure = params ? params[SLOT_FILMIC_EX] : d[SLOT_FILMIC_EX];
-    pc->A = params ? params[SLOT_FILMIC_A] : d[SLOT_FILMIC_A];
-    pc->B = params ? params[SLOT_FILMIC_B] : d[SLOT_FILMIC_B];
-    pc->C = params ? params[SLOT_FILMIC_C] : d[SLOT_FILMIC_C];
-    pc->D = params ? params[SLOT_FILMIC_D] : d[SLOT_FILMIC_D];
-    pc->E = params ? params[SLOT_FILMIC_E] : d[SLOT_FILMIC_E];
-    pc->F = params ? params[SLOT_FILMIC_F] : d[SLOT_FILMIC_F];
-    pc->W = params ? params[SLOT_FILMIC_W] : d[SLOT_FILMIC_W];
+    pc->exposure = ap_clampf(params ? params[SLOT_FILMIC_EX]
+                                    : d[SLOT_FILMIC_EX], 0.1f, 4.0f);
+    pc->A = ap_clampf(params ? params[SLOT_FILMIC_A] : d[SLOT_FILMIC_A],
+                      0.01f, 1.0f);
+    pc->B = ap_clampf(params ? params[SLOT_FILMIC_B] : d[SLOT_FILMIC_B],
+                      0.01f, 1.0f);
+    pc->C = ap_clampf(params ? params[SLOT_FILMIC_C] : d[SLOT_FILMIC_C],
+                      0.0f, 1.0f);
+    pc->D = ap_clampf(params ? params[SLOT_FILMIC_D] : d[SLOT_FILMIC_D],
+                      0.0f, 1.0f);
+    pc->E = ap_clampf(params ? params[SLOT_FILMIC_E] : d[SLOT_FILMIC_E],
+                      0.0f, 0.2f);
+    pc->F = ap_clampf(params ? params[SLOT_FILMIC_F] : d[SLOT_FILMIC_F],
+                      0.05f, 1.0f);
+    pc->W = ap_clampf(params ? params[SLOT_FILMIC_W] : d[SLOT_FILMIC_W],
+                      1.0f, 20.0f);
     return 0;
 }
 

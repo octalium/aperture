@@ -21,30 +21,8 @@ layout(push_constant) uniform PushConstants {
     uvec4 sensor_size_flip;
 } pc;
 
-uint channel_at(ivec2 p)
-{
-    return pc.channel_map[(p.y & 1) * 2 + (p.x & 1)];
-}
-
-float bayer(ivec2 p, ivec2 size)
-{
-    p = clamp(p, ivec2(0), size - 1);
-    uint  ch  = channel_at(p);
-    float raw = imageLoad(in_image, p).r * 65535.0;
-    return (raw - pc.black_level[ch]) / max(pc.white_minus_black[ch], 1.0);
-}
-
-ivec2 sensor_coord_of(ivec2 out_coord, ivec2 sensor_size, uint flip)
-{
-    if (flip == 3u) {
-        return sensor_size - ivec2(1) - out_coord;
-    } else if (flip == 5u) {
-        return ivec2(sensor_size.x - 1 - out_coord.y, out_coord.x);
-    } else if (flip == 6u) {
-        return ivec2(out_coord.y, sensor_size.y - 1 - out_coord.x);
-    }
-    return out_coord;
-}
+#include "bayer_common.glsl"
+#include "sensor_coord.glsl"
 
 bool is_green(uint ch) { return ch == 1u || ch == 3u; }
 
@@ -52,6 +30,9 @@ bool is_green(uint ch) { return ch == 1u || ch == 3u; }
 // Hamilton-Adams edge-directed estimate at a red / blue site.
 float green_at(ivec2 p, ivec2 size)
 {
+    // clamp once so the green/non-green decision and the texels below
+    // derive from the same coordinate (callers pass off-image taps).
+    p = sensor_clamp(p, size);
     if (is_green(channel_at(p))) return bayer(p, size);
 
     float c   = bayer(p, size);
