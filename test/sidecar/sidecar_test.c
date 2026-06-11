@@ -295,6 +295,19 @@ static void test_load_culling_groups(void)
     AP_TEST_ASSERT(strcmp(gg.names[0], "rejects") == 0,
                    "groups[0]='%s'", gg.names[0]);
 
+    // The combined single-parse loader must agree with both
+    // single-purpose loaders.
+    ap_photo_culling bc; ap_photo_culling_clear(&bc);
+    ap_photo_groups bg; bg.count = 0;
+    rc = ap_sidecar_load_groups_culling(raw, &bg, &bc);
+    AP_TEST_ASSERT(rc == 0, "load_groups_culling: rc=%d", rc);
+    AP_TEST_ASSERT(bc.rating == 3 && bc.flag == AP_FLAG_REJECT &&
+                       bc.color == AP_COLOR_RED,
+                   "combined culling mismatch r=%d f=%d c=%d",
+                   bc.rating, (int)bc.flag, (int)bc.color);
+    AP_TEST_ASSERT(bg.count == 1 && strcmp(bg.names[0], "rejects") == 0,
+                   "combined groups mismatch count=%d", bg.count);
+
     AP_TEST_ASSERT(ap_sidecar_remove(raw) == 0, "sidecar_remove");
     aptest_tmpdir_rm(tmp);
 }

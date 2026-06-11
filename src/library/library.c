@@ -925,35 +925,36 @@ static void backfill_identity_column(sqlite3 *db)
 }
 
 // Stat every photo with a NULL `size` and write the on-disk byte
-// count back. One-shot pass on library open; subsequent imports
-// store the size at copy time. Wrapped in a single transaction so
-// the WAL doesn't grow per-row.
-static void backfill_photo_sizes(ap_library *lib)
+// count back. Runs in the off-thread rescan; imports store the size
+// at copy time, so this only does real work for files that reached
+// the db without one (scan-discovered, pre-upgrade rows). Wrapped in
+// a single transaction so the WAL doesn't grow per-row.
+static void backfill_photo_sizes(sqlite3 *db, const char *root)
 {
-    if (!lib || !lib->db || !lib->root) return;
+    if (!db || !root) return;
 
     sqlite3_stmt *sel = NULL;
-    if (sqlite3_prepare_v2(lib->db,
+    if (sqlite3_prepare_v2(db,
             "SELECT path FROM photos WHERE size IS NULL;",
             -1, &sel, NULL) != SQLITE_OK) {
         return;
     }
     sqlite3_stmt *upd = NULL;
-    if (sqlite3_prepare_v2(lib->db,
+    if (sqlite3_prepare_v2(db,
             "UPDATE photos SET size = ? WHERE path = ?;",
             -1, &upd, NULL) != SQLITE_OK) {
         sqlite3_finalize(sel);
         return;
     }
 
-    sqlite3_exec(lib->db, "BEGIN;", NULL, NULL, NULL);
+    sqlite3_exec(db, "BEGIN;", NULL, NULL, NULL);
     int filled = 0;
     while (sqlite3_step(sel) == SQLITE_ROW) {
         const char *rel = (const char *)sqlite3_column_text(sel, 0);
         if (!rel) continue;
         char abs[4096];
         if (snprintf(abs, sizeof(abs), "%s/%s",
-                     lib->root, rel) >= (int)sizeof(abs)) {
+                     root, rel) >= (int)sizeof(abs)) {
             continue;
         }
         struct stat st;
@@ -965,7 +966,7 @@ static void backfill_photo_sizes(ap_library *lib)
         sqlite3_bind_text (upd, 2, rel, -1, SQLITE_STATIC);
         if (sqlite3_step(upd) == SQLITE_DONE) filled++;
     }
-    sqlite3_exec(lib->db, "COMMIT;", NULL, NULL, NULL);
+    sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL);
 
     sqlite3_finalize(upd);
     sqlite3_finalize(sel);
@@ -1143,10 +1144,8 @@ static bool cache_progress_tick(cache_build_ctx *bp)
     return bp->cancellable ? keep : true;
 }
 
-static int cache_load_groups(sqlite3 *db, ap_library_cache *cache,
-                             const char *root, cache_build_ctx *bp);
-static int cache_load_culling(sqlite3 *db, ap_library_cache *cache,
-                              const char *root, cache_build_ctx *bp);
+static int cache_load_sidecars(sqlite3 *db, ap_library_cache *cache,
+                               const char *root, cache_build_ctx *bp);
 
 static const char *sort_order_clause(ap_library_sort sort)
 {
@@ -1219,6 +1218,10 @@ static int db_rescan(sqlite3 *db, const char *root)
     // Scan only adds; reconcile the other direction too. prune drops
     // db rows whose files have been removed.
     prune_missing_photos(db, root);
+
+    // Fill sizes for rows the scan added (imports store theirs at copy
+    // time); no-op when every row already has one.
+    backfill_photo_sizes(db, root);
     return 0;
 }
 
@@ -1336,22 +1339,21 @@ ap_library_cache *ap_library_cache_build(
         return NULL;
     }
 
-    // The sidecar passes are cancellable for RELOAD/RESCAN (no db
+    // The sidecar pass is cancellable for RELOAD/RESCAN (no db
     // mutation to reflect), but not for DELETE — its post-delete cache
     // must be complete so the swap matches the files actually removed.
     cache_build_ctx ctx = {
         .cb          = progress,
         .ud          = ud,
         .done        = 0,
-        .total       = 2 * cache->photo_count,
+        .total       = cache->photo_count,
         .cancellable = (op != AP_LIBRARY_OP_DELETE),
     };
 
-    int gr = cache_load_groups(db, cache, root, &ctx);
-    int cr = (gr == 0) ? cache_load_culling(db, cache, root, &ctx) : 0;
+    int sr = cache_load_sidecars(db, cache, root, &ctx);
     sqlite3_close(db);
 
-    if (gr < 0 || cr < 0 || gr == 1 || cr == 1) {
+    if (sr != 0) {
         // <0 is an error, ==1 is a cancel during a cancellable build.
         ap_library_cache_free(cache);
         return NULL;
@@ -1462,31 +1464,126 @@ static void cache_registry_remove(sqlite3 *db, ap_library_cache *cache,
     }
 }
 
-// Build the group registry + per-photo membership index. The `groups`
-// table seeds the registry; any group a sidecar references that the
-// table is missing gets folded in, keeping the registry a superset of
-// all membership.
-static int cache_load_groups(sqlite3 *db, ap_library_cache *cache,
-                             const char *root, cache_build_ctx *bp)
+// Seed the cache's group registry from the `groups` table.
+static void cache_load_registry(sqlite3 *db, ap_library_cache *cache)
 {
     cache->group_count = 0;
-    if (db) {
-        sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(db,
-                "SELECT name FROM groups ORDER BY name;",
-                -1, &st, NULL) == SQLITE_OK) {
-            while (sqlite3_step(st) == SQLITE_ROW &&
-                   cache->group_count < AP_LIBRARY_GROUPS_MAX) {
-                const char *n = (const char *)sqlite3_column_text(st, 0);
-                if (n) {
-                    snprintf(cache->group_names[cache->group_count],
-                             AP_GROUP_NAME_LEN, "%s", n);
-                    cache->group_count++;
-                }
-            }
-            sqlite3_finalize(st);
+    if (!db) return;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT name FROM groups ORDER BY name;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return;
+    }
+    while (sqlite3_step(st) == SQLITE_ROW &&
+           cache->group_count < AP_LIBRARY_GROUPS_MAX) {
+        const char *n = (const char *)sqlite3_column_text(st, 0);
+        if (n) {
+            snprintf(cache->group_names[cache->group_count],
+                     AP_GROUP_NAME_LEN, "%s", n);
+            cache->group_count++;
         }
     }
+    sqlite3_finalize(st);
+}
+
+static const char CULLING_UPDATE_SQL[] =
+    "UPDATE photos SET rating = ?, flag = ?, color = ? WHERE path = ?;";
+
+// Run one culling UPDATE on an already-prepared CULLING_UPDATE_SQL
+// statement. `db` is only used for error reporting.
+static void store_culling_row_stmt(sqlite3 *db, sqlite3_stmt *st,
+                                   const char *rel,
+                                   const ap_photo_culling *c)
+{
+    sqlite3_reset(st);
+    sqlite3_bind_int(st, 1, c->rating);
+    sqlite3_bind_int(st, 2, (int)c->flag);
+    sqlite3_bind_int(st, 3, (int)c->color);
+    sqlite3_bind_text(st, 4, rel, -1, SQLITE_STATIC);
+    if (sqlite3_step(st) != SQLITE_DONE) {
+        AP_WARN("library: culling update step: %s", sqlite3_errmsg(db));
+    }
+}
+
+// Write a photo's cached culling columns from its rel path. Single-shot
+// callers only; batch writers prepare CULLING_UPDATE_SQL once instead.
+static void store_culling_row(sqlite3 *db, const char *rel,
+                              const ap_photo_culling *c)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, CULLING_UPDATE_SQL, -1, &st, NULL)
+            != SQLITE_OK) {
+        AP_WARN("library: prepare culling update: %s", sqlite3_errmsg(db));
+        return;
+    }
+    store_culling_row_stmt(db, st, rel, c);
+    sqlite3_finalize(st);
+}
+
+// Sorted path -> cache-index table so a full-table SELECT's rows (which
+// come back in arbitrary order) can be matched to cache slots in
+// O(log n) each.
+typedef struct {
+    const char *path;
+    int         idx;
+} path_slot;
+
+static int path_slot_cmp(const void *a, const void *b)
+{
+    return strcmp(((const path_slot *)a)->path,
+                  ((const path_slot *)b)->path);
+}
+
+// Seed the cache's culling cells from the photos table's cached
+// columns in ONE query over all rows (no per-photo round-trips). The
+// cells must already be allocated + cleared. Returns 0 on success.
+static int cache_seed_culling(sqlite3 *db, ap_library_cache *cache)
+{
+    path_slot *slots = malloc((size_t)cache->photo_count * sizeof(*slots));
+    if (!slots) {
+        AP_ERROR("library: culling seed index alloc failed");
+        return -1;
+    }
+    for (int i = 0; i < cache->photo_count; i++) {
+        slots[i] = (path_slot){ cache->photo_paths[i], i };
+    }
+    qsort(slots, (size_t)cache->photo_count, sizeof(*slots), path_slot_cmp);
+
+    sqlite3_stmt *sel = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT path, rating, flag, color FROM photos;",
+            -1, &sel, NULL) != SQLITE_OK) {
+        AP_ERROR("library: prepare culling select: %s", sqlite3_errmsg(db));
+        free(slots);
+        return -1;
+    }
+    while (sqlite3_step(sel) == SQLITE_ROW) {
+        const char *p = (const char *)sqlite3_column_text(sel, 0);
+        if (!p) continue;
+        path_slot key = { p, 0 };
+        path_slot *hit = bsearch(&key, slots, (size_t)cache->photo_count,
+                                 sizeof(*slots), path_slot_cmp);
+        if (!hit) continue;
+        ap_photo_culling *c = &cache->photo_culling[hit->idx];
+        c->rating = ap_rating_clamp(sqlite3_column_int(sel, 1));
+        c->flag   = (ap_flag)sqlite3_column_int(sel, 2);
+        c->color  = (ap_color_label)sqlite3_column_int(sel, 3);
+    }
+    sqlite3_finalize(sel);
+    free(slots);
+    return 0;
+}
+
+// Allocate the per-photo group/culling arrays and seed them from the
+// db alone: the registry from the `groups` table, the culling cells
+// from the photos table's cached columns. No sidecar or filesystem
+// I/O — ap_library_open uses this so opening is db-only fast, with the
+// disk truth delivered by the next off-thread cache build. Returns 0
+// on success.
+static int cache_seed_from_db(sqlite3 *db, ap_library_cache *cache)
+{
+    cache_load_registry(db, cache);
 
     if (cache->photo_count <= 0) {
         return 0;
@@ -1497,101 +1594,87 @@ static int cache_load_groups(sqlite3 *db, ap_library_cache *cache,
         AP_ERROR("library: group index alloc failed");
         return -1;
     }
-    for (int i = 0; i < cache->photo_count; i++) {
-        char path[4096];
-        if (cache_abs_path(cache, root, i, path, sizeof(path)) != 0) {
-            continue;
-        }
-        ap_sidecar_load_groups(path, &cache->photo_groups[i]);
-        for (int g = 0; g < cache->photo_groups[i].count; g++) {
-            cache_registry_add(db, cache, cache->photo_groups[i].names[g]);
-        }
-        if (!cache_progress_tick(bp)) return 1;  // cancelled
-    }
-    return 0;
-}
-
-// Write a photo's cached culling columns from its rel path.
-static void store_culling_row(sqlite3 *db, const char *rel,
-                              const ap_photo_culling *c)
-{
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-            "UPDATE photos SET rating = ?, flag = ?, color = ? "
-            "WHERE path = ?;",
-            -1, &st, NULL) != SQLITE_OK) {
-        AP_WARN("library: prepare culling update: %s", sqlite3_errmsg(db));
-        return;
-    }
-    sqlite3_bind_int(st, 1, c->rating);
-    sqlite3_bind_int(st, 2, (int)c->flag);
-    sqlite3_bind_int(st, 3, (int)c->color);
-    sqlite3_bind_text(st, 4, rel, -1, SQLITE_STATIC);
-    if (sqlite3_step(st) != SQLITE_DONE) {
-        AP_WARN("library: culling update step: %s", sqlite3_errmsg(db));
-    }
-    sqlite3_finalize(st);
-}
-
-// Build the in-memory culling cache. The sidecar is the source of
-// truth: each photo's sidecar is parsed and, where it disagrees with
-// the cached db columns, the db is reconciled (so culling set outside
-// aperture is picked up). Mirrors load_group_cache.
-static int cache_load_culling(sqlite3 *db, ap_library_cache *cache,
-                              const char *root, cache_build_ctx *bp)
-{
-    if (cache->photo_count <= 0) {
-        return 0;
-    }
     cache->photo_culling = calloc((size_t)cache->photo_count,
                                   sizeof(*cache->photo_culling));
     if (!cache->photo_culling) {
         AP_ERROR("library: culling cache alloc failed");
         return -1;
     }
+    for (int i = 0; i < cache->photo_count; i++) {
+        ap_photo_culling_clear(&cache->photo_culling[i]);
+    }
+    return cache_seed_culling(db, cache);
+}
 
-    // Seed from the db columns first — the fast path when sidecars and
-    // cache already agree.
-    sqlite3_stmt *sel = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT rating, flag, color FROM photos WHERE path = ?;",
-            -1, &sel, NULL) != SQLITE_OK) {
-        AP_ERROR("library: prepare culling select: %s", sqlite3_errmsg(db));
+// Build the per-photo group index + culling cache in ONE pass with ONE
+// sidecar parse per photo. The `groups` table seeds the registry (any
+// group a sidecar references that the table is missing gets folded in,
+// keeping the registry a superset of all membership); the db's cached
+// culling columns seed the cells, then each sidecar — the source of
+// truth — is reconciled on top, with divergent rows written back in a
+// single transaction (so culling set outside aperture is picked up).
+static int cache_load_sidecars(sqlite3 *db, ap_library_cache *cache,
+                               const char *root, cache_build_ctx *bp)
+{
+    if (cache_seed_from_db(db, cache) < 0) {
         return -1;
     }
+    if (cache->photo_count <= 0) {
+        return 0;
+    }
+
+    // indices whose sidecar disagrees with the seeded db columns
+    int *dirty = malloc((size_t)cache->photo_count * sizeof(*dirty));
+    if (!dirty) {
+        AP_ERROR("library: culling reconcile list alloc failed");
+        return -1;
+    }
+    int dirty_count = 0;
 
     for (int i = 0; i < cache->photo_count; i++) {
-        ap_photo_culling *cached = &cache->photo_culling[i];
-        ap_photo_culling_clear(cached);
-
-        sqlite3_reset(sel);
-        sqlite3_bind_text(sel, 1, cache->photo_paths[i], -1, SQLITE_STATIC);
-        if (sqlite3_step(sel) == SQLITE_ROW) {
-            cached->rating = ap_rating_clamp(sqlite3_column_int(sel, 0));
-            cached->flag   = (ap_flag)sqlite3_column_int(sel, 1);
-            cached->color  = (ap_color_label)sqlite3_column_int(sel, 2);
-        }
-
-        // Reconcile against the sidecar (source of truth). When no
-        // sidecar exists the cached db value stands.
         char path[4096];
-        if (cache_abs_path(cache, root, i, path, sizeof(path)) == 0) {
-            ap_photo_culling side;
-            if (ap_sidecar_load_culling(path, &side) == 0) {
-                if (side.rating != cached->rating ||
-                    side.flag   != cached->flag   ||
-                    side.color  != cached->color) {
-                    *cached = side;
-                    store_culling_row(db, cache->photo_paths[i], cached);
-                }
+        if (cache_abs_path(cache, root, i, path, sizeof(path)) != 0) {
+            continue;
+        }
+        ap_photo_culling side;
+        if (ap_sidecar_load_groups_culling(path, &cache->photo_groups[i],
+                                           &side) == 0) {
+            for (int g = 0; g < cache->photo_groups[i].count; g++) {
+                cache_registry_add(db, cache,
+                                   cache->photo_groups[i].names[g]);
+            }
+            ap_photo_culling *cached = &cache->photo_culling[i];
+            if (side.rating != cached->rating ||
+                side.flag   != cached->flag   ||
+                side.color  != cached->color) {
+                *cached = side;
+                dirty[dirty_count++] = i;
             }
         }
         if (!cache_progress_tick(bp)) {           // cancelled
-            sqlite3_finalize(sel);
+            free(dirty);
             return 1;
         }
     }
-    sqlite3_finalize(sel);
+
+    if (dirty_count > 0) {
+        sqlite3_stmt *upd = NULL;
+        if (sqlite3_prepare_v2(db, CULLING_UPDATE_SQL, -1, &upd, NULL)
+                == SQLITE_OK) {
+            sqlite3_exec(db, "BEGIN;", NULL, NULL, NULL);
+            for (int k = 0; k < dirty_count; k++) {
+                int i = dirty[k];
+                store_culling_row_stmt(db, upd, cache->photo_paths[i],
+                                       &cache->photo_culling[i]);
+            }
+            sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL);
+            sqlite3_finalize(upd);
+        } else {
+            AP_WARN("library: prepare culling update: %s",
+                    sqlite3_errmsg(db));
+        }
+    }
+    free(dirty);
     return 0;
 }
 
@@ -1795,30 +1878,11 @@ ap_library *ap_library_open(const char *path)
     if (set_schema_kv(lib->db, "library_id",       lib->id)             < 0) goto fail;
     if (set_schema_kv(lib->db, "library_path",     lib->root)           < 0) goto fail;
 
-    sqlite3_stmt *insert_stmt = NULL;
-    int rc = sqlite3_prepare_v2(lib->db,
-        "INSERT OR IGNORE INTO photos(path, added_at) VALUES (?, ?);",
-        -1, &insert_stmt, NULL);
-    if (rc != SQLITE_OK) {
-        AP_ERROR("ap_library_open: prepare insert: %s", sqlite3_errmsg(lib->db));
-        goto fail;
-    }
-
-    int64_t now = (int64_t)time(NULL);
-
-    sqlite3_exec(lib->db, "BEGIN;", NULL, NULL, NULL);
-    scan_dir(lib->db, insert_stmt, lib->root, "", now);
-    sqlite3_exec(lib->db, "COMMIT;", NULL, NULL, NULL);
-    sqlite3_finalize(insert_stmt);
-
-    // Scan only adds; reconcile the other direction too.
-    prune_missing_photos(lib->db, lib->root);
-
-    // One-shot: stat any photos with NULL size and fill the column.
-    // Subsequent imports store size at copy time, so this only does
-    // real work the first time the library is opened after upgrade.
-    backfill_photo_sizes(lib);
-
+    // Db-only from here: the photo list + group/culling caches come
+    // from the last session's rows so the open is fast regardless of
+    // library size. No disk scan, no sidecar parses — the caller runs
+    // an off-thread RESCAN cache build (ap_library_cache_build) to
+    // reconcile with the filesystem and swap the disk truth in.
     lib->cache = calloc(1, sizeof(*lib->cache));
     if (!lib->cache) {
         AP_ERROR("library: cache alloc failed");
@@ -1841,8 +1905,7 @@ ap_library *ap_library_open(const char *path)
         }
     }
 
-    if (cache_load_groups(lib->db, lib->cache, lib->root, NULL)   < 0) goto fail;
-    if (cache_load_culling(lib->db, lib->cache, lib->root, NULL) < 0) goto fail;
+    if (cache_seed_from_db(lib->db, lib->cache) < 0) goto fail;
 
     AP_INFO("library: %s [%s] (%d photos)",
             lib->root, lib->id, lib->cache->photo_count);
@@ -2102,7 +2165,9 @@ int ap_library_photo_remove(ap_library *lib, int index)
 
     free(lib->cache->photo_paths[index]);
     if (lib->thumbs && lib->thumbs[index]) {
-        ap_thumbnail_destroy(lib->thumbs[index]);
+        // may still be grid-bound; defer (gates pass immediately when the
+        // caller already idled the device).
+        ap_thumbnail_retire(lib->thumbs[index]);
     }
 
     int tail = lib->cache->photo_count - index - 1;
@@ -2151,11 +2216,14 @@ ap_thumbnail *ap_library_thumbnail(const ap_library *lib, int index)
 void ap_library_set_thumbnail(ap_library *lib, int index, ap_thumbnail *t)
 {
     if (!lib || !lib->thumbs || index < 0 || index >= lib->cache->photo_count) {
+        // never bound to a descriptor: immediate destroy is safe.
         if (t) ap_thumbnail_destroy(t);
         return;
     }
     if (lib->thumbs[index]) {
-        ap_thumbnail_destroy(lib->thumbs[index]);
+        // the old thumbnail may be grid-bound and sampled by in-flight
+        // frames; defer its destruction past the in-flight window.
+        ap_thumbnail_retire(lib->thumbs[index]);
     }
     lib->thumbs[index] = t;
 }
@@ -2176,7 +2244,10 @@ void ap_library_invalidate_thumbnail(ap_library *lib, int index)
 {
     if (!lib || !lib->thumbs || index < 0 || index >= lib->cache->photo_count) return;
     if (lib->thumbs[index]) {
-        ap_thumbnail_destroy(lib->thumbs[index]);
+        // up to APERTURE_FRAMES_IN_FLIGHT submitted frames may still sample
+        // the view through the grid's descriptor array; the retire list
+        // keeps it alive past that window (#587).
+        ap_thumbnail_retire(lib->thumbs[index]);
         lib->thumbs[index] = NULL;
     }
     if (lib->thumb_failed) {
@@ -2223,8 +2294,11 @@ int ap_library_thumbnail_blob(const ap_library *lib, int index,
 
     int rc = -1;
     if (sqlite3_step(stmt) == SQLITE_ROW) {
+        // Both sides in nanoseconds: a whole-second compare kept a
+        // stale render "fresh" forever when the sidecar was edited in
+        // the same second it was stamped.
         int64_t updated_at = sqlite3_column_int64(stmt, 1);
-        if (updated_at >= (int64_t)side_st.st_mtime) {
+        if (updated_at >= (int64_t)ap_stat_mtime_ns(&side_st)) {
             const void *blob = sqlite3_column_blob(stmt, 0);
             int          len = sqlite3_column_bytes(stmt, 0);
             if (blob && len > 0) {
@@ -2257,9 +2331,16 @@ int ap_library_store_thumbnail(ap_library *lib, int index,
         AP_ERROR("library: prepare thumb upsert: %s", sqlite3_errmsg(lib->db));
         return -1;
     }
+    // Stamp at nanosecond resolution to match the sidecar-mtime
+    // freshness compare in ap_library_thumbnail_blob. timespec_get may
+    // only resolve seconds on some platforms; that still scales to ns.
+    struct timespec now = {0};
+    timespec_get(&now, TIME_UTC);
+    int64_t now_ns = (int64_t)now.tv_sec * 1000000000LL
+                   + (int64_t)now.tv_nsec;
     sqlite3_bind_text(stmt, 1, lib->cache->photo_paths[index], -1, SQLITE_STATIC);
     sqlite3_bind_blob(stmt, 2, jpeg, (int)size, SQLITE_STATIC);
-    sqlite3_bind_int64(stmt, 3, (int64_t)time(NULL));
+    sqlite3_bind_int64(stmt, 3, now_ns);
     int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
     if (rc != SQLITE_DONE) {
@@ -2489,10 +2570,16 @@ void ap_library_commit_culling_batch(ap_library *lib, const int *indices,
         return;
     }
     // Update the in-memory cells + the cached db columns only for the
-    // photos whose sidecar write succeeded (`ok`, NULL = all), in one
-    // transaction so the WAL takes a single commit rather than one per
-    // photo. A photo whose write was refused keeps its old cached value
-    // — the sidecar is the source of truth.
+    // photos whose sidecar write succeeded (`ok`, NULL = all), with one
+    // prepared statement in one transaction so the WAL takes a single
+    // commit rather than one per photo. A photo whose write was refused
+    // keeps its old cached value — the sidecar is the source of truth.
+    sqlite3_stmt *upd = NULL;
+    if (sqlite3_prepare_v2(lib->db, CULLING_UPDATE_SQL, -1, &upd, NULL)
+            != SQLITE_OK) {
+        AP_WARN("library: prepare culling update: %s",
+                sqlite3_errmsg(lib->db));
+    }
     sqlite3_exec(lib->db, "BEGIN;", NULL, NULL, NULL);
     for (int k = 0; k < count; k++) {
         if (ok && !ok[k]) continue;
@@ -2501,9 +2588,13 @@ void ap_library_commit_culling_batch(ap_library *lib, const int *indices,
         ap_photo_culling c = cull[k];
         c.rating = ap_rating_clamp(c.rating);
         lib->cache->photo_culling[idx] = c;
-        store_culling_row(lib->db, lib->cache->photo_paths[idx], &c);
+        if (upd) {
+            store_culling_row_stmt(lib->db, upd,
+                                   lib->cache->photo_paths[idx], &c);
+        }
     }
     sqlite3_exec(lib->db, "COMMIT;", NULL, NULL, NULL);
+    sqlite3_finalize(upd);
 }
 
 void ap_library_apply_group_cache(ap_library *lib, int index,

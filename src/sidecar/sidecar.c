@@ -373,6 +373,33 @@ ap_sidecar_status ap_sidecar_load_culling(const char *source_path,
     return AP_SIDECAR_OK;
 }
 
+int ap_sidecar_load_groups_culling(const char *source_path,
+                                   ap_photo_groups *groups,
+                                   ap_photo_culling *culling)
+{
+    if (!source_path || !groups || !culling) return -1;
+    groups->count = 0;
+    ap_photo_culling_clear(culling);
+
+    char path[4096];
+    if (sidecar_path(source_path, path, sizeof(path)) < 0) return -1;
+
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+
+    char errbuf[256];
+    toml_table_t *root = toml_parse_file(f, errbuf, sizeof(errbuf));
+    fclose(f);
+    if (!root) return -1;
+
+    toml_table_t *aperture = toml_table_in(root, "aperture");
+    if (aperture) read_groups(aperture, groups);
+    toml_table_t *metadata = toml_table_in(root, "metadata");
+    if (metadata) read_culling(metadata, culling);
+    toml_free(root);
+    return 0;
+}
+
 int ap_sidecar_remove(const char *source_path)
 {
     if (!source_path) return -1;

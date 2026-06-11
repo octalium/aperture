@@ -48,7 +48,16 @@ ap_thumbnail *ap_thumbnail_upload(ap_gpu *g, const uint8_t *rgba,
 // Convenience: synchronous decode + upload. Equivalent to
 // decode_cpu + upload back-to-back. GPU thread only.
 ap_thumbnail *ap_thumbnail_create(ap_gpu *g, const char *path);
-void          ap_thumbnail_destroy(ap_thumbnail *t);
+
+// Immediate destroy. Only safe when the device is known idle (library
+// close / cache swap after ap_gpu_wait_idle) or the thumbnail was never
+// bound to a descriptor; otherwise use ap_thumbnail_retire.
+void ap_thumbnail_destroy(ap_thumbnail *t);
+
+// Deferred destroy via the gpu retire list: the texture stays alive until
+// no submitted frame can still sample it. Use for any thumbnail that may
+// be bound to the grid while frames are in flight.
+void ap_thumbnail_retire(ap_thumbnail *t);
 
 VkImageView ap_thumbnail_view(const ap_thumbnail *t);
 VkSampler   ap_thumbnail_sampler(const ap_thumbnail *t);

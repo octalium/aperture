@@ -16,6 +16,11 @@ struct ap_photo {
     ap_gpu *gpu;
     char   *path;
 
+    // identity that survives allocator reuse: a freed photo's address
+    // is often handed back to the next open, so pointer compares can't
+    // detect a photo change. assigned from a monotonic counter at open.
+    uint64_t open_id;
+
     int width;
     int height;
 
@@ -62,6 +67,12 @@ struct ap_photo {
     bool sidecar_unreadable;
 };
 
+// monotonic open counter; opens happen on the main thread only (the
+// async open path decodes on a worker but builds the photo at
+// completion), so no synchronisation is needed. starts at 1 so 0 is a
+// safe "no photo" sentinel for trackers.
+static uint64_t g_open_counter;
+
 static char *strdup_or_null(const char *s)
 {
     if (!s) return NULL;
@@ -73,11 +84,15 @@ static char *strdup_or_null(const char *s)
 }
 
 // Build the pipeline graph from photo->stack with current orientation
-// + meta + dims. Photo holds enough cached state that this can run
-// at any time after the texture has been uploaded.
-static int rebuild_graph(ap_photo *photo)
+// + meta + dims. Photo holds enough cached state that this can run at
+// any time after the texture has been uploaded. Create-then-swap: the
+// previous graph is never destroyed here — on success it is handed back
+// via *out_old (NULL on first build); on failure photo->graph and the
+// cached dims are left untouched so the photo stays fully renderable.
+static int rebuild_graph(ap_photo *photo, ap_pipeline_graph **out_old)
 {
-    if (!photo) return -1;
+    if (!photo || !out_old) return -1;
+    *out_old = NULL;
 
     int output_w, output_h;
     ap_raw_metadata graph_meta = photo->meta;
@@ -89,26 +104,25 @@ static int rebuild_graph(ap_photo *photo)
         output_h = photo->sensor_h;
         graph_meta.flip = 0;
     }
-    photo->width  = output_w;
-    photo->height = output_h;
 
-    if (photo->graph) {
-        ap_pipeline_graph_destroy(photo->graph);
-        photo->graph = NULL;
-    }
     // In view-raw mode, pass an empty stack so the graph builds only
     // its auto-inserted raw_passthrough + output_transfer.
     ap_edit_stack empty;
     ap_edit_stack_init(&empty);
     const ap_edit_stack *use_stack = photo->view_raw ? &empty : &photo->stack;
-    photo->graph = ap_pipeline_graph_create(photo->gpu, photo->texture,
-                                            output_w, output_h,
-                                            use_stack,
-                                            &graph_meta);
-    if (!photo->graph) {
+    ap_pipeline_graph *fresh = ap_pipeline_graph_create(photo->gpu,
+                                                        photo->texture,
+                                                        output_w, output_h,
+                                                        use_stack,
+                                                        &graph_meta);
+    if (!fresh) {
         AP_ERROR("photo: graph build failed for %s", photo->path);
         return -1;
     }
+    photo->width  = output_w;
+    photo->height = output_h;
+    *out_old      = photo->graph;
+    photo->graph  = fresh;
     return 0;
 }
 
@@ -135,8 +149,9 @@ ap_photo *ap_photo_open_with_raw(ap_gpu *g, const char *path,
         ap_raw_image_free(raw);
         return NULL;
     }
-    photo->gpu  = g;
-    photo->path = strdup_or_null(path);
+    photo->gpu     = g;
+    photo->open_id = ++g_open_counter;
+    photo->path    = strdup_or_null(path);
     if (!photo->path) {
         AP_ERROR("ap_photo_open_with_raw: path duplication failed");
         ap_raw_image_free(raw);
@@ -186,7 +201,8 @@ ap_photo *ap_photo_open_with_raw(ap_gpu *g, const char *path,
     photo->file_meta = raw->file_meta;
     ap_raw_image_free(raw);
 
-    if (rebuild_graph(photo) < 0) {
+    ap_pipeline_graph *old = NULL;
+    if (rebuild_graph(photo, &old) < 0) {
         goto fail;
     }
     return photo;
@@ -265,9 +281,9 @@ void ap_photo_close(ap_photo *photo)
     free(photo);
 }
 
-int ap_photo_rebuild_graph(ap_photo *photo)
+int ap_photo_rebuild_graph(ap_photo *photo, ap_pipeline_graph **out_old)
 {
-    return rebuild_graph(photo);
+    return rebuild_graph(photo, out_old);
 }
 
 int ap_photo_render(ap_photo *photo)
@@ -290,6 +306,7 @@ ap_edit_stack     *ap_photo_stack(ap_photo *photo) { return &photo->stack; }
 int                ap_photo_width(const ap_photo *photo)   { return photo->width; }
 int                ap_photo_height(const ap_photo *photo)  { return photo->height; }
 const char        *ap_photo_path(const ap_photo *photo)    { return photo->path; }
+uint64_t           ap_photo_open_id(const ap_photo *photo) { return photo ? photo->open_id : 0; }
 
 ap_viewport ap_photo_viewport(const ap_photo *photo)
 {

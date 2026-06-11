@@ -141,10 +141,12 @@ void        ap_app_close_library(ap_app *app);
 ap_library *ap_app_library(ap_app *app);
 
 // True while a background library job (sort / rescan / delete) is
-// rebuilding the cache. Callers that mutate live library state inline on
-// the main thread (the group registry panel) must defer while busy: an
-// inline lib->db / cache write would race the worker's db connection and
-// be discarded by the imminent cache swap.
+// rebuilding the cache, or a selection-edit batch is writing sidecars on
+// a worker. Callers that mutate live library state inline on the main
+// thread (the group registry panel) must defer while busy: an inline
+// lib->db / cache write would race the library worker's db connection
+// (and be discarded by the imminent cache swap), and an inline sidecar
+// rewrite would race the batch's per-photo writes.
 bool        ap_app_library_busy(const ap_app *app);
 // Open the Import Photos modal. Loads the library's persisted import
 // settings, clears any per-session source / status, and queues the

@@ -58,11 +58,13 @@ void ap_photo_set_respect_orientation(ap_photo *photo, bool yes);
 // this to the user at open time.
 bool ap_photo_sidecar_unreadable(const ap_photo *photo);
 
-// Rebuild the pipeline graph from the current stack. The display
-// image's views + slots change, so the caller must rebind the canvas
-// to the new graph (ap_canvas_bind_graph). Returns 0 on success; the
-// photo's previous graph is destroyed first.
-int ap_photo_rebuild_graph(ap_photo *photo);
+// Rebuild the pipeline graph from the current stack. Create-then-swap:
+// on success the new graph is installed and the previous one is handed
+// back via *out_old WITHOUT being destroyed — in-flight GPU work may
+// still reference it, so the caller owns its retirement (hand it to
+// ap_gpu_swap_graph). On failure the existing graph stays installed and
+// bound, and *out_old is NULL. Returns 0 on success.
+int ap_photo_rebuild_graph(ap_photo *photo, ap_pipeline_graph **out_old);
 
 // Render the photo's graph off-screen (dispatch the compute chain into
 // the display image) without the interactive frame loop. The export
@@ -91,6 +93,12 @@ void ap_photo_set_view_raw(ap_photo *photo, bool yes);
 int         ap_photo_width(const ap_photo *photo);
 int         ap_photo_height(const ap_photo *photo);
 const char *ap_photo_path(const ap_photo *photo);
+
+// Unique, monotonically increasing id assigned at open (never 0).
+// Use this — not the pointer — to detect a photo change across frames:
+// the allocator may hand a closed photo's address to the next open.
+// Returns 0 for NULL.
+uint64_t    ap_photo_open_id(const ap_photo *photo);
 
 // Active viewport — crop / rotation / flip / scale — from the photo's
 // first enabled "transform" stack entry, or the identity viewport

@@ -211,7 +211,10 @@ void drain_all_workers(ap_app *app);
 // queued is re-validated next frame. Call once per frame.
 void drain_completed_jobs(ap_app *app);
 void submit_pending_thumbs(ap_app *app);
-void submit_thumb_refresh(ap_app *app, int idx);
+// Read back the open photo's rendered pixels and refresh its library
+// thumbnail on a worker. Resolves the library index from the photo's
+// path at submit time (a cached index can be stale mid-navigation).
+void submit_thumb_refresh(ap_app *app);
 void toggle_rendered_thumbnails(ap_app *app);
 
 #endif /* APERTURE_APP_JOBS_H */

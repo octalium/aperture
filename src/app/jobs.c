@@ -312,10 +312,11 @@ static void handle_thumb_encode_complete(ap_app *app, thumb_encode_job *j)
         ap_library_store_thumbnail(app->library, j->idx, j->jpeg, j->jpeg_size);
         // Reset the cell that actually shows this photo before invalidating
         // its cached thumbnail. The grid is indexed by display cell, which
-        // differs from the library index under a group/search filter, so
-        // using j->idx here would leave the real cell's descriptor pointing
-        // at the image invalidate_thumbnail destroys below -> the next grid
-        // render samples a freed VkImageView -> VK_ERROR_DEVICE_LOST.
+        // differs from the library index under a group/search filter. The
+        // old view itself stays alive on the gpu retire list until no
+        // in-flight frame can sample it (invalidate -> ap_thumbnail_retire,
+        // #587); this unbind just keeps the descriptor pointing at live
+        // content going forward.
         if (app->grid) {
             int cell = cell_for_photo(app, j->idx);
             if (cell >= 0) {
@@ -393,14 +394,12 @@ static void handle_selection_edit_complete(ap_app *app, selection_edit_job *j)
                 if (!j->ok[k]) continue;  // unwritten render is unchanged
                 int idx = j->indices[k];
                 if (idx < 0 || idx >= n) continue;
-                // Unbind the grid descriptor BEFORE destroying the
-                // thumbnail's GPU views (ap_library_invalidate_thumbnail ->
-                // ap_thumbnail_destroy). The grid samples via an
-                // UPDATE_AFTER_BIND descriptor array; freeing a still-bound
-                // view makes the next grid render sample freed memory ->
-                // VK_ERROR_DEVICE_LOST one frame later. Mirrors the guard in
-                // handle_thumb_encode_complete. (For a large selection this
-                // would otherwise free many bound views at once — the crash.)
+                // Unbind the grid descriptor before invalidating. The
+                // views themselves outlive the in-flight window on the gpu
+                // retire list (ap_library_invalidate_thumbnail ->
+                // ap_thumbnail_retire, #587) — that is the safety
+                // mechanism; the unbind keeps the descriptor pointing at
+                // live content. Mirrors handle_thumb_encode_complete.
                 if (app->grid) {
                     int cell = cell_for_photo(app, idx);
                     if (cell >= 0) {
@@ -575,7 +574,16 @@ void discard_completed_item(ap_app *app, ap_work_item *it)
         ap_raw_image_free(&j->raw);
         // Coordinator decodes own no status bar (the coordinator's own
         // drain reclaims them); a generic drain here still frees the raw.
-        if (!j->from_coord) ap_status_progress_finish(j->status_id, 0);
+        if (!j->from_coord) {
+            ap_status_progress_finish(j->status_id, 0);
+            // Discarding the open the app is still waiting on must also
+            // clear the loading gate, or photo/library input stays
+            // wedged for the session (no completion will ever arrive).
+            if (j->gen == app->photo_load_gen && app->photo_loading) {
+                app->photo_loading   = false;
+                app->loading_path[0] = '\0';
+            }
+        }
         free(j);
     } else if (it->run == export_job_run) {
         export_job *j = (export_job *)it;
@@ -721,9 +729,16 @@ void submit_pending_thumbs(ap_app *app)
     }
 }
 
-void submit_thumb_refresh(ap_app *app, int idx)
+void submit_thumb_refresh(ap_app *app)
 {
-    if (idx < 0 || !app->photo || !app->library) return;
+    if (!app->photo || !app->library) return;
+
+    // Resolve the index from the photo whose pixels are read back, not
+    // from photo_library_idx: navigation moves that index before the
+    // async open lands, so a caller-supplied index could stamp the
+    // outgoing photo's render onto the target photo's thumbnail.
+    int idx = library_index_for_path(app, ap_photo_path(app->photo));
+    if (idx < 0) return;
 
     uint8_t *thumb_rgba = NULL;
     int      thumb_w = 0, thumb_h = 0;

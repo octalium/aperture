@@ -24,10 +24,20 @@ help:
 	@echo ""
 	@echo "variables: BUILD_DIR (=$(BUILD_DIR)), PREFIX (=$(PREFIX)), BUILDTYPE (=$(BUILDTYPE))"
 
+# meson latches buildtype/prefix at setup time; the stamp records what the
+# build dir was configured with so setup can reconcile on later runs.
+CONFIG_STAMP := $(BUILD_DIR)/.buildconfig
+CONFIG       := buildtype=$(BUILDTYPE) prefix=$(PREFIX)
+
 $(BUILD_DIR)/build.ninja:
 	meson setup $(BUILD_DIR) --buildtype=$(BUILDTYPE) --prefix=$(PREFIX)
+	@echo "$(CONFIG)" > $(CONFIG_STAMP)
 
 setup: $(BUILD_DIR)/build.ninja
+	@if [ "$$(cat $(CONFIG_STAMP) 2>/dev/null)" != "$(CONFIG)" ]; then \
+		meson configure $(BUILD_DIR) -Dbuildtype=$(BUILDTYPE) -Dprefix=$(PREFIX); \
+		echo "$(CONFIG)" > $(CONFIG_STAMP); \
+	fi
 
 compile: setup
 	meson compile -C $(BUILD_DIR)
@@ -64,10 +74,7 @@ app:
 	@if [ "$$(uname -s)" != "Darwin" ]; then \
 		echo "make app requires macOS (got $$(uname -s))" >&2; exit 1; \
 	fi
-	@if [ ! -d $(BUILD_DIR) ]; then \
-		meson setup $(BUILD_DIR) --buildtype=release --prefix=/usr/local; \
-	fi
-	meson compile -C $(BUILD_DIR)
+	$(MAKE) compile
 	BUILD_DIR=$(BUILD_DIR) pkg/macos/build-app.sh
 
 macos: app

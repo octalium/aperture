@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #ifdef _WIN32
 
@@ -182,4 +183,17 @@ int ap_atomic_commit_temp(const char *temp_path, const char *final_path)
 void ap_atomic_discard_temp(const char *temp_path)
 {
     if (temp_path) remove(temp_path);
+}
+
+long long ap_stat_mtime_ns(const struct stat *st)
+{
+#if defined(_WIN32)
+    return (long long)st->st_mtime * 1000000000LL;
+#elif defined(__APPLE__)
+    return (long long)st->st_mtimespec.tv_sec * 1000000000LL
+         + (long long)st->st_mtimespec.tv_nsec;
+#else
+    return (long long)st->st_mtim.tv_sec * 1000000000LL
+         + (long long)st->st_mtim.tv_nsec;
+#endif
 }

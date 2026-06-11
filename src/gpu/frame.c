@@ -123,16 +123,23 @@ void gpu_render_reset(struct ap_gpu *g)
     g->render_inflight_slot = -1;
     g->render_front_slot    = -1;
     g->render_front_value   = 0;
+    g->render_graph         = NULL;
+    // idle: every submitted render has completed; release retire gates.
+    g->render_complete_value = g->render_value;
 }
 
 int gpu_render_pump(struct ap_gpu *g, const ap_edit_stack *stack)
 {
     if (!g->current_graph) return 0;
 
-    // 1. Promote a finished in-flight render to the compositor. Poll the
-    //    fence — never wait. While a render is in flight, do not kick
-    //    another (one in flight; the next picks up the latest stack, which
-    //    coalesces a fast slider drag down to a single follow-up render).
+    // 1. Resolve a finished in-flight render. Poll the fence — never wait.
+    //    While a render is in flight, do not kick another (one in flight;
+    //    the next picks up the latest stack, which coalesces a fast slider
+    //    drag down to a single follow-up render). What happens to the
+    //    finished slot depends on which graph the render belongs to:
+    //    the current graph promotes as before; the pending swap graph's
+    //    first render completes the swap (rebind canvas, retire the old
+    //    graph); a render of an already-retired graph is discarded.
     if (g->render_inflight_slot >= 0) {
         VkResult fs = vkGetFenceStatus(g->device, g->render_fence);
         if (fs == VK_NOT_READY) {
@@ -142,16 +149,45 @@ int gpu_render_pump(struct ap_gpu *g, const ap_edit_stack *stack)
             AP_ERROR("render: vkGetFenceStatus -> %s", gpu_vk_result_str(fs));
             return -1;
         }
-        g->render_front_slot  = g->render_inflight_slot;
-        g->render_front_value = g->render_slot_value[g->render_front_slot];
-        if (g->current_canvas) {
-            ap_canvas_bind_slot(g->current_canvas, g->render_front_slot);
+        int slot = g->render_inflight_slot;
+        g->render_inflight_slot  = -1;
+        // observed complete by value, not by fence handle — the fence is
+        // about to be reset and reused; retire gates compare this counter.
+        g->render_complete_value = g->render_slot_value[slot];
+
+        ap_canvas *bind_canvas = g->current_canvas;
+        if (g->next_graph && g->render_graph == g->next_graph) {
+            // first render of the incoming graph: swap atomically. The old
+            // graph goes to the retire list (in-flight compositor frames may
+            // still sample its front slot); the canvas rebinds to the new
+            // slots in the same tick, so the image never blanks.
+            gpu_retire_push(g, g->current_graph, VK_NULL_HANDLE,
+                            VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
+            g->current_graph = g->next_graph;
+            g->next_graph    = NULL;
+            if (g->next_canvas) {
+                ap_canvas_bind_graph(g->next_canvas, g->current_graph);
+                bind_canvas = g->next_canvas;
+            }
+            g->next_canvas = NULL;
         }
-        g->render_inflight_slot = -1;
+        if (g->render_graph == g->current_graph) {
+            g->render_front_slot  = slot;
+            g->render_front_value = g->render_slot_value[slot];
+            if (bind_canvas) {
+                ap_canvas_bind_slot(bind_canvas, slot);
+            }
+        }
+        g->render_graph = NULL;
     }
 
-    // 2. Kick a new render only when the edit stack actually changed.
-    if (!ap_pipeline_graph_needs_render(g->current_graph, stack)) {
+    // 2. Kick a new render: the pending swap graph when one is set (it has
+    //    never recorded, and the stack now describes its stages — never
+    //    record the outgoing graph against it), otherwise the current graph
+    //    when the edit stack actually changed.
+    ap_pipeline_graph *target = g->next_graph ? g->next_graph
+                                              : g->current_graph;
+    if (!ap_pipeline_graph_needs_render(target, stack)) {
         return 0;
     }
 
@@ -162,13 +198,13 @@ int gpu_render_pump(struct ap_gpu *g, const ap_edit_stack *stack)
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
     VK_CHECK(vkBeginCommandBuffer(cmd, &bi));
-    int rc = ap_pipeline_graph_record(g->current_graph, cmd, stack);
+    int rc = ap_pipeline_graph_record(target, cmd, stack);
     if (rc != 1) {
         VK_CHECK(vkEndCommandBuffer(cmd));
         return rc < 0 ? -1 : 0;
     }
-    int slot = ap_pipeline_graph_next_slot(g->current_graph);
-    ap_pipeline_graph_present_copy(g->current_graph, cmd, slot);
+    int slot = ap_pipeline_graph_next_slot(target);
+    ap_pipeline_graph_present_copy(target, cmd, slot);
     VK_CHECK(vkEndCommandBuffer(cmd));
 
     uint64_t value = ++g->render_value;
@@ -194,6 +230,7 @@ int gpu_render_pump(struct ap_gpu *g, const ap_edit_stack *stack)
     VK_CHECK(vkResetFences(g->device, 1, &g->render_fence));
     VK_CHECK(vkQueueSubmit2(g->graphics_queue, 1, &submit, g->render_fence));
     g->render_inflight_slot = slot;
+    g->render_graph         = target;
     return 0;
 }
 
@@ -290,6 +327,12 @@ int gpu_frame_render(struct ap_gpu *g)
     gpu_frame *f = &g->frames[g->current_frame];
 
     VK_CHECK(vkWaitForFences(g->device, 1, &f->in_flight, VK_TRUE, UINT64_MAX));
+    // fences on one queue signal in submission order, so this slot's fence
+    // proves every compositor submit up to its submit_value is complete.
+    // Retire gates compare these monotonic counts, never fence handles.
+    if (f->submit_value > g->frame_complete_count) {
+        g->frame_complete_count = f->submit_value;
+    }
 
     uint32_t image_index = 0;
     VkResult acq = vkAcquireNextImageKHR(g->device, g->swapchain, UINT64_MAX,
@@ -369,6 +412,7 @@ int gpu_frame_render(struct ap_gpu *g)
     // so two frames never truly pipeline.
     VK_CHECK(vkResetFences(g->device, 1, &f->in_flight));
     VK_CHECK(vkQueueSubmit2(g->graphics_queue, 1, &submit, f->in_flight));
+    f->submit_value = ++g->frame_submit_count;
 
     VkPresentInfoKHR present = {
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
