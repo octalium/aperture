@@ -378,6 +378,12 @@ static int read_body_identity(tls_ctx          *t,
         if (feed_body(fn, user, chunk, (size_t)rc, err, err_cap) < 0) return -1;
         total += (size_t)rc;
     }
+    if (content_length >= 0 && (long)total != content_length) {
+        snprintf(err, err_cap,
+                 "body truncated: got %zu of %ld bytes",
+                 total, content_length);
+        return -1;
+    }
     return 0;
 }
 
