@@ -220,11 +220,7 @@ void install_loaded_photo(ap_app *app, photo_open_job *j)
     }
     ap_pipeline_graph *graph = ap_photo_graph(app->photo);
     ap_gpu_set_graph(app->gpu, graph);
-    ap_canvas_set_input(app->canvas,
-                        ap_pipeline_graph_output_view(graph),
-                        ap_pipeline_graph_output_sampler(graph),
-                        ap_pipeline_graph_output_width(graph),
-                        ap_pipeline_graph_output_height(graph));
+    ap_canvas_bind_graph(app->canvas, graph);
     ap_canvas_reset_view(app->canvas);
     app->mode = AP_MODE_PHOTO;
     bind_mode_view(app);

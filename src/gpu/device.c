@@ -119,6 +119,7 @@ static bool supports_required_features(VkPhysicalDevice dev)
     vkGetPhysicalDeviceFeatures2(dev, &f);
     return v13.synchronization2 == VK_TRUE
         && v13.dynamicRendering == VK_TRUE
+        && v12.timelineSemaphore == VK_TRUE
         && v12.runtimeDescriptorArray == VK_TRUE
         && v12.shaderSampledImageArrayNonUniformIndexing == VK_TRUE
         && v12.descriptorBindingSampledImageUpdateAfterBind == VK_TRUE;
@@ -220,6 +221,7 @@ int gpu_device_create(struct ap_gpu *g)
 
     VkPhysicalDeviceVulkan12Features v12 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+        .timelineSemaphore = VK_TRUE,
         .runtimeDescriptorArray = VK_TRUE,
         .shaderSampledImageArrayNonUniformIndexing = VK_TRUE,
         .descriptorBindingSampledImageUpdateAfterBind = VK_TRUE,

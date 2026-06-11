@@ -17,18 +17,25 @@ extern "C" {
 // Long-lived graphics pipeline that blits an image onto the swapchain
 // attachment with a view transform (zoom/pan, aspect-correct,
 // letterboxed). Created once for the lifetime of the window; the
-// currently-displayed photo is bound via ap_canvas_set_input.
+// currently-displayed photo is bound via ap_canvas_bind_graph.
 //
 // The pipeline is created against the GPU's current swapchain format
 // via VK_KHR_dynamic_rendering.
 ap_canvas *ap_canvas_create(ap_gpu *g);
 void       ap_canvas_destroy(ap_canvas *canvas);
 
-// Bind a sampled image as the canvas content. Pass view = VK_NULL_HANDLE
-// to clear (canvas will record nothing).
-void ap_canvas_set_input(ap_canvas *canvas,
-                         VkImageView view, VkSampler sampler,
-                         int image_width, int image_height);
+// Bind a graph's presentation ring as the canvas content: one pre-baked
+// descriptor set per slot, so the render flow can repoint the compositor
+// to a freshly-completed slot (ap_canvas_bind_slot) without ever mutating
+// a descriptor an in-flight frame references. Pass graph = NULL to clear.
+// The canvas records nothing until the first ap_canvas_bind_slot marks a
+// slot ready (slots hold no valid content until the first present-copy).
+void ap_canvas_bind_graph(ap_canvas *canvas, const ap_pipeline_graph *graph);
+
+// Select which presentation slot the compositor samples and mark the
+// canvas ready to record. Called by the render flow after present-copying
+// into `slot`.
+void ap_canvas_bind_slot(ap_canvas *canvas, int slot);
 
 // Set the viewport — crop / rotation / flip / scale — the canvas
 // displays the input image through. The pipeline still renders the

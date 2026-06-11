@@ -188,6 +188,26 @@ static int create_buffers(ap_pipeline_graph *graph, int width, int height)
         return -1;
     }
 
+    // Presentation ring: one sRGB-sampleable copy target per slot. Same
+    // base format as the display image so the render-to-slot copy is a
+    // plain byte copy; the sRGB view gives the canvas correct gamma. Only
+    // ever a transfer-copy destination and a sampled source.
+    VkFormat slot_view_formats[1] = { VK_FORMAT_R8G8B8A8_SRGB };
+    for (int i = 0; i < AP_DISPLAY_SLOTS; i++) {
+        if (graph_create_image(graph->gpu->device, graph->gpu->physical,
+                         width, height, VK_FORMAT_R8G8B8A8_UNORM,
+                         VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                           | VK_IMAGE_USAGE_SAMPLED_BIT,
+                         VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT,
+                         slot_view_formats, 1,
+                         &graph->slot_image[i], &graph->slot_memory[i]) < 0)
+            return -1;
+        if (graph_create_view(graph->gpu->device, graph->slot_image[i],
+                        VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_USAGE_SAMPLED_BIT,
+                        &graph->slot_view_srgb[i]) < 0) return -1;
+    }
+    graph->next_slot  = 0;
+
     // Aspect-preserving downscale to THUMB_MAX_EDGE on the long side.
     // If the rendered output is already smaller, just use its dims so
     // the blit doesn't upscale. Always at least 1x1 for safety.
@@ -878,6 +898,12 @@ void ap_pipeline_graph_destroy(ap_pipeline_graph *graph)
     if (graph->display_image)      vkDestroyImage(dev, graph->display_image, NULL);
     if (graph->display_memory)     vkFreeMemory(dev, graph->display_memory, NULL);
 
+    for (int i = 0; i < AP_DISPLAY_SLOTS; i++) {
+        if (graph->slot_view_srgb[i]) vkDestroyImageView(dev, graph->slot_view_srgb[i], NULL);
+        if (graph->slot_image[i])     vkDestroyImage(dev, graph->slot_image[i], NULL);
+        if (graph->slot_memory[i])    vkFreeMemory(dev, graph->slot_memory[i], NULL);
+    }
+
     for (int i = 0; i < AP_MODULE_MAX_SCRATCH; i++) {
         if (graph->scratch_view[i])   vkDestroyImageView(dev, graph->scratch_view[i], NULL);
         if (graph->scratch_image[i])  vkDestroyImage(dev, graph->scratch_image[i], NULL);
@@ -1117,6 +1143,17 @@ static bool stack_render_equal(const ap_edit_stack *a,
     return true;
 }
 
+bool ap_pipeline_graph_needs_render(const ap_pipeline_graph *graph,
+                                    const ap_edit_stack *stack)
+{
+    if (!graph || graph->stage_count == 0) return false;
+    if (!graph->has_recorded)              return true;
+    if (!stack)                            return true;
+    // Mirrors the short-circuit in ap_pipeline_graph_record: a render is
+    // needed iff something that feeds the compute chain changed.
+    return !stack_render_equal(&graph->record_snapshot, stack);
+}
+
 int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
                              const ap_edit_stack *stack)
 {
@@ -1345,7 +1382,7 @@ int ap_pipeline_graph_record(ap_pipeline_graph *graph, VkCommandBuffer cmd,
         // No histogram pass: still need the sample barrier for the canvas.
         compute_to_sample_barrier(cmd, graph->display_image);
     }
-    return 0;
+    return 1;   // dispatched (caller should present-copy this render)
 }
 
 int ap_pipeline_graph_set_stage_skip(ap_pipeline_graph *graph,
@@ -1368,9 +1405,114 @@ int ap_pipeline_graph_set_stage_skip(ap_pipeline_graph *graph,
     return -1;
 }
 
-VkImageView   ap_pipeline_graph_output_view(const ap_pipeline_graph *g)    { return g->display_view_srgb; }
+void ap_pipeline_graph_present_copy(ap_pipeline_graph *graph,
+                                    VkCommandBuffer cmd, int slot)
+{
+    if (!graph || slot < 0 || slot >= AP_DISPLAY_SLOTS) return;
+    VkImage dst = graph->slot_image[slot];
+
+    // Make the render target's final write available to a transfer read,
+    // and ready the destination slot as a copy target (its prior contents
+    // are discarded — the copy overwrites the whole image). Safe to reuse
+    // this slot because the round-robin spans AP_DISPLAY_SLOTS (= frames in
+    // flight + 1) on a single queue: the per-frame in_flight fence retires
+    // the compositor frame that last sampled this slot before it is reused,
+    // so no in-flight frame still reads it. Both images stay in GENERAL, so
+    // no layout churn.
+    VkImageMemoryBarrier2 pre[2] = {
+        {
+            .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
+                           | VK_PIPELINE_STAGE_2_COPY_BIT,
+            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+                           | VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .dstStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT,
+            .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+            .oldLayout     = VK_IMAGE_LAYOUT_GENERAL,
+            .newLayout     = VK_IMAGE_LAYOUT_GENERAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = graph->display_image,
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0, .levelCount = 1,
+                .baseArrayLayer = 0, .layerCount = 1,
+            },
+        },
+        {
+            .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            .srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            .dstStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT,
+            .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout     = VK_IMAGE_LAYOUT_GENERAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = dst,
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0, .levelCount = 1,
+                .baseArrayLayer = 0, .layerCount = 1,
+            },
+        },
+    };
+    VkDependencyInfo dep_pre = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 2,
+        .pImageMemoryBarriers    = pre,
+    };
+    vkCmdPipelineBarrier2(cmd, &dep_pre);
+
+    VkImageCopy region = {
+        .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+        .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+        .extent = { (uint32_t)graph->width, (uint32_t)graph->height, 1 },
+    };
+    vkCmdCopyImage(cmd, graph->display_image, VK_IMAGE_LAYOUT_GENERAL,
+                   dst, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+
+    VkImageMemoryBarrier2 post = {
+        .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        .oldLayout     = VK_IMAGE_LAYOUT_GENERAL,
+        .newLayout     = VK_IMAGE_LAYOUT_GENERAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = dst,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0, .levelCount = 1,
+            .baseArrayLayer = 0, .layerCount = 1,
+        },
+    };
+    VkDependencyInfo dep_post = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers    = &post,
+    };
+    vkCmdPipelineBarrier2(cmd, &dep_post);
+}
+
+int         ap_pipeline_graph_slot_count(const ap_pipeline_graph *g) { (void)g; return AP_DISPLAY_SLOTS; }
+VkImageView ap_pipeline_graph_slot_view(const ap_pipeline_graph *g, int i)
+{
+    if (!g || i < 0 || i >= AP_DISPLAY_SLOTS) return VK_NULL_HANDLE;
+    return g->slot_view_srgb[i];
+}
+
+int ap_pipeline_graph_next_slot(ap_pipeline_graph *g)
+{
+    if (!g) return 0;
+    int s = g->next_slot;
+    g->next_slot = (s + 1) % AP_DISPLAY_SLOTS;
+    return s;
+}
+
 VkSampler     ap_pipeline_graph_output_sampler(const ap_pipeline_graph *g) { return g->display_sampler; }
-VkImageLayout ap_pipeline_graph_output_layout(const ap_pipeline_graph *g)  { (void)g; return VK_IMAGE_LAYOUT_GENERAL; }
 int           ap_pipeline_graph_output_width(const ap_pipeline_graph *g)   { return g->width; }
 int           ap_pipeline_graph_output_height(const ap_pipeline_graph *g)  { return g->height; }
 

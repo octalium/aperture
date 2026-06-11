@@ -80,6 +80,17 @@ struct ap_pipeline_graph {
     VkImageView    display_view_uint;  // R8G8B8A8_UINT reinterpret for histogram
     VkSampler      display_sampler;
 
+    // Presentation ring: the render copies display_image into one of these
+    // slots so the swapchain compositor can sample a finished image while a
+    // new render proceeds. Each is R8G8B8A8_UNORM (sRGB view for sampling),
+    // written only by a transfer copy and read only by the canvas. next is
+    // the slot the upcoming present-copy will target (round-robin). The
+    // compositor's notion of the live front slot lives on ap_gpu, not here.
+    VkImage        slot_image[AP_DISPLAY_SLOTS];
+    VkDeviceMemory slot_memory[AP_DISPLAY_SLOTS];
+    VkImageView    slot_view_srgb[AP_DISPLAY_SLOTS];
+    int            next_slot;
+
     VkImage        thumb_image;
     VkDeviceMemory thumb_memory;
     int            thumb_width;

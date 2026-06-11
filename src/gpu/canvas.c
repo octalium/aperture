@@ -4,6 +4,7 @@
 
 #include "core/log.h"
 #include "edit/viewport.h"
+#include "gpu/pipeline_graph.h"
 
 #include "canvas_vert_spv.h"
 #include "canvas_frag_spv.h"
@@ -38,7 +39,13 @@ struct ap_canvas {
     VkPipelineLayout      pl;
     VkPipeline            pipeline;
     VkDescriptorPool      pool;
-    VkDescriptorSet       ds;
+    // One descriptor set per presentation slot, each pre-bound to that
+    // slot's sampled view. The compositor records ds_slot[active_slot];
+    // the render flow advances active_slot via ap_canvas_bind_slot after
+    // present-copying into that slot, so a set an in-flight frame is
+    // sampling is never mutated.
+    VkDescriptorSet       ds_slot[AP_DISPLAY_SLOTS];
+    int                   active_slot;
 
     bool         has_input;
     int          image_width;     // full rendered (source) image
@@ -79,11 +86,11 @@ static int create_descriptor(ap_canvas *canvas)
 
     VkDescriptorPoolSize pool_size = {
         .type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        .descriptorCount = 1,
+        .descriptorCount = AP_DISPLAY_SLOTS,
     };
     VkDescriptorPoolCreateInfo pci = {
         .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .maxSets       = 1,
+        .maxSets       = AP_DISPLAY_SLOTS,
         .poolSizeCount = 1,
         .pPoolSizes    = &pool_size,
     };
@@ -92,13 +99,15 @@ static int create_descriptor(ap_canvas *canvas)
         return -1;
     }
 
+    VkDescriptorSetLayout layouts[AP_DISPLAY_SLOTS];
+    for (int i = 0; i < AP_DISPLAY_SLOTS; i++) layouts[i] = canvas->dsl;
     VkDescriptorSetAllocateInfo dai = {
         .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .descriptorPool     = canvas->pool,
-        .descriptorSetCount = 1,
-        .pSetLayouts        = &canvas->dsl,
+        .descriptorSetCount = AP_DISPLAY_SLOTS,
+        .pSetLayouts        = layouts,
     };
-    if (vkAllocateDescriptorSets(canvas->gpu->device, &dai, &canvas->ds) != VK_SUCCESS) {
+    if (vkAllocateDescriptorSets(canvas->gpu->device, &dai, canvas->ds_slot) != VK_SUCCESS) {
         AP_ERROR("canvas: descriptor set alloc failed");
         return -1;
     }
@@ -268,42 +277,55 @@ void ap_canvas_destroy(ap_canvas *canvas)
     free(canvas);
 }
 
-void ap_canvas_set_input(ap_canvas *canvas,
-                         VkImageView view, VkSampler sampler,
-                         int image_width, int image_height)
+void ap_canvas_bind_graph(ap_canvas *canvas, const ap_pipeline_graph *graph)
 {
     if (!canvas) return;
 
-    if (!view || !sampler || image_width <= 0 || image_height <= 0) {
+    if (!graph) {
         canvas->has_input    = false;
         canvas->image_width  = 0;
         canvas->image_height = 0;
         return;
     }
 
-    VkDescriptorImageInfo info = {
-        .sampler     = sampler,
-        .imageView   = view,
-        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-    };
-    VkWriteDescriptorSet write = {
-        .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .dstSet          = canvas->ds,
-        .dstBinding      = 0,
-        .descriptorCount = 1,
-        .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        .pImageInfo      = &info,
-    };
-    vkUpdateDescriptorSets(canvas->gpu->device, 1, &write, 0, NULL);
+    VkSampler sampler = ap_pipeline_graph_output_sampler(graph);
+    int w = ap_pipeline_graph_output_width(graph);
+    int h = ap_pipeline_graph_output_height(graph);
+    int n = ap_pipeline_graph_slot_count(graph);
+    if (n > AP_DISPLAY_SLOTS) n = AP_DISPLAY_SLOTS;
 
-    canvas->has_input    = true;
-    canvas->image_width  = image_width;
-    canvas->image_height = image_height;
-    // Note: view state (zoom/pan) is intentionally preserved across
-    // input rebinds. Graph rebuilds on edit-stack changes go through
-    // here every time, and the user's zoom/pan should not snap back
-    // to the default on each edit. Call ap_canvas_reset_view at the
-    // genuine "new photo" sites instead.
+    for (int i = 0; i < n; i++) {
+        VkDescriptorImageInfo info = {
+            .sampler     = sampler,
+            .imageView   = ap_pipeline_graph_slot_view(graph, i),
+            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+        };
+        VkWriteDescriptorSet write = {
+            .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet          = canvas->ds_slot[i],
+            .dstBinding      = 0,
+            .descriptorCount = 1,
+            .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo      = &info,
+        };
+        vkUpdateDescriptorSets(canvas->gpu->device, 1, &write, 0, NULL);
+    }
+
+    canvas->image_width  = w;
+    canvas->image_height = h;
+    // Not yet sampleable: the slots hold no rendered content until the
+    // first present-copy. ap_canvas_bind_slot flips has_input on once the
+    // render flow has presented into a slot. View state (zoom/pan) is
+    // intentionally preserved across rebinds — see ap_canvas_reset_view
+    // for the genuine "new photo" reset.
+    canvas->has_input = false;
+}
+
+void ap_canvas_bind_slot(ap_canvas *canvas, int slot)
+{
+    if (!canvas || slot < 0 || slot >= AP_DISPLAY_SLOTS) return;
+    canvas->active_slot = slot;
+    canvas->has_input   = true;
 }
 
 static float fit_scale_for(int img_w, int img_h, int win_w, int win_h)
@@ -637,7 +659,7 @@ void ap_canvas_record(ap_canvas *canvas, VkCommandBuffer cmd,
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, canvas->pipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, canvas->pl,
-                            0, 1, &canvas->ds, 0, NULL);
+                            0, 1, &canvas->ds_slot[canvas->active_slot], 0, NULL);
     vkCmdPushConstants(cmd, canvas->pl, VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(pc), &pc);
     vkCmdDraw(cmd, 3, 1, 0, 0);
