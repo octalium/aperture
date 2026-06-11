@@ -67,11 +67,15 @@ static char *strdup_or_null(const char *s)
 }
 
 // Build the pipeline graph from photo->stack with current orientation
-// + meta + dims. Photo holds enough cached state that this can run
-// at any time after the texture has been uploaded.
-static int rebuild_graph(ap_photo *photo)
+// + meta + dims. Photo holds enough cached state that this can run at
+// any time after the texture has been uploaded. Create-then-swap: the
+// previous graph is never destroyed here — on success it is handed back
+// via *out_old (NULL on first build); on failure photo->graph and the
+// cached dims are left untouched so the photo stays fully renderable.
+static int rebuild_graph(ap_photo *photo, ap_pipeline_graph **out_old)
 {
-    if (!photo) return -1;
+    if (!photo || !out_old) return -1;
+    *out_old = NULL;
 
     int output_w, output_h;
     ap_raw_metadata graph_meta = photo->meta;
@@ -83,26 +87,25 @@ static int rebuild_graph(ap_photo *photo)
         output_h = photo->sensor_h;
         graph_meta.flip = 0;
     }
-    photo->width  = output_w;
-    photo->height = output_h;
 
-    if (photo->graph) {
-        ap_pipeline_graph_destroy(photo->graph);
-        photo->graph = NULL;
-    }
     // In view-raw mode, pass an empty stack so the graph builds only
     // its auto-inserted raw_passthrough + output_transfer.
     ap_edit_stack empty;
     ap_edit_stack_init(&empty);
     const ap_edit_stack *use_stack = photo->view_raw ? &empty : &photo->stack;
-    photo->graph = ap_pipeline_graph_create(photo->gpu, photo->texture,
-                                            output_w, output_h,
-                                            use_stack,
-                                            &graph_meta);
-    if (!photo->graph) {
+    ap_pipeline_graph *fresh = ap_pipeline_graph_create(photo->gpu,
+                                                        photo->texture,
+                                                        output_w, output_h,
+                                                        use_stack,
+                                                        &graph_meta);
+    if (!fresh) {
         AP_ERROR("photo: graph build failed for %s", photo->path);
         return -1;
     }
+    photo->width  = output_w;
+    photo->height = output_h;
+    *out_old      = photo->graph;
+    photo->graph  = fresh;
     return 0;
 }
 
@@ -171,7 +174,8 @@ ap_photo *ap_photo_open_with_raw(ap_gpu *g, const char *path,
     photo->file_meta = raw->file_meta;
     ap_raw_image_free(raw);
 
-    if (rebuild_graph(photo) < 0) {
+    ap_pipeline_graph *old = NULL;
+    if (rebuild_graph(photo, &old) < 0) {
         goto fail;
     }
     return photo;
@@ -247,9 +251,9 @@ void ap_photo_close(ap_photo *photo)
     free(photo);
 }
 
-int ap_photo_rebuild_graph(ap_photo *photo)
+int ap_photo_rebuild_graph(ap_photo *photo, ap_pipeline_graph **out_old)
 {
-    return rebuild_graph(photo);
+    return rebuild_graph(photo, out_old);
 }
 
 int ap_photo_render(ap_photo *photo)
