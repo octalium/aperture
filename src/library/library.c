@@ -2165,7 +2165,9 @@ int ap_library_photo_remove(ap_library *lib, int index)
 
     free(lib->cache->photo_paths[index]);
     if (lib->thumbs && lib->thumbs[index]) {
-        ap_thumbnail_destroy(lib->thumbs[index]);
+        // may still be grid-bound; defer (gates pass immediately when the
+        // caller already idled the device).
+        ap_thumbnail_retire(lib->thumbs[index]);
     }
 
     int tail = lib->cache->photo_count - index - 1;
@@ -2214,11 +2216,14 @@ ap_thumbnail *ap_library_thumbnail(const ap_library *lib, int index)
 void ap_library_set_thumbnail(ap_library *lib, int index, ap_thumbnail *t)
 {
     if (!lib || !lib->thumbs || index < 0 || index >= lib->cache->photo_count) {
+        // never bound to a descriptor: immediate destroy is safe.
         if (t) ap_thumbnail_destroy(t);
         return;
     }
     if (lib->thumbs[index]) {
-        ap_thumbnail_destroy(lib->thumbs[index]);
+        // the old thumbnail may be grid-bound and sampled by in-flight
+        // frames; defer its destruction past the in-flight window.
+        ap_thumbnail_retire(lib->thumbs[index]);
     }
     lib->thumbs[index] = t;
 }
@@ -2239,7 +2244,10 @@ void ap_library_invalidate_thumbnail(ap_library *lib, int index)
 {
     if (!lib || !lib->thumbs || index < 0 || index >= lib->cache->photo_count) return;
     if (lib->thumbs[index]) {
-        ap_thumbnail_destroy(lib->thumbs[index]);
+        // up to APERTURE_FRAMES_IN_FLIGHT submitted frames may still sample
+        // the view through the grid's descriptor array; the retire list
+        // keeps it alive past that window (#587).
+        ap_thumbnail_retire(lib->thumbs[index]);
         lib->thumbs[index] = NULL;
     }
     if (lib->thumb_failed) {

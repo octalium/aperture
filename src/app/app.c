@@ -327,22 +327,20 @@ void ap_app_rebuild_photo_graph(ap_app *app)
 {
     if (!app || !app->photo) return;
 
-    // Idle the device first - the old graph's images may still be in
-    // flight. ap_photo_rebuild_graph then destroys the old graph and
-    // builds a new one from the current edit stack.
-    ap_app_wait_idle(app);
-    if (ap_photo_rebuild_graph(app->photo) != 0) {
+    // Build the replacement first; on failure the old graph stays fully
+    // bound (gpu + canvas) and editing continues against the last good
+    // build. No device idle: the swap below is deferred past in-flight work.
+    ap_pipeline_graph *old = NULL;
+    if (ap_photo_rebuild_graph(app->photo, &old) != 0) {
         AP_ERROR("app: photo graph rebuild failed");
         return;
     }
 
-    // Both the GPU's current-graph pointer and the canvas binding
-    // referenced the *old* graph that rebuild just freed. Re-point
-    // both at the new one - missing either is a use-after-free the
-    // next time a frame is recorded.
-    ap_pipeline_graph *graph = ap_photo_graph(app->photo);
-    ap_gpu_set_graph(app->gpu, graph);
-    ap_canvas_bind_graph(app->canvas, graph);
+    // Hand the swap to the render pump: the compositor keeps sampling the
+    // old graph (gpu-owned from here) until the new graph's first render
+    // promotes; the pump then rebinds the canvas and retires the old graph
+    // once nothing in flight references it — no stall, no blank canvas.
+    ap_gpu_swap_graph(app->gpu, ap_photo_graph(app->photo), app->canvas, old);
 
     // If the before/after compare was active when the graph was rebuilt,
     // re-apply the bypass to the new graph. The rebuild produced fresh

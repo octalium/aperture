@@ -299,10 +299,11 @@ static void handle_thumb_encode_complete(ap_app *app, thumb_encode_job *j)
         ap_library_store_thumbnail(app->library, j->idx, j->jpeg, j->jpeg_size);
         // Reset the cell that actually shows this photo before invalidating
         // its cached thumbnail. The grid is indexed by display cell, which
-        // differs from the library index under a group/search filter, so
-        // using j->idx here would leave the real cell's descriptor pointing
-        // at the image invalidate_thumbnail destroys below -> the next grid
-        // render samples a freed VkImageView -> VK_ERROR_DEVICE_LOST.
+        // differs from the library index under a group/search filter. The
+        // old view itself stays alive on the gpu retire list until no
+        // in-flight frame can sample it (invalidate -> ap_thumbnail_retire,
+        // #587); this unbind just keeps the descriptor pointing at live
+        // content going forward.
         if (app->grid) {
             int cell = cell_for_photo(app, j->idx);
             if (cell >= 0) {
@@ -377,14 +378,12 @@ static void handle_selection_edit_complete(ap_app *app, selection_edit_job *j)
             for (int k = 0; k < processed; k++) {
                 int idx = j->indices[k];
                 if (idx < 0 || idx >= n) continue;
-                // Unbind the grid descriptor BEFORE destroying the
-                // thumbnail's GPU views (ap_library_invalidate_thumbnail ->
-                // ap_thumbnail_destroy). The grid samples via an
-                // UPDATE_AFTER_BIND descriptor array; freeing a still-bound
-                // view makes the next grid render sample freed memory ->
-                // VK_ERROR_DEVICE_LOST one frame later. Mirrors the guard in
-                // handle_thumb_encode_complete. (For a large selection this
-                // would otherwise free many bound views at once — the crash.)
+                // Unbind the grid descriptor before invalidating. The
+                // views themselves outlive the in-flight window on the gpu
+                // retire list (ap_library_invalidate_thumbnail ->
+                // ap_thumbnail_retire, #587) — that is the safety
+                // mechanism; the unbind keeps the descriptor pointing at
+                // live content. Mirrors handle_thumb_encode_complete.
                 if (app->grid) {
                     int cell = cell_for_photo(app, idx);
                     if (cell >= 0) {
