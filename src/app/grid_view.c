@@ -340,8 +340,12 @@ void draw_selection_overlay(ap_app *app)
     ImDrawList *dl = igGetBackgroundDrawList(NULL);
     if (!dl) return;
 
+    int first, last;
+    if (ap_grid_visible_range(app->grid, win_w, win_h, &first, &last) != 0)
+        return;
+
     int focus = ap_grid_selected(app->grid);
-    for (int i = 0; i < n; i++) {
+    for (int i = first; i <= last; i++) {
         if (i == focus) continue;
         if (!ap_grid_is_selected(app->grid, i)) continue;
         float cx, cy, cw, ch;
@@ -430,8 +434,12 @@ void draw_grid_labels(ap_app *app)
     ImDrawList *dl = igGetBackgroundDrawList(NULL);
     if (!dl) return;
 
+    int first, last;
+    if (ap_grid_visible_range(app->grid, win_w, win_h, &first, &last) != 0)
+        return;
+
     const float band_h = 18.0f;
-    for (int c = 0; c < n; c++) {
+    for (int c = first; c <= last; c++) {
         int i = app->grid_map[c];
         const char *rel = ap_library_photo_relative_path(app->library, i);
         if (!rel) continue;
