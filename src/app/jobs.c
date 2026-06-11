@@ -96,7 +96,11 @@ static bool selection_edit_lens_one(selection_edit_job *j, const char *path)
 
     ap_edit_stack stack;
     ap_sidecar_ancillary ancillary;
-    if (ap_sidecar_load_full(path, &stack, &ancillary) != 0) return false;
+    // absent and unreadable both skip: no sidecar means no
+    // lens_correction entry, unreadable must not be written back.
+    if (ap_sidecar_load_full(path, &stack, &ancillary) != AP_SIDECAR_OK) {
+        return false;
+    }
 
     int hit = -1;
     for (int e = 0; e < stack.count; e++) {

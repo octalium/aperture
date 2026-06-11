@@ -2282,6 +2282,19 @@ static void seed_default_stack(ap_edit_stack *stack)
     ap_pipeline_apply_default_to_stack(stack);
 }
 
+// A sidecar that exists but cannot be parsed must never be written
+// over: it holds the photo's entire edit history and may be
+// recoverable by hand. Every load-modify-save path checks its load
+// status through here and propagates the refusal as a write failure.
+static bool refuse_unreadable_sidecar(ap_sidecar_status status,
+                                      const char *path)
+{
+    if (status != AP_SIDECAR_ERROR) return false;
+    AP_ERROR("library: refusing to overwrite unreadable sidecar for %s",
+             path);
+    return true;
+}
+
 int ap_library_apply_stack_to_path(const char *path,
                                    const ap_edit_stack *stack,
                                    const ap_sidecar_ancillary *prefetched)
@@ -2294,9 +2307,11 @@ int ap_library_apply_stack_to_path(const char *path,
         ap_edit_stack existing_stack;
         ap_edit_stack_init(&existing_stack);
         ap_sidecar_ancillary_clear(&local);
-        ap_sidecar_load(path, &existing_stack, &local.respect_orientation,
-                        &local.user_meta, local.user_set, &local.culling,
-                        &local.groups, &local.keywords);
+        ap_sidecar_status st = ap_sidecar_load(
+            path, &existing_stack, &local.respect_orientation,
+            &local.user_meta, local.user_set, &local.culling,
+            &local.groups, &local.keywords);
+        if (refuse_unreadable_sidecar(st, path)) return -1;
         a = &local;
     }
 
@@ -2324,10 +2339,11 @@ int ap_library_apply_metadata_patch_to_path(
     groups.count = 0;
     ap_photo_keywords keywords;
     ap_photo_keywords_clear(&keywords);
-    bool had_sidecar = (ap_sidecar_load(path, &stack, &respect_orientation,
-                                        &user_meta, user_set, &culling,
-                                        &groups, &keywords) == 0);
-    if (!had_sidecar) seed_default_stack(&stack);
+    ap_sidecar_status st = ap_sidecar_load(path, &stack, &respect_orientation,
+                                           &user_meta, user_set, &culling,
+                                           &groups, &keywords);
+    if (refuse_unreadable_sidecar(st, path)) return -1;
+    if (st == AP_SIDECAR_ABSENT) seed_default_stack(&stack);
 
     for (int i = 0; i < AP_META_FIELD_COUNT; i++) {
         if (!patch_set[i]) continue;
@@ -2405,10 +2421,11 @@ static int write_photo_sidecar_groups(ap_library *lib, int index)
     ap_photo_keywords keywords;
     ap_photo_keywords_clear(&keywords);
 
-    bool had = (ap_sidecar_load(path, &stack, &respect_orientation,
-                                &user_meta, user_set, &culling,
-                                &discard_groups, &keywords) == 0);
-    if (!had) seed_default_stack(&stack);
+    ap_sidecar_status st = ap_sidecar_load(path, &stack, &respect_orientation,
+                                           &user_meta, user_set, &culling,
+                                           &discard_groups, &keywords);
+    if (refuse_unreadable_sidecar(st, path)) return -1;
+    if (st == AP_SIDECAR_ABSENT) seed_default_stack(&stack);
 
     return ap_sidecar_save(path, &stack, respect_orientation,
                            &user_meta, user_set, &culling,
@@ -2421,14 +2438,13 @@ int ap_library_write_culling_to_path(const char *path, ap_photo_culling culling)
     culling.rating = ap_rating_clamp(culling.rating);
 
     // Load-modify-save: preserve the edit stack + every other ancillary
-    // field. ap_sidecar_load_full clears both outputs even on failure, so
-    // for a photo with no sidecar yet we only seed the default pipeline
+    // field. For a photo with no sidecar yet, seed the default pipeline
     // (so the write doesn't strip its edits).
     ap_edit_stack stack;
     ap_sidecar_ancillary anc;
-    if (ap_sidecar_load_full(path, &stack, &anc) != 0) {
-        seed_default_stack(&stack);
-    }
+    ap_sidecar_status st = ap_sidecar_load_full(path, &stack, &anc);
+    if (refuse_unreadable_sidecar(st, path)) return -1;
+    if (st == AP_SIDECAR_ABSENT) seed_default_stack(&stack);
     anc.culling = culling;
     return ap_library_apply_stack_to_path(path, &stack, &anc);
 }
@@ -2440,7 +2456,9 @@ int ap_library_modify_group_in_sidecar(const char *path, const char *group,
 
     ap_edit_stack stack;
     ap_sidecar_ancillary anc;
-    if (ap_sidecar_load_full(path, &stack, &anc) != 0) {
+    ap_sidecar_status st = ap_sidecar_load_full(path, &stack, &anc);
+    if (refuse_unreadable_sidecar(st, path)) return -1;
+    if (st == AP_SIDECAR_ABSENT) {
         seed_default_stack(&stack);  // load_full already cleared anc
     }
 

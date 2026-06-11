@@ -338,7 +338,8 @@ int  ap_library_apply_metadata_patch(ap_library *lib, int index,
 // so they are safe to run off the main thread once the caller has
 // resolved the absolute path. The `*_to_photo` / `*_patch` wrappers
 // above resolve the path on the caller's thread and delegate here.
-// Return 0 on success.
+// Return 0 on success; fail without writing when an existing sidecar
+// is unreadable (it may be recoverable and is never overwritten).
 int  ap_library_apply_stack_to_path(const char *path,
                                     const ap_edit_stack *stack,
                                     const ap_sidecar_ancillary *prefetched);
@@ -351,7 +352,8 @@ int  ap_library_apply_metadata_patch_to_path(
 // when none exists), touching neither the library cache nor its db.
 // _write_culling_to_path overwrites the culling block; _modify_group_in_
 // sidecar adds/removes one group (a no-op when already in that state).
-// Return 0 on success. The main-thread completion reconciles the cache:
+// Return 0 on success; fail without writing when an existing sidecar is
+// unreadable. The main-thread completion reconciles the cache:
 int  ap_library_write_culling_to_path(const char *path,
                                       ap_photo_culling culling);
 int  ap_library_modify_group_in_sidecar(const char *path, const char *group,
