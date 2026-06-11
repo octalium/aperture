@@ -1086,7 +1086,7 @@ ap_library *ap_app_library(ap_app *app)
 
 bool ap_app_library_busy(const ap_app *app)
 {
-    return app && app->library_job_inflight;
+    return app && (app->library_job_inflight || app->selection_edit_inflight);
 }
 
 void ap_app_open_import_modal(ap_app *app)
@@ -1286,16 +1286,27 @@ static ap_photo_culling culling_with_field(ap_photo_culling c,
     return c;
 }
 
+// True when an inline (main-thread) sidecar write must defer: a library
+// job is rebuilding the cache on its own db connection (the write would
+// race its transaction and be discarded by the imminent swap), or a
+// selection-edit batch is writing sidecars on a worker (a concurrent
+// load-modify-save of the same file loses one write). Toasts when blocked.
+static bool inline_sidecar_write_blocked(ap_app *app)
+{
+    if (!app->library_job_inflight && !app->selection_edit_inflight)
+        return false;
+    ap_status_notify(AP_STATUS_INFO, "A library task is already running.");
+    return true;
+}
+
 // Apply a single culling-field change to one library photo inline.
-// Returns 0 on success, -1 on a missing library or out-of-range index.
+// Returns 0 on success, -1 on a missing library, out-of-range index, or
+// a deferred write (see inline_sidecar_write_blocked).
 static int apply_culling_to_photo(ap_app *app, int idx, ap_cull_field field,
                                   int value)
 {
     if (!app || !app->library) return -1;
-    // A background library job is rebuilding the cache on its own db
-    // connection; an inline sidecar + lib->db write here would race the
-    // worker's transaction and be discarded by the imminent swap. Defer.
-    if (app->library_job_inflight) return -1;
+    if (inline_sidecar_write_blocked(app)) return -1;
     ap_photo_culling cull = culling_with_field(
         ap_library_photo_culling(app->library, idx), field, value);
     return ap_library_set_photo_culling(app->library, idx, cull);
@@ -1315,13 +1326,10 @@ static int apply_culling_to_selection(ap_app *app, ap_cull_field field,
     int sel = ap_grid_selection_count(app->grid);
     if (sel <= 0) return 0;
 
-    // Mutually exclude against a running library job (the inline branch
-    // would race its db connection; the batch branch is rejected by the
-    // builder anyway). One toast covers both.
-    if (app->library_job_inflight) {
-        ap_status_notify(AP_STATUS_INFO, "A library task is already running.");
-        return AP_SELECTION_EDIT_BUSY;
-    }
+    // Mutually exclude against running library / selection-edit jobs
+    // (the inline branch would race their writes; the batch branch is
+    // rejected by the builder anyway). One toast covers both.
+    if (inline_sidecar_write_blocked(app)) return AP_SELECTION_EDIT_BUSY;
 
     if (sel == 1) {
         for (int c = 0; c < app->grid_map_count; c++) {
@@ -1499,11 +1507,9 @@ int ap_app_assign_selection_to_group(ap_app *app, const char *group, bool add)
     int sel = ap_grid_selection_count(app->grid);
     if (sel <= 0) return 0;
 
-    // Mutually exclude against a running library job (see culling above).
-    if (app->library_job_inflight) {
-        ap_status_notify(AP_STATUS_INFO, "A library task is already running.");
-        return AP_SELECTION_EDIT_BUSY;
-    }
+    // Mutually exclude against running library / selection-edit jobs
+    // (see culling above).
+    if (inline_sidecar_write_blocked(app)) return AP_SELECTION_EDIT_BUSY;
 
     // Single photo: apply inline (one sidecar write) and re-filter now.
     if (sel == 1) {
