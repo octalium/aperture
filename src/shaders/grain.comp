@@ -44,7 +44,8 @@ void main()
     // single-pixel salt-and-pepper look at large sizes.
     int s = max(1, int(pc.size));
     ivec2 quant = coord / s;
-    uvec3 seed_v = uvec3(quant.x, quant.y, uint(pc.seed * 1e6));
+    // abs keeps the float-to-uint conversion defined for negative seeds.
+    uvec3 seed_v = uvec3(quant.x, quant.y, uint(abs(pc.seed) * 1e6));
 
     float n = hash(seed_v) - 0.5;
 

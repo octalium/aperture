@@ -19,17 +19,7 @@ layout(push_constant) uniform PushConstants {
     uvec4 sensor_size_flip;   // .xy = sensor (W, H), .z = flip code, .w = pad
 } pc;
 
-ivec2 sensor_coord_of(ivec2 out_coord, ivec2 sensor_size, uint flip)
-{
-    if (flip == 3u) {
-        return sensor_size - ivec2(1) - out_coord;
-    } else if (flip == 5u) {
-        return ivec2(sensor_size.x - 1 - out_coord.y, out_coord.x);
-    } else if (flip == 6u) {
-        return ivec2(out_coord.y, sensor_size.y - 1 - out_coord.x);
-    }
-    return out_coord;
-}
+#include "sensor_coord.glsl"
 
 void main()
 {

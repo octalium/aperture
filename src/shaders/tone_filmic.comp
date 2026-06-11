@@ -25,8 +25,11 @@ layout(push_constant) uniform PushConstants {
 
 vec3 hable(vec3 x)
 {
+    // D = 0 (no toe) is a legitimate setting but makes the quotient
+    // 0/0 at x = 0; floor the denominator so blacks stay finite.
     return ((x * (pc.A * x + pc.C * pc.B) + pc.D * pc.E) /
-            (x * (pc.A * x + pc.B)        + pc.D * pc.F)) - pc.E / pc.F;
+            max(x * (pc.A * x + pc.B) + pc.D * pc.F, vec3(1e-6)))
+           - pc.E / pc.F;
 }
 
 void main()
@@ -39,7 +42,10 @@ void main()
     vec3 c  = max(px.rgb * pc.exposure, vec3(0.0));
 
     vec3 mapped      = hable(c);
-    vec3 white_scale = vec3(1.0) / hable(vec3(max(pc.W, 1e-3)));
+    // in-range params can drive hable(W) to zero or below; floor it so
+    // the white normalization can't invert the image or blow up.
+    vec3 white_scale = vec3(1.0)
+                     / max(hable(vec3(max(pc.W, 1e-3))), vec3(1e-4));
     c = clamp(mapped * white_scale, vec3(0.0), vec3(1.0));
 
     imageStore(out_image, coord, vec4(c, px.a));

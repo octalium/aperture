@@ -33,10 +33,10 @@ static int grain_pack_push(const ap_module *self,
     (void)str_params;
     (void)meta;
     grain_push_t *pc = push_out;
-    pc->amount   = params ? params[SLOT_AMOUNT] : 0.0f;
-    pc->size     = params ? params[SLOT_SIZE]   : 1.0f;
-    pc->mid_bias = params ? params[SLOT_BIAS]   : 0.8f;
-    pc->seed     = params ? params[SLOT_SEED]   : 0.137f;
+    pc->amount   = ap_clampf(params ? params[SLOT_AMOUNT] : 0.0f, 0.0f, 0.5f);
+    pc->size     = ap_clampf(params ? params[SLOT_SIZE]   : 1.0f, 1.0f, 8.0f);
+    pc->mid_bias = ap_clampf(params ? params[SLOT_BIAS]   : 0.8f, 0.0f, 1.0f);
+    pc->seed     = ap_clampf(params ? params[SLOT_SEED] : 0.137f, 0.0f, 10.0f);
     return 0;
 }
 
