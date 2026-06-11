@@ -13,7 +13,11 @@
 #include <unistd.h>   // sysconf(_SC_NPROCESSORS_ONLN)
 #endif
 
-#define WORKER_DEFAULT_THREADS 4
+// fallback core count when the OS query fails; otherwise the pool
+// auto-sizes to cores - 1 (decode/encode scale with cores, one core
+// stays free for the main thread).
+#define WORKER_FALLBACK_CORES 4
+#define WORKER_MIN_THREADS    2
 
 struct ap_worker_pool {
     ap_thread      *threads;
@@ -99,10 +103,9 @@ ap_worker_pool *ap_worker_pool_create(int n_threads)
 {
     if (n_threads <= 0) {
         int online = cpu_count();
-        if (online <= 0) online = WORKER_DEFAULT_THREADS;
-        n_threads = online < WORKER_DEFAULT_THREADS
-                        ? online : WORKER_DEFAULT_THREADS;
-        if (n_threads < 1) n_threads = 1;
+        if (online <= 0) online = WORKER_FALLBACK_CORES;
+        n_threads = online - 1;
+        if (n_threads < WORKER_MIN_THREADS) n_threads = WORKER_MIN_THREADS;
     }
 
     ap_worker_pool *p = calloc(1, sizeof(*p));
