@@ -2481,17 +2481,21 @@ int ap_library_modify_group_in_sidecar(const char *path, const char *group,
 }
 
 void ap_library_commit_culling_batch(ap_library *lib, const int *indices,
-                                     const ap_photo_culling *cull, int count)
+                                     const ap_photo_culling *cull,
+                                     const bool *ok, int count)
 {
     if (!lib || !lib->db || !lib->cache || !lib->cache->photo_culling ||
         !indices || !cull) {
         return;
     }
-    // The worker already wrote every sidecar; here we update only the
-    // in-memory cells + the cached db columns, in one transaction so the
-    // WAL takes a single commit rather than one per photo.
+    // Update the in-memory cells + the cached db columns only for the
+    // photos whose sidecar write succeeded (`ok`, NULL = all), in one
+    // transaction so the WAL takes a single commit rather than one per
+    // photo. A photo whose write was refused keeps its old cached value
+    // — the sidecar is the source of truth.
     sqlite3_exec(lib->db, "BEGIN;", NULL, NULL, NULL);
     for (int k = 0; k < count; k++) {
+        if (ok && !ok[k]) continue;
         int idx = indices[k];
         if (idx < 0 || idx >= lib->cache->photo_count) continue;
         ap_photo_culling c = cull[k];

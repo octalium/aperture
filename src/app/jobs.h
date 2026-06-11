@@ -124,6 +124,8 @@ typedef struct {
     ap_sel_edit_op  op;
     int            *indices;       // snapshot of selected library indices
     char          (*paths)[4096];  // resolved abs path per index; worker reads these
+    bool           *ok;            // per-photo write success; completion
+                                   // reconciles cache/db only where set
     int             count;
     _Atomic int     wrote;         // photos successfully written
     _Atomic int     processed;     // photos the worker iterated (< count on cancel)

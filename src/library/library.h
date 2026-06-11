@@ -366,13 +366,17 @@ int  ap_library_modify_group_in_sidecar(const char *path, const char *group,
 
 // Main-thread completion of a backgrounded culling batch: write the
 // in-memory culling cells + cached db columns for the `count` photos in
-// `indices` (the worker already wrote the sidecars), in one transaction.
+// `indices`, in one transaction. `ok` is the worker's per-photo write
+// success (NULL = every sidecar was written); photos whose write was
+// skipped or refused keep their old cached value.
 void ap_library_commit_culling_batch(ap_library *lib, const int *indices,
-                                     const ap_photo_culling *cull, int count);
+                                     const ap_photo_culling *cull,
+                                     const bool *ok, int count);
 
 // Main-thread completion of a backgrounded group batch: add/remove the
 // n-th photo's membership in `group` in the in-memory cache + group
-// registry (the worker already wrote the sidecar). No sidecar I/O.
+// registry, for a photo whose sidecar the worker successfully wrote.
+// No sidecar I/O.
 void ap_library_apply_group_cache(ap_library *lib, int index,
                                   const char *group, bool member);
 
