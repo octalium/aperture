@@ -17,9 +17,10 @@
 // Per-field edit buffers. ImGui's InputText mutates its buffer
 // in-place each frame; refilling from the model every frame would
 // overwrite mid-typing edits. So sync model -> buffer only on photo
-// change (tracked by pointer; the photo's address is stable for its
-// lifetime) and let InputText own the buffer between syncs.
-static const ap_photo *g_last_photo = NULL;
+// change (tracked by open id — a pointer compare misses the change
+// when the allocator reuses the closed photo's address) and let
+// InputText own the buffer between syncs.
+static uint64_t g_last_photo_id = 0;
 static char g_buffers[AP_META_FIELD_COUNT][AP_META_VALUE_LEN];
 
 static void sync_buffers_from_photo(const ap_photo *photo)
@@ -34,13 +35,13 @@ static void photo_metadata_draw(ap_app *app)
 {
     ap_photo *photo = ap_app_photo(app);
     if (!photo) {
-        g_last_photo = NULL;
+        g_last_photo_id = 0;
         return;
     }
 
-    if (photo != g_last_photo) {
+    if (ap_photo_open_id(photo) != g_last_photo_id) {
         sync_buffers_from_photo(photo);
-        g_last_photo = photo;
+        g_last_photo_id = ap_photo_open_id(photo);
     }
 
     if (!igBegin("Metadata", NULL, 0)) {

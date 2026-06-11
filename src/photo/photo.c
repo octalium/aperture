@@ -16,6 +16,11 @@ struct ap_photo {
     ap_gpu *gpu;
     char   *path;
 
+    // identity that survives allocator reuse: a freed photo's address
+    // is often handed back to the next open, so pointer compares can't
+    // detect a photo change. assigned from a monotonic counter at open.
+    uint64_t open_id;
+
     int width;
     int height;
 
@@ -55,6 +60,12 @@ struct ap_photo {
     // array. Carried through so a sidecar save on close preserves it.
     ap_photo_keywords keywords;
 };
+
+// monotonic open counter; opens happen on the main thread only (the
+// async open path decodes on a worker but builds the photo at
+// completion), so no synchronisation is needed. starts at 1 so 0 is a
+// safe "no photo" sentinel for trackers.
+static uint64_t g_open_counter;
 
 static char *strdup_or_null(const char *s)
 {
@@ -129,8 +140,9 @@ ap_photo *ap_photo_open_with_raw(ap_gpu *g, const char *path,
         ap_raw_image_free(raw);
         return NULL;
     }
-    photo->gpu  = g;
-    photo->path = strdup_or_null(path);
+    photo->gpu     = g;
+    photo->open_id = ++g_open_counter;
+    photo->path    = strdup_or_null(path);
     if (!photo->path) {
         AP_ERROR("ap_photo_open_with_raw: path duplication failed");
         ap_raw_image_free(raw);
@@ -272,6 +284,7 @@ ap_edit_stack     *ap_photo_stack(ap_photo *photo) { return &photo->stack; }
 int                ap_photo_width(const ap_photo *photo)   { return photo->width; }
 int                ap_photo_height(const ap_photo *photo)  { return photo->height; }
 const char        *ap_photo_path(const ap_photo *photo)    { return photo->path; }
+uint64_t           ap_photo_open_id(const ap_photo *photo) { return photo ? photo->open_id : 0; }
 
 ap_viewport ap_photo_viewport(const ap_photo *photo)
 {

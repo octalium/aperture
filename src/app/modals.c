@@ -354,14 +354,20 @@ void draw_delete_edit_modal(ap_app *app)
         return;
     }
 
-    if (!app->photo || app->photo_library_idx < 0) {
+    // Name the photo the confirm actually deletes: delete_edit_photo
+    // targets the open photo by path, while photo_library_idx may
+    // already point at an in-flight navigation's target. Resolving the
+    // same way keeps label and action on one source of truth.
+    int idx = app->photo
+            ? library_index_for_path(app, ap_photo_path(app->photo))
+            : -1;
+    if (idx < 0) {
         igCloseCurrentPopup();
         igEndPopup();
         return;
     }
 
-    const char *rel = ap_library_photo_relative_path(app->library,
-                                                     app->photo_library_idx);
+    const char *rel = ap_library_photo_relative_path(app->library, idx);
     igText("Delete this photo from disk?");
     if (rel) igTextDisabled("%s", rel);
     igTextDisabled("The raw file and sidecar will be removed. "
