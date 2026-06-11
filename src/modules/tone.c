@@ -5,6 +5,8 @@
 
 #include "cimgui.h"
 
+#include <math.h>
+
 // Tone curve module. Two variants:
 //   0 — Sigmoid: anchored logistic with contrast + pivot.
 //   1 — Filmic:  Uncharted 2 / Hable operator. All curve constants
@@ -72,6 +74,14 @@ static const char *const tone_names[] = {
     "filmic_white",
 };
 
+// clamp to the slider range at the pack boundary so a corrupt sidecar
+// can't feed the shader values that divide by zero or go NaN (NaN maps
+// to lo via fmaxf).
+static float tone_clampf(float v, float lo, float hi)
+{
+    return fminf(fmaxf(v, lo), hi);
+}
+
 static int tone_pack_sigmoid(const ap_module *self,
                              const float *params,
                              const char (*str_params)[AP_EDIT_STR_LEN],
@@ -82,8 +92,10 @@ static int tone_pack_sigmoid(const ap_module *self,
     (void)str_params;
     (void)meta;
     tone_sigmoid_push_t *pc = push_out;
-    pc->contrast = params ? params[SLOT_CONTRAST] : 1.0f;
-    pc->pivot    = params ? params[SLOT_PIVOT]    : 0.18f;
+    pc->contrast = tone_clampf(params ? params[SLOT_CONTRAST] : 1.0f,
+                               0.5f, 4.0f);
+    pc->pivot    = tone_clampf(params ? params[SLOT_PIVOT] : 0.18f,
+                               0.05f, 0.5f);
     return 0;
 }
 
@@ -97,14 +109,22 @@ static int tone_pack_filmic(const ap_module *self,
     (void)meta;
     tone_filmic_push_t *pc = push_out;
     const float *d = self->params_default;
-    pc->exposure = params ? params[SLOT_FILMIC_EX] : d[SLOT_FILMIC_EX];
-    pc->A = params ? params[SLOT_FILMIC_A] : d[SLOT_FILMIC_A];
-    pc->B = params ? params[SLOT_FILMIC_B] : d[SLOT_FILMIC_B];
-    pc->C = params ? params[SLOT_FILMIC_C] : d[SLOT_FILMIC_C];
-    pc->D = params ? params[SLOT_FILMIC_D] : d[SLOT_FILMIC_D];
-    pc->E = params ? params[SLOT_FILMIC_E] : d[SLOT_FILMIC_E];
-    pc->F = params ? params[SLOT_FILMIC_F] : d[SLOT_FILMIC_F];
-    pc->W = params ? params[SLOT_FILMIC_W] : d[SLOT_FILMIC_W];
+    pc->exposure = tone_clampf(params ? params[SLOT_FILMIC_EX]
+                                      : d[SLOT_FILMIC_EX], 0.1f, 4.0f);
+    pc->A = tone_clampf(params ? params[SLOT_FILMIC_A] : d[SLOT_FILMIC_A],
+                        0.01f, 1.0f);
+    pc->B = tone_clampf(params ? params[SLOT_FILMIC_B] : d[SLOT_FILMIC_B],
+                        0.01f, 1.0f);
+    pc->C = tone_clampf(params ? params[SLOT_FILMIC_C] : d[SLOT_FILMIC_C],
+                        0.0f, 1.0f);
+    pc->D = tone_clampf(params ? params[SLOT_FILMIC_D] : d[SLOT_FILMIC_D],
+                        0.0f, 1.0f);
+    pc->E = tone_clampf(params ? params[SLOT_FILMIC_E] : d[SLOT_FILMIC_E],
+                        0.0f, 0.2f);
+    pc->F = tone_clampf(params ? params[SLOT_FILMIC_F] : d[SLOT_FILMIC_F],
+                        0.05f, 1.0f);
+    pc->W = tone_clampf(params ? params[SLOT_FILMIC_W] : d[SLOT_FILMIC_W],
+                        1.0f, 20.0f);
     return 0;
 }
 
