@@ -31,6 +31,16 @@ typedef struct {
     float scale[2];           // per-axis content stretch (in place)
 } canvas_push;
 
+// Descriptor banks: ap_canvas_bind_graph rewrites a full bank of per-slot
+// sets while up to APERTURE_FRAMES_IN_FLIGHT submitted frames may still
+// reference sets written for the previous graph(s) — the deferred graph
+// swap rebinds without a device idle. Rotating across FRAMES_IN_FLIGHT + 1
+// banks guarantees the bank being rewritten is never referenced by a
+// pending frame, because bind_graph runs at most once per compositor frame
+// (the pump promotes at most one render per frame; the remaining callers
+// rebind only after a device idle).
+#define CANVAS_DS_BANKS (APERTURE_FRAMES_IN_FLIGHT + 1)
+
 struct ap_canvas {
     ap_gpu  *gpu;
     VkFormat color_format;
@@ -39,12 +49,13 @@ struct ap_canvas {
     VkPipelineLayout      pl;
     VkPipeline            pipeline;
     VkDescriptorPool      pool;
-    // One descriptor set per presentation slot, each pre-bound to that
-    // slot's sampled view. The compositor records ds_slot[active_slot];
-    // the render flow advances active_slot via ap_canvas_bind_slot after
-    // present-copying into that slot, so a set an in-flight frame is
-    // sampling is never mutated.
-    VkDescriptorSet       ds_slot[AP_DISPLAY_SLOTS];
+    // One descriptor set per presentation slot per bank, each pre-bound to
+    // that slot's sampled view. The compositor records
+    // ds_slot[active_bank][active_slot]; the render flow advances
+    // active_slot via ap_canvas_bind_slot after present-copying into that
+    // slot, so a set an in-flight frame is sampling is never mutated.
+    VkDescriptorSet       ds_slot[CANVAS_DS_BANKS][AP_DISPLAY_SLOTS];
+    int                   active_bank;
     int                   active_slot;
 
     bool         has_input;
@@ -84,13 +95,14 @@ static int create_descriptor(ap_canvas *canvas)
         return -1;
     }
 
+    enum { CANVAS_DS_COUNT = CANVAS_DS_BANKS * AP_DISPLAY_SLOTS };
     VkDescriptorPoolSize pool_size = {
         .type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        .descriptorCount = AP_DISPLAY_SLOTS,
+        .descriptorCount = CANVAS_DS_COUNT,
     };
     VkDescriptorPoolCreateInfo pci = {
         .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .maxSets       = AP_DISPLAY_SLOTS,
+        .maxSets       = CANVAS_DS_COUNT,
         .poolSizeCount = 1,
         .pPoolSizes    = &pool_size,
     };
@@ -99,15 +111,16 @@ static int create_descriptor(ap_canvas *canvas)
         return -1;
     }
 
-    VkDescriptorSetLayout layouts[AP_DISPLAY_SLOTS];
-    for (int i = 0; i < AP_DISPLAY_SLOTS; i++) layouts[i] = canvas->dsl;
+    VkDescriptorSetLayout layouts[CANVAS_DS_COUNT];
+    for (int i = 0; i < CANVAS_DS_COUNT; i++) layouts[i] = canvas->dsl;
     VkDescriptorSetAllocateInfo dai = {
         .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .descriptorPool     = canvas->pool,
-        .descriptorSetCount = AP_DISPLAY_SLOTS,
+        .descriptorSetCount = CANVAS_DS_COUNT,
         .pSetLayouts        = layouts,
     };
-    if (vkAllocateDescriptorSets(canvas->gpu->device, &dai, canvas->ds_slot) != VK_SUCCESS) {
+    if (vkAllocateDescriptorSets(canvas->gpu->device, &dai,
+                                 &canvas->ds_slot[0][0]) != VK_SUCCESS) {
         AP_ERROR("canvas: descriptor set alloc failed");
         return -1;
     }
@@ -294,6 +307,9 @@ void ap_canvas_bind_graph(ap_canvas *canvas, const ap_pipeline_graph *graph)
     int n = ap_pipeline_graph_slot_count(graph);
     if (n > AP_DISPLAY_SLOTS) n = AP_DISPLAY_SLOTS;
 
+    // write into a fresh bank: pending frames may still reference the
+    // previous bank's sets (deferred graph swap; see CANVAS_DS_BANKS).
+    canvas->active_bank = (canvas->active_bank + 1) % CANVAS_DS_BANKS;
     for (int i = 0; i < n; i++) {
         VkDescriptorImageInfo info = {
             .sampler     = sampler,
@@ -302,7 +318,7 @@ void ap_canvas_bind_graph(ap_canvas *canvas, const ap_pipeline_graph *graph)
         };
         VkWriteDescriptorSet write = {
             .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet          = canvas->ds_slot[i],
+            .dstSet          = canvas->ds_slot[canvas->active_bank][i],
             .dstBinding      = 0,
             .descriptorCount = 1,
             .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -659,7 +675,9 @@ void ap_canvas_record(ap_canvas *canvas, VkCommandBuffer cmd,
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, canvas->pipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, canvas->pl,
-                            0, 1, &canvas->ds_slot[canvas->active_slot], 0, NULL);
+                            0, 1,
+                            &canvas->ds_slot[canvas->active_bank][canvas->active_slot],
+                            0, NULL);
     vkCmdPushConstants(cmd, canvas->pl, VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(pc), &pc);
     vkCmdDraw(cmd, 3, 1, 0, 0);
