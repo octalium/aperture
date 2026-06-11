@@ -77,6 +77,10 @@ void main()
     ivec2 center      = sensor_coord_of(out_coord, sensor_size, flip);
 
     float M[5][5];
+    // each tap is normalized self-consistently by bayer(); at clamped
+    // borders an off-centre tap can still carry a different channel
+    // than its mask position assumes — inherent to clamp extension, a
+    // parity-preserving mirror would be needed to remove it.
     for (int dy = -2; dy <= 2; dy++) {
         for (int dx = -2; dx <= 2; dx++) {
             M[dy + 2][dx + 2] = bayer(center + ivec2(dx, dy), sensor_size);

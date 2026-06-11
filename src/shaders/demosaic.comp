@@ -46,8 +46,8 @@ void main()
             // clamp once so channel and texel agree at the borders;
             // deriving the channel from the unclamped coord flips the
             // bayer parity and normalizes with the wrong black level.
-            ivec2 p      = clamp(center + ivec2(dx, dy),
-                                 ivec2(0), sensor_size - 1);
+            ivec2 p      = sensor_clamp(center + ivec2(dx, dy),
+                                        sensor_size);
             uint  ch     = channel_at(p);
             uint  out_ch = (ch == 3u) ? 1u : ch;
             sum[out_ch]   += bayer(p, sensor_size);

@@ -32,6 +32,9 @@ bool is_green(uint ch) { return ch == 1u || ch == 3u; }
 // interpolated along the forced axis (axis 0 = horizontal).
 float green_at(ivec2 p, ivec2 size)
 {
+    // clamp once so the green/non-green decision and the texels below
+    // derive from the same coordinate (callers pass off-image taps).
+    p = sensor_clamp(p, size);
     if (is_green(channel_at(p))) return bayer(p, size);
 
     float c = bayer(p, size);
