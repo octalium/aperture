@@ -2006,7 +2006,11 @@ static void drive_canvas_input(ap_app *app)
     // which would block navigation entirely. WantTextInput is only
     // set while an actual text field (e.g. the rename box) is active,
     // which is the one case where arrows should be left to ImGui.
-    if (!io->WantTextInput) {
+    // Also defer to any open popup (mirrors drive_grid_input):
+    // navigating under the delete modal would move the photo out from
+    // under the dialog.
+    if (!io->WantTextInput &&
+        !igIsPopupOpen_Str(NULL, ImGuiPopupFlags_AnyPopup)) {
         if (igIsKeyPressed_Bool(ImGuiKey_RightArrow, true)) {
             navigate_library_relative(app, +1);
             return;
@@ -2130,7 +2134,10 @@ void delete_edit_photo(ap_app *app)
     // target photo before the async open lands, and the user is asking
     // to delete the photo on screen.
     int idx = library_index_for_path(app, ap_photo_path(app->photo));
-    if (idx < 0) return;
+    if (idx < 0) {
+        ap_status_notify(AP_STATUS_INFO, "Photo is not in the library.");
+        return;
+    }
 
     // Discard a pending async open by generation bump (mirrors
     // ap_app_close_photo) instead of draining the pool; clearing
