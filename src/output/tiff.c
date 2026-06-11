@@ -187,6 +187,8 @@ int ap_export_tiff(const uint8_t *rgba_u8, const float *rgba_f32,
     TIFF *tif = TIFFOpen(tmp, "w");
     if (!tif) {
         AP_ERROR("ap_export_tiff: TIFFOpen(%s) failed", tmp);
+        // a failed open can still leave a created-but-empty temp behind
+        ap_atomic_discard_temp(tmp);
         return -1;
     }
 
