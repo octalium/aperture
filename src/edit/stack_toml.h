@@ -29,6 +29,13 @@ int ap_edit_stack_read_toml_array(toml_array_t *arr, ap_edit_stack *out);
 // edit-array blob. Returns 0 on success.
 int ap_edit_stack_write_toml(const ap_edit_stack *stack, FILE *f);
 
+// Write `s` to `f` as a quoted TOML basic string, escaping backslash,
+// quote, and the common control characters (other control chars are
+// dropped rather than emit invalid TOML). The single escaper every
+// TOML writer shares — one unescaped quote in a value corrupts the
+// whole document. Returns 0 on success, -1 on I/O error.
+int ap_toml_write_basic_string(FILE *f, const char *s);
+
 #ifdef __cplusplus
 }
 #endif

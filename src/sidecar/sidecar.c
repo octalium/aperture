@@ -205,33 +205,6 @@ ap_sidecar_status ap_sidecar_load(const char *source_path, ap_edit_stack *stack,
     return AP_SIDECAR_OK;
 }
 
-// TOML strings have to escape backslash + quote. Conservative writer
-// good enough for the short strings the metadata fields hold; not a
-// general-purpose escaper.
-static int write_escaped_string(FILE *f, const char *s)
-{
-    if (fputc('"', f) == EOF) return -1;
-    for (const char *p = s; *p; p++) {
-        unsigned char c = (unsigned char)*p;
-        if (c == '\\' || c == '"') {
-            if (fputc('\\', f) == EOF) return -1;
-            if (fputc(c, f) == EOF) return -1;
-        } else if (c == '\n') {
-            if (fputs("\\n", f) == EOF) return -1;
-        } else if (c == '\r') {
-            if (fputs("\\r", f) == EOF) return -1;
-        } else if (c == '\t') {
-            if (fputs("\\t", f) == EOF) return -1;
-        } else if (c < 0x20) {
-            // Drop other control chars rather than emit invalid TOML.
-        } else {
-            if (fputc((int)c, f) == EOF) return -1;
-        }
-    }
-    if (fputc('"', f) == EOF) return -1;
-    return 0;
-}
-
 int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
                     bool respect_orientation,
                     const ap_photo_metadata *user_meta,
@@ -263,7 +236,9 @@ int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
         if (fputs("groups = [", f) == EOF) goto io_fail;
         for (int i = 0; i < groups->count; i++) {
             if (i > 0 && fputs(", ", f) == EOF) goto io_fail;
-            if (write_escaped_string(f, groups->names[i]) != 0) goto io_fail;
+            if (ap_toml_write_basic_string(f, groups->names[i]) != 0) {
+                goto io_fail;
+            }
         }
         if (fputs("]\n", f) == EOF) goto io_fail;
     }
@@ -294,7 +269,9 @@ int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
                 const char *val = ap_photo_metadata_get(user_meta,
                                                         (ap_meta_field)i);
                 if (fprintf(f, "%s = ", key) < 0) goto io_fail;
-                if (write_escaped_string(f, val ? val : "") != 0) goto io_fail;
+                if (ap_toml_write_basic_string(f, val ? val : "") != 0) {
+                    goto io_fail;
+                }
                 if (fputc('\n', f) == EOF) goto io_fail;
             }
         }
@@ -306,14 +283,15 @@ int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
             }
             if (culling->flag != AP_FLAG_NONE) {
                 if (fputs("flag = ", f) == EOF) goto io_fail;
-                if (write_escaped_string(f, ap_flag_key(culling->flag)) != 0) {
+                if (ap_toml_write_basic_string(f,
+                        ap_flag_key(culling->flag)) != 0) {
                     goto io_fail;
                 }
                 if (fputc('\n', f) == EOF) goto io_fail;
             }
             if (culling->color != AP_COLOR_NONE) {
                 if (fputs("color = ", f) == EOF) goto io_fail;
-                if (write_escaped_string(f,
+                if (ap_toml_write_basic_string(f,
                         ap_color_label_key(culling->color)) != 0) {
                     goto io_fail;
                 }
@@ -324,7 +302,9 @@ int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
             if (fputs("keywords = [", f) == EOF) goto io_fail;
             for (int i = 0; i < keywords->count; i++) {
                 if (i > 0 && fputs(", ", f) == EOF) goto io_fail;
-                if (write_escaped_string(f, keywords->kw[i]) != 0) goto io_fail;
+                if (ap_toml_write_basic_string(f, keywords->kw[i]) != 0) {
+                    goto io_fail;
+                }
             }
             if (fputs("]\n", f) == EOF) goto io_fail;
         }

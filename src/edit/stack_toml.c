@@ -90,13 +90,10 @@ int ap_edit_stack_read_toml_array(toml_array_t *arr, ap_edit_stack *out)
     return 0;
 }
 
-// Emit `key = "value"` with the value escaped as a TOML basic string.
-// Every string that round-trips through the sidecar goes through here:
-// one unescaped quote in a value corrupts the whole document.
-static int write_toml_string(FILE *f, const char *key, const char *val)
+int ap_toml_write_basic_string(FILE *f, const char *s)
 {
-    if (fprintf(f, "%-9s = \"", key) < 0) return -1;
-    for (const char *p = val; *p; p++) {
+    if (fputc('"', f) == EOF) return -1;
+    for (const char *p = s; *p; p++) {
         unsigned char c = (unsigned char)*p;
         if (c == '\\' || c == '"') {
             if (fputc('\\', f) == EOF || fputc(c, f) == EOF) return -1;
@@ -112,7 +109,16 @@ static int write_toml_string(FILE *f, const char *key, const char *val)
             if (fputc((int)c, f) == EOF) return -1;
         }
     }
-    if (fputs("\"\n", f) == EOF) return -1;
+    if (fputc('"', f) == EOF) return -1;
+    return 0;
+}
+
+// Emit `key = "value"` with the value escaped as a TOML basic string.
+static int write_toml_string(FILE *f, const char *key, const char *val)
+{
+    if (fprintf(f, "%-9s = ", key) < 0) return -1;
+    if (ap_toml_write_basic_string(f, val) != 0) return -1;
+    if (fputc('\n', f) == EOF) return -1;
     return 0;
 }
 
