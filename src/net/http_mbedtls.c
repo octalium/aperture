@@ -170,7 +170,17 @@ typedef struct {
     bool have_content_length;
 } resp_headers;
 
-// parse the status line + headers from the front of `buf`. returns the
+// find the first CRLF in [p, end). returns NULL when absent.
+static const char *find_crlf(const char *p, const char *end)
+{
+    for (; p + 1 < end; ++p) {
+        if (p[0] == '\r' && p[1] == '\n') return p;
+    }
+    return NULL;
+}
+
+// parse the status line + headers from the front of `buf`. the buffer
+// is not NUL-terminated, so all scanning is length-bounded. returns the
 // byte offset just past the terminating CRLFCRLF, or -1 if the headers
 // aren't fully present (caller should read more) or are malformed.
 static int parse_headers(const char *buf, size_t len, resp_headers *h)
@@ -189,15 +199,24 @@ static int parse_headers(const char *buf, size_t len, resp_headers *h)
     if (!eoh) return -1;
 
     if (len < 12 || strncmp(buf, "HTTP/", 5) != 0) return -1;
-    const char *sp = strchr(buf, ' ');
+    const char *status_eol = find_crlf(buf, eoh);
+    if (!status_eol) return -1;
+    const char *sp = memchr(buf, ' ', (size_t)(status_eol - buf));
     if (!sp) return -1;
-    h->status = strtol(sp + 1, NULL, 10);
+    const char *d = sp + 1;
+    while (d < status_eol && *d == ' ') d++;
+    const char *digits = d;
+    long status = 0;
+    while (d < status_eol && *d >= '0' && *d <= '9') {
+        status = status * 10 + (*d - '0');
+        d++;
+    }
+    if (d == digits) return -1;
+    h->status = status;
 
-    const char *line = strstr(buf, "\r\n");
-    if (!line) return -1;
-    line += 2;
+    const char *line = status_eol + 2;
     while (line < eoh - 2) {
-        const char *eol = strstr(line, "\r\n");
+        const char *eol = find_crlf(line, eoh);
         if (!eol || eol == line) break;
         const char *colon = memchr(line, ':', (size_t)(eol - line));
         if (colon) {
