@@ -20,8 +20,10 @@ extern "C" {
 //
 // The ring stores states to restore TO (captured before each mutation).
 // Undo restores the most recent snapshot; redo re-applies after an undo.
-// Pushing a new snapshot after an undo discards unreachable redo states
-// (standard linear undo semantics).
+// The first undo from the live end also captures the live state onto
+// the ring, so redo can return all the way to it. Pushing a new
+// snapshot after an undo discards unreachable redo states (standard
+// linear undo semantics).
 
 #define AP_HISTORY_CAP 32
 
@@ -39,7 +41,9 @@ void ap_edit_history_init(ap_edit_history *h);
 // beyond the current cursor are discarded.
 void ap_edit_history_snapshot(ap_edit_history *h, const ap_edit_stack *stack);
 
-// Restore the previous snapshot into `*stack`. Returns true on
+// Restore the previous snapshot into `*stack`. On the first undo from
+// the live end, the incoming `*stack` (the live state) is captured
+// onto the ring first so redo can return to it. Returns true on
 // success; false when there is nothing to undo.
 bool ap_edit_history_undo(ap_edit_history *h, ap_edit_stack *stack);
 

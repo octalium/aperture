@@ -2,9 +2,11 @@
 
 #include "grain_comp_spv.h"
 
+#include "core/random.h"
+
 #include "cimgui.h"
 
-#include <stdlib.h>
+#include <stdint.h>
 
 typedef struct {
     float amount;
@@ -42,10 +44,14 @@ static int grain_pack_push(const ap_module *self,
 
 static void grain_init_instance(float *params)
 {
-    // Randomise the seed so two Grain edits on the same or different
-    // photos don't produce identical patterns. rand() seeded by the C
-    // runtime is sufficient — grain seed is not a security value.
-    params[SLOT_SEED] = (float)(rand() % 100000) / 10000.0f;
+    // randomise the seed so two grain edits don't produce identical
+    // patterns. system entropy keeps the derivation independent of
+    // global prng state (no srand ordering concerns). on failure the
+    // entry keeps the copied default seed; ap_random_bytes logs it.
+    uint32_t r;
+    if (ap_random_bytes(&r, sizeof(r)) == 0) {
+        params[SLOT_SEED] = (float)(r % 100000u) / 10000.0f;
+    }
 }
 
 static void grain_render(const ap_module *self, float *params,

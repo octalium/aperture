@@ -313,6 +313,12 @@ extern const ap_module *const ap_module_registry[];
 // Lookup by name. Returns NULL if no module matches.
 const ap_module *ap_module_find(const char *name);
 
+// Enforce the documented registry contract (params_count <=
+// AP_EDIT_PARAMS_SLOTS, str_params_count <= AP_EDIT_STR_SLOTS) at
+// startup. Logs every violation, asserts in debug builds, and returns
+// 0 when the registry is valid, -1 otherwise.
+int ap_module_registry_validate(void);
+
 #ifdef __cplusplus
 }
 #endif

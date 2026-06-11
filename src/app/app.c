@@ -78,6 +78,11 @@ static void save_panel_visibility(void)
 
 ap_app *ap_app_create(int width, int height, const char *title)
 {
+    // refuse to boot on a registry contract violation rather than
+    // silently corrupt entry params / sidecars later.
+    if (ap_module_registry_validate() != 0) {
+        return NULL;
+    }
     ap_app *app = calloc(1, sizeof(*app));
     if (!app) {
         AP_ERROR("ap_app_create: out of memory");

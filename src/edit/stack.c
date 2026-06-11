@@ -125,6 +125,9 @@ int ap_edit_stack_reset(ap_edit_stack *s, int idx)
     if (m->params_default && n > 0) {
         memcpy(e->params, m->params_default, (size_t)n * sizeof(float));
     }
+    if (m->init_instance) {
+        m->init_instance(e->params);
+    }
     return 0;
 }
 
