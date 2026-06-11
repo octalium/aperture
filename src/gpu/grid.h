@@ -116,6 +116,15 @@ void ap_grid_select_rect(ap_grid *grid,
                          float sx0, float sy0, float sx1, float sy1,
                          int win_width, int win_height);
 
+// Inclusive [first, last] cell index range whose rects intersect the
+// effective render rect at the current scroll position, derived from
+// the same layout math as ap_grid_cell_rect. Lets per-cell overlay
+// loops skip offscreen cells. Returns 0 on success; -1 (outputs
+// untouched) when no cell is visible.
+int ap_grid_visible_range(const ap_grid *grid,
+                          int win_width, int win_height,
+                          int *out_first, int *out_last);
+
 // Compute the on-screen rect of a given cell (for ImGui label
 // overlays). Returns 0 on success; -1 if idx is out of range.
 int ap_grid_cell_rect(const ap_grid *grid, int idx,

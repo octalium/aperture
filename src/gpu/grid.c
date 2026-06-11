@@ -1042,6 +1042,41 @@ int ap_grid_cell_rect(const ap_grid *grid, int idx,
     return 0;
 }
 
+int ap_grid_visible_range(const ap_grid *grid,
+                          int win_width, int win_height,
+                          int *out_first, int *out_last)
+{
+    if (!grid || grid->photo_count <= 0) return -1;
+
+    int rx, ry, rw, rh;
+    effective_rect(grid, win_width, win_height, &rx, &ry, &rw, &rh);
+    if (rw <= 0 || rh <= 0) return -1;
+
+    grid_layout L = layout_for(grid, rw, rh);
+    int pitch_y = L.cell_size + L.cell_gap_y;
+    if (pitch_y <= 0 || L.cell_size <= 0) return -1;
+
+    // row r spans [origin_y + r*pitch_y, +cell_size) in render-rect-local
+    // coords (origin_y already folds in scroll); intersect with [0, rh).
+    int first_row = (int)floorf((float)(-L.origin_y - L.cell_size)
+                                / (float)pitch_y) + 1;
+    int last_row  = (int)floorf((float)(rh - L.origin_y - 1)
+                                / (float)pitch_y);
+
+    int rows = total_rows(grid, L.cells_per_row);
+    if (first_row < 0)       first_row = 0;
+    if (last_row >= rows)    last_row  = rows - 1;
+    if (first_row > last_row) return -1;
+
+    int first = first_row * L.cells_per_row;
+    int last  = (last_row + 1) * L.cells_per_row - 1;
+    if (last >= grid->photo_count) last = grid->photo_count - 1;
+
+    if (out_first) *out_first = first;
+    if (out_last)  *out_last  = last;
+    return 0;
+}
+
 void ap_grid_record(ap_grid *grid, VkCommandBuffer cmd,
                     int win_width, int win_height)
 {
