@@ -292,13 +292,11 @@ void ap_app_close_photo(ap_app *app)
         app->loading_path[0] = '\0';
     }
 
-    int closed_idx = app->photo_library_idx;
-
     // Sync GPU readback of the rendered output while the graph is
     // still alive. The downsample + libjpeg encode + db store happen
     // on a worker so the return to library mode is immediate; the
     // affected grid cell refreshes when the worker completes.
-    submit_thumb_refresh(app, closed_idx);
+    submit_thumb_refresh(app);
 
     release_photo(app);
     app->photo_library_idx = -1;
@@ -1010,6 +1008,26 @@ int cell_for_photo(const ap_app *app, int photo_idx)
     return -1;
 }
 
+// Library index of the photo at absolute path `path`, or -1 when the
+// path is not in the library. Linear scan; used to resolve a photo's
+// current index where a cached one may be stale (cache swaps renumber
+// the list, and navigation moves photo_library_idx before the async
+// open lands).
+int library_index_for_path(const ap_app *app, const char *path)
+{
+    if (!app || !app->library || !path) return -1;
+    int n = ap_library_photo_count(app->library);
+    char abs[4096];
+    for (int i = 0; i < n; i++) {
+        if (ap_library_photo_absolute_path(app->library, i, abs,
+                                           sizeof(abs)) == 0 &&
+            strcmp(abs, path) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 // After a library cache swap renumbers the photo list, re-resolve the
 // open photo's index by matching its path in the new cache. Set to -1
 // when the open photo is gone (e.g. deleted by the same job) so the
@@ -1018,20 +1036,8 @@ int cell_for_photo(const ap_app *app, int photo_idx)
 void remap_open_photo_index(ap_app *app)
 {
     if (!app || !app->photo || !app->library) return;
-    const char *p = ap_photo_path(app->photo);
-    if (p) {
-        int n = ap_library_photo_count(app->library);
-        char abs[4096];
-        for (int i = 0; i < n; i++) {
-            if (ap_library_photo_absolute_path(app->library, i, abs,
-                                               sizeof(abs)) == 0 &&
-                strcmp(abs, p) == 0) {
-                app->photo_library_idx = i;
-                return;
-            }
-        }
-    }
-    app->photo_library_idx = -1;
+    app->photo_library_idx =
+        library_index_for_path(app, ap_photo_path(app->photo));
 }
 
 int ap_app_open_library(ap_app *app, const char *path)
@@ -1557,7 +1563,7 @@ void navigate_library_relative(ap_app *app, int dir)
     // Refresh the outgoing photo's thumbnail before the async open
     // replaces app->photo — the readback must happen while the graph
     // is still live.
-    submit_thumb_refresh(app, app->photo_library_idx);
+    submit_thumb_refresh(app);
 
     app->photo_library_idx = new_idx;
     ap_app_open_photo(app, abs);

@@ -674,9 +674,16 @@ void submit_pending_thumbs(ap_app *app)
     }
 }
 
-void submit_thumb_refresh(ap_app *app, int idx)
+void submit_thumb_refresh(ap_app *app)
 {
-    if (idx < 0 || !app->photo || !app->library) return;
+    if (!app->photo || !app->library) return;
+
+    // Resolve the index from the photo whose pixels are read back, not
+    // from photo_library_idx: navigation moves that index before the
+    // async open lands, so a caller-supplied index could stamp the
+    // outgoing photo's render onto the target photo's thumbnail.
+    int idx = library_index_for_path(app, ap_photo_path(app->photo));
+    if (idx < 0) return;
 
     uint8_t *thumb_rgba = NULL;
     int      thumb_w = 0, thumb_h = 0;
