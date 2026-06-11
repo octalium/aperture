@@ -2,6 +2,7 @@
 
 #include "jobs.h"
 
+#include "core/time.h"
 #include "export_coord.h"
 #include "io/raw.h"
 #include "library/import.h"
@@ -631,7 +632,7 @@ void drain_all_workers(ap_app *app)
 void drain_completed_jobs(ap_app *app)
 {
     if (!app->workers) return;
-    double deadline = igGetTime() + DRAIN_BUDGET_SECS;
+    double deadline = ap_time_now() + DRAIN_BUDGET_SECS;
     for (;;) {
         ap_work_item *it = ap_worker_pool_poll(app->workers);
         if (!it) return;
@@ -659,7 +660,7 @@ void drain_completed_jobs(ap_app *app)
         } else {
             AP_WARN("worker: unknown completed run-fn, leaking item");
         }
-        if (igGetTime() >= deadline) return;
+        if (ap_time_now() >= deadline) return;
     }
 }
 
@@ -670,7 +671,11 @@ void submit_pending_thumbs(ap_app *app)
     // and renumbering); decoding now would waste the work and contend on
     // the db with the off-thread build. Hold off until the swap lands.
     if (app->library_job_inflight) return;
-    while (app->thumb_inflight < THUMB_MAX_INFLIGHT) {
+    // 2x the pool size keeps a decode queued behind each worker between
+    // per-frame refills; payloads are small (thumb-sized rgba), so the
+    // deeper queue costs little memory.
+    int max_inflight = 2 * ap_worker_pool_thread_count(app->workers);
+    while (app->thumb_inflight < max_inflight) {
         int idx = ap_library_pending_thumbnail_idx(app->library);
         if (idx < 0) return;
 

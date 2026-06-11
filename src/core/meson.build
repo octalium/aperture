@@ -5,6 +5,7 @@ aperture_sources += files(
   'memstream.c',
   'random.c',
   'signal.c',
+  'time.c',
   'version.c',
   'worker.c',
 )
