@@ -199,7 +199,13 @@ int commit_selection_edit_job(ap_app *app, selection_edit_job *j,
 
 void discard_completed_item(ap_app *app, ap_work_item *it);
 void drain_all_workers(ap_app *app);
-void drain_one_completed_job(ap_app *app);
+
+// Retire completed worker items on the main thread, looping until the
+// completion queue is empty or a per-frame wall-time budget (~3ms) is
+// hit. A library-swap completion ends the drain early: it stalls the
+// GPU and invalidates the thumbnail generation, so anything still
+// queued is re-validated next frame. Call once per frame.
+void drain_completed_jobs(ap_app *app);
 void submit_pending_thumbs(ap_app *app);
 void submit_thumb_refresh(ap_app *app, int idx);
 void toggle_rendered_thumbnails(ap_app *app);

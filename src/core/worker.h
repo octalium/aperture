@@ -22,7 +22,8 @@ struct ap_work_item {
 };
 
 // Create a pool of `n_threads` worker threads. If n_threads <= 0 the
-// pool sizes itself to min(4, hardware_concurrency).
+// pool sizes itself to hardware_concurrency - 1 (min 2), leaving one
+// core for the main thread.
 ap_worker_pool *ap_worker_pool_create(int n_threads);
 
 // Wait for in-flight items to finish, drain queues (any items

@@ -1,3 +1,7 @@
+#ifdef __linux__
+#define _GNU_SOURCE   // sched_getaffinity
+#endif
+
 #include "worker.h"
 
 #include "core/log.h"
@@ -11,9 +15,16 @@
 #include <windows.h>  // GetSystemInfo for the default thread count
 #else
 #include <unistd.h>   // sysconf(_SC_NPROCESSORS_ONLN)
+#ifdef __linux__
+#include <sched.h>    // sched_getaffinity, CPU_COUNT
+#endif
 #endif
 
-#define WORKER_DEFAULT_THREADS 4
+// fallback core count when the OS query fails; otherwise the pool
+// auto-sizes to cores - 1 (decode/encode scale with cores, one core
+// stays free for the main thread).
+#define WORKER_FALLBACK_CORES 4
+#define WORKER_MIN_THREADS    2
 
 struct ap_worker_pool {
     ap_thread      *threads;
@@ -33,7 +44,9 @@ struct ap_worker_pool {
     bool            shutdown;
 };
 
-// number of logical CPUs, or 0 if it cannot be determined.
+// number of logical CPUs available to this process, or 0 if it cannot
+// be determined. on linux the affinity mask is queried first so a
+// taskset/cgroup-restricted process doesn't oversubscribe its quota.
 static int cpu_count(void)
 {
 #ifdef _WIN32
@@ -41,6 +54,13 @@ static int cpu_count(void)
     GetSystemInfo(&si);
     return (int)si.dwNumberOfProcessors;
 #else
+#ifdef __linux__
+    cpu_set_t set;
+    if (sched_getaffinity(0, sizeof(set), &set) == 0) {
+        int n = CPU_COUNT(&set);
+        if (n > 0) return n;
+    }
+#endif
     long online = sysconf(_SC_NPROCESSORS_ONLN);
     return online > 0 ? (int)online : 0;
 #endif
@@ -99,10 +119,9 @@ ap_worker_pool *ap_worker_pool_create(int n_threads)
 {
     if (n_threads <= 0) {
         int online = cpu_count();
-        if (online <= 0) online = WORKER_DEFAULT_THREADS;
-        n_threads = online < WORKER_DEFAULT_THREADS
-                        ? online : WORKER_DEFAULT_THREADS;
-        if (n_threads < 1) n_threads = 1;
+        if (online <= 0) online = WORKER_FALLBACK_CORES;
+        n_threads = online - 1;
+        if (n_threads < WORKER_MIN_THREADS) n_threads = WORKER_MIN_THREADS;
     }
 
     ap_worker_pool *p = calloc(1, sizeof(*p));
