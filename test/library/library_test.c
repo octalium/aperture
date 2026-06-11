@@ -20,6 +20,8 @@
 // Library uses ap_app_root_path which is cached on first call. Setting
 // XDG_DATA_HOME (Linux) and HOME (macOS fallback) to a per-test tmpdir
 // before that first call confines the registry db to the test sandbox.
+// Each test pairs its approot teardown with ap_registry_close so the
+// process-lifetime registry connection never outlives its sandbox.
 static void redirect_app_root(const char *root)
 {
     setenv("XDG_DATA_HOME", root, 1);
@@ -104,6 +106,7 @@ static void test_schema_created(void)
     for (const char *const *t = TABLES; *t; t++) assert_table_exists(libroot, *t);
 
     aptest_tmpdir_rm(libroot);
+    ap_registry_close();
     aptest_tmpdir_rm(approot);
 }
 
@@ -137,6 +140,7 @@ static void test_dedupe_on_reopen(void)
                    "db count after second open != 3");
 
     aptest_tmpdir_rm(libroot);
+    ap_registry_close();
     aptest_tmpdir_rm(approot);
 }
 
@@ -179,6 +183,7 @@ static void test_photo_remove(void)
                    "db count after remove != 1");
 
     aptest_tmpdir_rm(libroot);
+    ap_registry_close();
     aptest_tmpdir_rm(approot);
 }
 
@@ -205,6 +210,7 @@ static void test_non_raw_ignored(void)
     ap_library_close(lib);
 
     aptest_tmpdir_rm(libroot);
+    ap_registry_close();
     aptest_tmpdir_rm(approot);
 }
 
