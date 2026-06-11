@@ -2394,11 +2394,13 @@ int ap_library_apply_metadata_patch(ap_library *lib, int index,
     return ap_library_apply_metadata_patch_to_path(path, patch, patch_set);
 }
 
-// Load-modify-save the n-th photo's sidecar so its on-disk `groups`
-// match the in-memory index. Mirrors apply_metadata_patch: preserves
-// the edit stack, orientation and metadata, seeding the default
-// pipeline when the photo has no sidecar yet.
-static int write_photo_sidecar_groups(ap_library *lib, int index)
+// Load-modify-save the n-th photo's sidecar so its on-disk membership
+// matches `groups`. Mirrors apply_metadata_patch: preserves the edit
+// stack, orientation and metadata, seeding the default pipeline when
+// the photo has no sidecar yet. Takes the groups to persist instead of
+// reading the cache so callers can write before mutating the cache.
+static int write_photo_sidecar_groups(ap_library *lib, int index,
+                                      const ap_photo_groups *groups)
 {
     char path[4096];
     if (ap_library_photo_absolute_path(lib, index, path, sizeof(path)) != 0) {
@@ -2425,7 +2427,7 @@ static int write_photo_sidecar_groups(ap_library *lib, int index)
 
     return ap_sidecar_save(path, &stack, respect_orientation,
                            &user_meta, user_set, &culling,
-                           &lib->cache->photo_groups[index], &keywords);
+                           groups, &keywords);
 }
 
 int ap_library_write_culling_to_path(const char *path, ap_photo_culling culling)
@@ -2608,8 +2610,26 @@ int ap_library_set_photo_group(ap_library *lib, int index,
         return -1;
     }
 
+    // Write the sidecar first, then mutate the cache, so a refused or
+    // failed write can't leave the cache claiming unpersisted state.
+    ap_photo_groups updated = *g;
+    if (member) {
+        snprintf(updated.names[updated.count], AP_GROUP_NAME_LEN, "%s", group);
+        updated.count++;
+    } else {
+        for (int i = 0; i < updated.count; i++) {
+            if (strcmp(updated.names[i], group) != 0) continue;
+            for (int k = i; k + 1 < updated.count; k++) {
+                memcpy(updated.names[k], updated.names[k + 1],
+                       AP_GROUP_NAME_LEN);
+            }
+            updated.count--;
+            break;
+        }
+    }
+    if (write_photo_sidecar_groups(lib, index, &updated) != 0) return -1;
     ap_library_apply_group_cache(lib, index, group, member);
-    return write_photo_sidecar_groups(lib, index);
+    return 0;
 }
 
 int ap_library_rename_group(ap_library *lib, const char *old_name,
