@@ -4,7 +4,6 @@
 
 #include "cimgui.h"
 
-#include <math.h>
 #include <stdlib.h>
 
 typedef struct {
@@ -24,14 +23,6 @@ enum {
 static const float       grain_defaults[] = { 0.0f, 1.0f, 0.8f, 0.137f };
 static const char *const grain_names[]    = { "amount", "size", "mid_bias", "seed" };
 
-// clamp to the slider range at the pack boundary so a corrupt sidecar
-// can't reach the shader; float-to-uint conversion of a negative seed
-// is undefined in GLSL (NaN maps to lo via fmaxf).
-static float grain_clampf(float v, float lo, float hi)
-{
-    return fminf(fmaxf(v, lo), hi);
-}
-
 static int grain_pack_push(const ap_module *self,
                            const float *params,
                            const char (*str_params)[AP_EDIT_STR_LEN],
@@ -42,14 +33,10 @@ static int grain_pack_push(const ap_module *self,
     (void)str_params;
     (void)meta;
     grain_push_t *pc = push_out;
-    pc->amount   = grain_clampf(params ? params[SLOT_AMOUNT] : 0.0f,
-                                0.0f, 0.5f);
-    pc->size     = grain_clampf(params ? params[SLOT_SIZE] : 1.0f,
-                                1.0f, 8.0f);
-    pc->mid_bias = grain_clampf(params ? params[SLOT_BIAS] : 0.8f,
-                                0.0f, 1.0f);
-    pc->seed     = grain_clampf(params ? params[SLOT_SEED] : 0.137f,
-                                0.0f, 10.0f);
+    pc->amount   = ap_clampf(params ? params[SLOT_AMOUNT] : 0.0f, 0.0f, 0.5f);
+    pc->size     = ap_clampf(params ? params[SLOT_SIZE]   : 1.0f, 1.0f, 8.0f);
+    pc->mid_bias = ap_clampf(params ? params[SLOT_BIAS]   : 0.8f, 0.0f, 1.0f);
+    pc->seed     = ap_clampf(params ? params[SLOT_SEED] : 0.137f, 0.0f, 10.0f);
     return 0;
 }
 
