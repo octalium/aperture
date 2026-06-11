@@ -73,6 +73,7 @@ ap_gpu *ap_gpu_create(int width, int height, const char *title)
 
     if (gpu_swapchain_create(g) < 0)                      goto fail;
     if (gpu_frames_create(g) < 0)                         goto fail;
+    if (gpu_render_create(g) < 0)                         goto fail;
 
     if (!ap_imgui_init(g->window, g->instance, g->physical, g->device,
                        g->graphics_family, g->graphics_queue,
@@ -97,6 +98,7 @@ void ap_gpu_destroy(ap_gpu *g)
 
     ap_imgui_shutdown();
 
+    gpu_render_destroy(g);
     gpu_frames_destroy(g);
     gpu_swapchain_destroy(g);
     if (g->pipeline_cache) {
@@ -123,12 +125,21 @@ bool ap_gpu_should_run(ap_gpu *g)
 
 int ap_gpu_render_frame(ap_gpu *g, const ap_edit_stack *stack)
 {
-    return gpu_frame_render(g, stack);
+    // Pump the background render (promote a finished one, kick a new one if
+    // the edits changed) — never blocking — then composite the latest
+    // finished slot in the swapchain frame.
+    gpu_render_pump(g, stack);
+    return gpu_frame_render(g);
 }
 
 void ap_gpu_set_graph(ap_gpu *g, ap_pipeline_graph *graph)
 {
+    // Callers swap the graph only with the device idle (close / rebuild),
+    // so any in-flight render has finished; reset the scheduler so the next
+    // pump renders the new graph from scratch rather than promoting a slot
+    // of the outgoing one.
     g->current_graph = graph;
+    gpu_render_reset(g);
 }
 
 void ap_gpu_set_canvas(ap_gpu *g, ap_canvas *canvas)
