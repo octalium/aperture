@@ -32,7 +32,10 @@ if ($env:VULKAN_SDK) {
 $vcpkgRoot = if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT } else { 'dep\vcpkg' }
 $pcPath    = Join-Path $vcpkgRoot 'installed\x64-windows\lib\pkgconfig'
 
-meson setup $BuildDir --buildtype=$BuildType --pkg-config-path $pcPath
+# reconfigure existing build dirs so a changed -BuildType is honored.
+$setupArgs = @($BuildDir, "--buildtype=$BuildType", '--pkg-config-path', $pcPath)
+if (Test-Path (Join-Path $BuildDir 'build.ninja')) { $setupArgs += '--reconfigure' }
+meson setup @setupArgs
 if ($LASTEXITCODE -ne 0) { throw "meson setup failed" }
 
 meson compile -C $BuildDir
