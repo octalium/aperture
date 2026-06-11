@@ -137,14 +137,15 @@ void draw_export_modal(ap_app *app)
             if (ap_export_preset_save(lib, g_save_name, s) == 0) {
                 snprintf(g_status, sizeof(g_status),
                          "Preset \"%s\" saved.", g_save_name);
-                g_save_name[0] = '\0';
-                // Re-select the preset we just saved.
+                // Re-select the preset we just saved, then clear the
+                // name buffer (in this order — the lookup needs it).
                 refresh_presets(lib);
                 for (int i = 0; i < g_preset_count; i++) {
                     if (strcmp(g_presets[i].name, g_save_name) == 0) {
                         g_preset_id = g_presets[i].id; break;
                     }
                 }
+                g_save_name[0] = '\0';
             } else {
                 snprintf(g_status, sizeof(g_status), "Save failed.");
             }
