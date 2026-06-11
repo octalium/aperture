@@ -10,10 +10,19 @@
 
 #include <tiffio.h>
 
+// set when libtiff reports an error on this thread. the handler is
+// process-global but runs on the thread that made the failing call, and
+// exports run concurrently on worker threads, so the flag must be
+// thread-local: cleared at the start of each export and checked after
+// the writes (errors inside TIFFClose's void flush would otherwise only
+// reach the log and the corrupt temp would be committed).
+static _Thread_local int tiff_thread_error;
+
 // libtiff error / warning redirected through the aperture log so that
 // they use the same format as the rest of the codebase.
 static void on_tiff_error(const char *module, const char *fmt, va_list ap)
 {
+    tiff_thread_error = 1;
     char msg[512];
     vsnprintf(msg, sizeof(msg), fmt, ap);
     AP_ERROR("tiff(%s): %s", module ? module : "?", msg);
@@ -173,16 +182,32 @@ int ap_export_tiff(const uint8_t *rgba_u8, const float *rgba_f32,
         return -1;
     }
 
+    tiff_thread_error = 0;
+
     TIFF *tif = TIFFOpen(tmp, "w");
     if (!tif) {
         AP_ERROR("ap_export_tiff: TIFFOpen(%s) failed", tmp);
+        // a failed open can still leave a created-but-empty temp behind
+        ap_atomic_discard_temp(tmp);
         return -1;
     }
 
     int rc = write_tiff(tif, rgba_u8, rgba_f32,
                         width, height, depth, compress,
                         icc_data, icc_size);
+
+    // flush strips + directory explicitly: TIFFClose performs the same
+    // flush but returns void, so an ENOSPC/EIO there would be invisible.
+    if (rc == 0 && TIFFFlush(tif) != 1) {
+        AP_ERROR("ap_export_tiff: TIFFFlush(%s) failed", tmp);
+        rc = -1;
+    }
     TIFFClose(tif);
+
+    if (rc == 0 && tiff_thread_error) {
+        AP_ERROR("ap_export_tiff: write error reported for %s", tmp);
+        rc = -1;
+    }
 
     if (rc == 0) {
         if (ap_atomic_commit_temp(tmp, path) != 0) {

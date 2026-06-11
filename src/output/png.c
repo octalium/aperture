@@ -64,7 +64,19 @@ int ap_export_png(const uint8_t *rgba, int width, int height,
         return -1;
     }
 
-    int rc = -1;
+    // allocate the row scratch buffer before setjmp so its value stays
+    // determinate after a longjmp and it is freed on the error path too.
+    int bit_depth = (depth == AP_PNG_UINT16) ? 16 : 8;
+    size_t row_bytes = (size_t)width * 3 * (size_t)(bit_depth / 8);
+    uint8_t *row = malloc(row_bytes);
+
+    // rc spans setjmp and is modified after it: volatile per C11 7.13.2.1.
+    volatile int rc = -1;
+
+    if (!row) {
+        AP_ERROR("ap_export_png: row buffer alloc failed");
+        goto done;
+    }
 
     if (setjmp(png_jmpbuf(png)) != 0) {
         goto done;
@@ -72,7 +84,6 @@ int ap_export_png(const uint8_t *rgba, int width, int height,
 
     png_init_io(png, f);
 
-    int bit_depth = (depth == AP_PNG_UINT16) ? 16 : 8;
     png_set_IHDR(png, info,
                  (png_uint_32)width, (png_uint_32)height,
                  bit_depth,
@@ -94,14 +105,6 @@ int ap_export_png(const uint8_t *rgba, int width, int height,
     // how we pack them; png_set_swap corrects this on little-endian hosts.
     if (bit_depth == 16) {
         png_set_swap(png);
-    }
-
-    // Allocate one output row (RGB, no alpha).
-    size_t row_bytes = (size_t)width * 3 * (size_t)(bit_depth / 8);
-    uint8_t *row = malloc(row_bytes);
-    if (!row) {
-        AP_ERROR("ap_export_png: row buffer alloc failed");
-        goto done;
     }
 
     for (int y = 0; y < height; y++) {
@@ -126,12 +129,12 @@ int ap_export_png(const uint8_t *rgba, int width, int height,
         }
         png_write_row(png, row);
     }
-    free(row);
 
     png_write_end(png, info);
     rc = 0;
 
 done:
+    free(row);
     png_destroy_write_struct(&png, &info);
     if (rc == 0) {
         if (ap_atomic_commit(a) != 0) rc = -1;
