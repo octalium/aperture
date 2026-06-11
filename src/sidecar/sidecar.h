@@ -31,13 +31,24 @@ typedef struct {
 // leave behind for a missing sidecar.
 void ap_sidecar_ancillary_clear(ap_sidecar_ancillary *a);
 
+// Outcome of a sidecar read. ABSENT means there is no sidecar on disk
+// (callers seed defaults and may safely write a fresh one); ERROR
+// means a sidecar exists but could not be read or parsed — it holds
+// the photo's edit history and may be recoverable, so callers must
+// never overwrite it.
+typedef enum {
+    AP_SIDECAR_OK     = 0,
+    AP_SIDECAR_ABSENT = 1,
+    AP_SIDECAR_ERROR  = -1,
+} ap_sidecar_status;
+
 // Load both the edit stack and the ancillary fields from a sidecar in
 // one parse. `*stack` and `*ancillary` are reset to defaults before
-// reading. Returns 0 on success, nonzero on missing / unparseable file
-// (out-params left at their defaults).
-int ap_sidecar_load_full(const char *source_path,
-                         ap_edit_stack *stack,
-                         ap_sidecar_ancillary *ancillary);
+// reading and are left at those defaults unless the status is
+// AP_SIDECAR_OK.
+ap_sidecar_status ap_sidecar_load_full(const char *source_path,
+                                       ap_edit_stack *stack,
+                                       ap_sidecar_ancillary *ancillary);
 
 // Load the photo's persisted state from `<source_path>.aperture`.
 // `*stack` is reset and then populated from the file's [[edit]]
@@ -50,17 +61,19 @@ int ap_sidecar_load_full(const char *source_path,
 // filled from the [aperture] table's `groups` array (empty when
 // absent).
 //
-// Returns 0 on success, nonzero on missing / unparseable file -
-// callers leave the out-params at their caller-seeded defaults in
-// that case.
-int ap_sidecar_load(const char *source_path,
-                    ap_edit_stack *stack,
-                    bool *respect_orientation,
-                    ap_photo_metadata *user_meta,
-                    bool user_set[AP_META_FIELD_COUNT],
-                    ap_photo_culling *culling,
-                    ap_photo_groups *groups,
-                    ap_photo_keywords *keywords);
+// Returns AP_SIDECAR_OK on success, AP_SIDECAR_ABSENT when no sidecar
+// exists (callers seed defaults), AP_SIDECAR_ERROR when the file
+// exists but is unreadable or unparseable (callers must not write it
+// back). Out-params are left at their caller-seeded defaults unless
+// the status is AP_SIDECAR_OK.
+ap_sidecar_status ap_sidecar_load(const char *source_path,
+                                  ap_edit_stack *stack,
+                                  bool *respect_orientation,
+                                  ap_photo_metadata *user_meta,
+                                  bool user_set[AP_META_FIELD_COUNT],
+                                  ap_photo_culling *culling,
+                                  ap_photo_groups *groups,
+                                  ap_photo_keywords *keywords);
 
 // Atomically write the edit stack, photo flags, metadata overrides,
 // culling state, group membership, and keywords to
@@ -77,15 +90,17 @@ int ap_sidecar_save(const char *source_path,
 // Read only the culling fields (rating / flag / color) from a sidecar
 // — a lightweight parse that skips the edit stack and string
 // metadata. Used to build the library db's cached culling columns.
-// `*out` is cleared first. Returns 0 on success, nonzero when the
-// sidecar is missing or unparseable (`*out` left at its defaults).
-int ap_sidecar_load_culling(const char *source_path, ap_photo_culling *out);
+// `*out` is cleared first and left at its defaults unless the status
+// is AP_SIDECAR_OK.
+ap_sidecar_status ap_sidecar_load_culling(const char *source_path,
+                                          ap_photo_culling *out);
 
 // Read only the group membership from a sidecar — a lightweight parse
 // that skips the edit stack and metadata. Used to build the library's
-// group index. `*out` is cleared first. Returns 0 on success, nonzero
-// when the sidecar is missing or unparseable (`*out` left empty).
-int ap_sidecar_load_groups(const char *source_path, ap_photo_groups *out);
+// group index. `*out` is cleared first and left empty unless the
+// status is AP_SIDECAR_OK.
+ap_sidecar_status ap_sidecar_load_groups(const char *source_path,
+                                         ap_photo_groups *out);
 
 // Read group membership and culling from a sidecar in ONE parse — the
 // library cache build calls this once per photo instead of the two

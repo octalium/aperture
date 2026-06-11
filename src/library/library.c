@@ -2359,6 +2359,19 @@ static void seed_default_stack(ap_edit_stack *stack)
     ap_pipeline_apply_default_to_stack(stack);
 }
 
+// A sidecar that exists but cannot be parsed must never be written
+// over: it holds the photo's entire edit history and may be
+// recoverable by hand. Every load-modify-save path checks its load
+// status through here and propagates the refusal as a write failure.
+static bool refuse_unreadable_sidecar(ap_sidecar_status status,
+                                      const char *path)
+{
+    if (status != AP_SIDECAR_ERROR) return false;
+    AP_ERROR("library: refusing to overwrite unreadable sidecar for %s",
+             path);
+    return true;
+}
+
 int ap_library_apply_stack_to_path(const char *path,
                                    const ap_edit_stack *stack,
                                    const ap_sidecar_ancillary *prefetched)
@@ -2371,9 +2384,11 @@ int ap_library_apply_stack_to_path(const char *path,
         ap_edit_stack existing_stack;
         ap_edit_stack_init(&existing_stack);
         ap_sidecar_ancillary_clear(&local);
-        ap_sidecar_load(path, &existing_stack, &local.respect_orientation,
-                        &local.user_meta, local.user_set, &local.culling,
-                        &local.groups, &local.keywords);
+        ap_sidecar_status st = ap_sidecar_load(
+            path, &existing_stack, &local.respect_orientation,
+            &local.user_meta, local.user_set, &local.culling,
+            &local.groups, &local.keywords);
+        if (refuse_unreadable_sidecar(st, path)) return -1;
         a = &local;
     }
 
@@ -2401,10 +2416,11 @@ int ap_library_apply_metadata_patch_to_path(
     groups.count = 0;
     ap_photo_keywords keywords;
     ap_photo_keywords_clear(&keywords);
-    bool had_sidecar = (ap_sidecar_load(path, &stack, &respect_orientation,
-                                        &user_meta, user_set, &culling,
-                                        &groups, &keywords) == 0);
-    if (!had_sidecar) seed_default_stack(&stack);
+    ap_sidecar_status st = ap_sidecar_load(path, &stack, &respect_orientation,
+                                           &user_meta, user_set, &culling,
+                                           &groups, &keywords);
+    if (refuse_unreadable_sidecar(st, path)) return -1;
+    if (st == AP_SIDECAR_ABSENT) seed_default_stack(&stack);
 
     for (int i = 0; i < AP_META_FIELD_COUNT; i++) {
         if (!patch_set[i]) continue;
@@ -2459,11 +2475,13 @@ int ap_library_apply_metadata_patch(ap_library *lib, int index,
     return ap_library_apply_metadata_patch_to_path(path, patch, patch_set);
 }
 
-// Load-modify-save the n-th photo's sidecar so its on-disk `groups`
-// match the in-memory index. Mirrors apply_metadata_patch: preserves
-// the edit stack, orientation and metadata, seeding the default
-// pipeline when the photo has no sidecar yet.
-static int write_photo_sidecar_groups(ap_library *lib, int index)
+// Load-modify-save the n-th photo's sidecar so its on-disk membership
+// matches `groups`. Mirrors apply_metadata_patch: preserves the edit
+// stack, orientation and metadata, seeding the default pipeline when
+// the photo has no sidecar yet. Takes the groups to persist instead of
+// reading the cache so callers can write before mutating the cache.
+static int write_photo_sidecar_groups(ap_library *lib, int index,
+                                      const ap_photo_groups *groups)
 {
     char path[4096];
     if (ap_library_photo_absolute_path(lib, index, path, sizeof(path)) != 0) {
@@ -2482,14 +2500,15 @@ static int write_photo_sidecar_groups(ap_library *lib, int index)
     ap_photo_keywords keywords;
     ap_photo_keywords_clear(&keywords);
 
-    bool had = (ap_sidecar_load(path, &stack, &respect_orientation,
-                                &user_meta, user_set, &culling,
-                                &discard_groups, &keywords) == 0);
-    if (!had) seed_default_stack(&stack);
+    ap_sidecar_status st = ap_sidecar_load(path, &stack, &respect_orientation,
+                                           &user_meta, user_set, &culling,
+                                           &discard_groups, &keywords);
+    if (refuse_unreadable_sidecar(st, path)) return -1;
+    if (st == AP_SIDECAR_ABSENT) seed_default_stack(&stack);
 
     return ap_sidecar_save(path, &stack, respect_orientation,
                            &user_meta, user_set, &culling,
-                           &lib->cache->photo_groups[index], &keywords);
+                           groups, &keywords);
 }
 
 int ap_library_write_culling_to_path(const char *path, ap_photo_culling culling)
@@ -2498,14 +2517,13 @@ int ap_library_write_culling_to_path(const char *path, ap_photo_culling culling)
     culling.rating = ap_rating_clamp(culling.rating);
 
     // Load-modify-save: preserve the edit stack + every other ancillary
-    // field. ap_sidecar_load_full clears both outputs even on failure, so
-    // for a photo with no sidecar yet we only seed the default pipeline
+    // field. For a photo with no sidecar yet, seed the default pipeline
     // (so the write doesn't strip its edits).
     ap_edit_stack stack;
     ap_sidecar_ancillary anc;
-    if (ap_sidecar_load_full(path, &stack, &anc) != 0) {
-        seed_default_stack(&stack);
-    }
+    ap_sidecar_status st = ap_sidecar_load_full(path, &stack, &anc);
+    if (refuse_unreadable_sidecar(st, path)) return -1;
+    if (st == AP_SIDECAR_ABSENT) seed_default_stack(&stack);
     anc.culling = culling;
     return ap_library_apply_stack_to_path(path, &stack, &anc);
 }
@@ -2517,7 +2535,9 @@ int ap_library_modify_group_in_sidecar(const char *path, const char *group,
 
     ap_edit_stack stack;
     ap_sidecar_ancillary anc;
-    if (ap_sidecar_load_full(path, &stack, &anc) != 0) {
+    ap_sidecar_status st = ap_sidecar_load_full(path, &stack, &anc);
+    if (refuse_unreadable_sidecar(st, path)) return -1;
+    if (st == AP_SIDECAR_ABSENT) {
         seed_default_stack(&stack);  // load_full already cleared anc
     }
 
@@ -2542,16 +2562,18 @@ int ap_library_modify_group_in_sidecar(const char *path, const char *group,
 }
 
 void ap_library_commit_culling_batch(ap_library *lib, const int *indices,
-                                     const ap_photo_culling *cull, int count)
+                                     const ap_photo_culling *cull,
+                                     const bool *ok, int count)
 {
     if (!lib || !lib->db || !lib->cache || !lib->cache->photo_culling ||
         !indices || !cull) {
         return;
     }
-    // The worker already wrote every sidecar; here we update only the
-    // in-memory cells + the cached db columns, with one prepared
-    // statement in one transaction so the WAL takes a single commit
-    // rather than one per photo.
+    // Update the in-memory cells + the cached db columns only for the
+    // photos whose sidecar write succeeded (`ok`, NULL = all), with one
+    // prepared statement in one transaction so the WAL takes a single
+    // commit rather than one per photo. A photo whose write was refused
+    // keeps its old cached value — the sidecar is the source of truth.
     sqlite3_stmt *upd = NULL;
     if (sqlite3_prepare_v2(lib->db, CULLING_UPDATE_SQL, -1, &upd, NULL)
             != SQLITE_OK) {
@@ -2560,6 +2582,7 @@ void ap_library_commit_culling_batch(ap_library *lib, const int *indices,
     }
     sqlite3_exec(lib->db, "BEGIN;", NULL, NULL, NULL);
     for (int k = 0; k < count; k++) {
+        if (ok && !ok[k]) continue;
         int idx = indices[k];
         if (idx < 0 || idx >= lib->cache->photo_count) continue;
         ap_photo_culling c = cull[k];
@@ -2682,8 +2705,26 @@ int ap_library_set_photo_group(ap_library *lib, int index,
         return -1;
     }
 
+    // Write the sidecar first, then mutate the cache, so a refused or
+    // failed write can't leave the cache claiming unpersisted state.
+    ap_photo_groups updated = *g;
+    if (member) {
+        snprintf(updated.names[updated.count], AP_GROUP_NAME_LEN, "%s", group);
+        updated.count++;
+    } else {
+        for (int i = 0; i < updated.count; i++) {
+            if (strcmp(updated.names[i], group) != 0) continue;
+            for (int k = i; k + 1 < updated.count; k++) {
+                memcpy(updated.names[k], updated.names[k + 1],
+                       AP_GROUP_NAME_LEN);
+            }
+            updated.count--;
+            break;
+        }
+    }
+    if (write_photo_sidecar_groups(lib, index, &updated) != 0) return -1;
     ap_library_apply_group_cache(lib, index, group, member);
-    return write_photo_sidecar_groups(lib, index);
+    return 0;
 }
 
 int ap_library_rename_group(ap_library *lib, const char *old_name,

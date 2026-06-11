@@ -112,11 +112,11 @@ void ap_sidecar_ancillary_clear(ap_sidecar_ancillary *a)
     ap_photo_keywords_clear(&a->keywords);
 }
 
-int ap_sidecar_load_full(const char *source_path,
-                         ap_edit_stack *stack,
-                         ap_sidecar_ancillary *ancillary)
+ap_sidecar_status ap_sidecar_load_full(const char *source_path,
+                                       ap_edit_stack *stack,
+                                       ap_sidecar_ancillary *ancillary)
 {
-    if (!source_path || !stack || !ancillary) return -1;
+    if (!source_path || !stack || !ancillary) return AP_SIDECAR_ERROR;
     ap_edit_stack_init(stack);
     ap_sidecar_ancillary_clear(ancillary);
     return ap_sidecar_load(source_path, stack,
@@ -126,31 +126,34 @@ int ap_sidecar_load_full(const char *source_path,
                            &ancillary->keywords);
 }
 
-int ap_sidecar_load(const char *source_path, ap_edit_stack *stack,
-                    bool *respect_orientation,
-                    ap_photo_metadata *user_meta,
-                    bool user_set[AP_META_FIELD_COUNT],
-                    ap_photo_culling *culling,
-                    ap_photo_groups *groups,
-                    ap_photo_keywords *keywords)
+ap_sidecar_status ap_sidecar_load(const char *source_path, ap_edit_stack *stack,
+                                  bool *respect_orientation,
+                                  ap_photo_metadata *user_meta,
+                                  bool user_set[AP_META_FIELD_COUNT],
+                                  ap_photo_culling *culling,
+                                  ap_photo_groups *groups,
+                                  ap_photo_keywords *keywords)
 {
-    if (!source_path || !stack) return -1;
+    if (!source_path || !stack) return AP_SIDECAR_ERROR;
 
     char path[4096];
-    if (sidecar_path(source_path, path, sizeof(path)) < 0) return -1;
+    if (sidecar_path(source_path, path, sizeof(path)) < 0) {
+        return AP_SIDECAR_ERROR;
+    }
 
     FILE *f = fopen(path, "r");
     if (!f) {
-        if (errno != ENOENT) AP_WARN("sidecar: fopen(%s): %s", path, strerror(errno));
-        return -1;
+        if (errno == ENOENT) return AP_SIDECAR_ABSENT;
+        AP_ERROR("sidecar: fopen(%s): %s", path, strerror(errno));
+        return AP_SIDECAR_ERROR;
     }
 
     char errbuf[256];
     toml_table_t *root = toml_parse_file(f, errbuf, sizeof(errbuf));
     fclose(f);
     if (!root) {
-        AP_WARN("sidecar: parse %s: %s", path, errbuf);
-        return -1;
+        AP_ERROR("sidecar: parse %s: %s", path, errbuf);
+        return AP_SIDECAR_ERROR;
     }
 
     toml_table_t *aperture = toml_table_in(root, "aperture");
@@ -199,34 +202,7 @@ int ap_sidecar_load(const char *source_path, ap_edit_stack *stack,
     }
 
     toml_free(root);
-    return 0;
-}
-
-// TOML strings have to escape backslash + quote. Conservative writer
-// good enough for the short strings the metadata fields hold; not a
-// general-purpose escaper.
-static int write_escaped_string(FILE *f, const char *s)
-{
-    if (fputc('"', f) == EOF) return -1;
-    for (const char *p = s; *p; p++) {
-        unsigned char c = (unsigned char)*p;
-        if (c == '\\' || c == '"') {
-            if (fputc('\\', f) == EOF) return -1;
-            if (fputc(c, f) == EOF) return -1;
-        } else if (c == '\n') {
-            if (fputs("\\n", f) == EOF) return -1;
-        } else if (c == '\r') {
-            if (fputs("\\r", f) == EOF) return -1;
-        } else if (c == '\t') {
-            if (fputs("\\t", f) == EOF) return -1;
-        } else if (c < 0x20) {
-            // Drop other control chars rather than emit invalid TOML.
-        } else {
-            if (fputc((int)c, f) == EOF) return -1;
-        }
-    }
-    if (fputc('"', f) == EOF) return -1;
-    return 0;
+    return AP_SIDECAR_OK;
 }
 
 int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
@@ -260,7 +236,9 @@ int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
         if (fputs("groups = [", f) == EOF) goto io_fail;
         for (int i = 0; i < groups->count; i++) {
             if (i > 0 && fputs(", ", f) == EOF) goto io_fail;
-            if (write_escaped_string(f, groups->names[i]) != 0) goto io_fail;
+            if (ap_toml_write_basic_string(f, groups->names[i]) != 0) {
+                goto io_fail;
+            }
         }
         if (fputs("]\n", f) == EOF) goto io_fail;
     }
@@ -291,7 +269,9 @@ int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
                 const char *val = ap_photo_metadata_get(user_meta,
                                                         (ap_meta_field)i);
                 if (fprintf(f, "%s = ", key) < 0) goto io_fail;
-                if (write_escaped_string(f, val ? val : "") != 0) goto io_fail;
+                if (ap_toml_write_basic_string(f, val ? val : "") != 0) {
+                    goto io_fail;
+                }
                 if (fputc('\n', f) == EOF) goto io_fail;
             }
         }
@@ -303,14 +283,15 @@ int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
             }
             if (culling->flag != AP_FLAG_NONE) {
                 if (fputs("flag = ", f) == EOF) goto io_fail;
-                if (write_escaped_string(f, ap_flag_key(culling->flag)) != 0) {
+                if (ap_toml_write_basic_string(f,
+                        ap_flag_key(culling->flag)) != 0) {
                     goto io_fail;
                 }
                 if (fputc('\n', f) == EOF) goto io_fail;
             }
             if (culling->color != AP_COLOR_NONE) {
                 if (fputs("color = ", f) == EOF) goto io_fail;
-                if (write_escaped_string(f,
+                if (ap_toml_write_basic_string(f,
                         ap_color_label_key(culling->color)) != 0) {
                     goto io_fail;
                 }
@@ -321,7 +302,9 @@ int ap_sidecar_save(const char *source_path, const ap_edit_stack *stack,
             if (fputs("keywords = [", f) == EOF) goto io_fail;
             for (int i = 0; i < keywords->count; i++) {
                 if (i > 0 && fputs(", ", f) == EOF) goto io_fail;
-                if (write_escaped_string(f, keywords->kw[i]) != 0) goto io_fail;
+                if (ap_toml_write_basic_string(f, keywords->kw[i]) != 0) {
+                    goto io_fail;
+                }
             }
             if (fputs("]\n", f) == EOF) goto io_fail;
         }
@@ -340,48 +323,54 @@ io_fail:
     return -1;
 }
 
-int ap_sidecar_load_groups(const char *source_path, ap_photo_groups *out)
+ap_sidecar_status ap_sidecar_load_groups(const char *source_path,
+                                         ap_photo_groups *out)
 {
-    if (!source_path || !out) return -1;
+    if (!source_path || !out) return AP_SIDECAR_ERROR;
     out->count = 0;
 
     char path[4096];
-    if (sidecar_path(source_path, path, sizeof(path)) < 0) return -1;
+    if (sidecar_path(source_path, path, sizeof(path)) < 0) {
+        return AP_SIDECAR_ERROR;
+    }
 
     FILE *f = fopen(path, "r");
-    if (!f) return -1;
+    if (!f) return errno == ENOENT ? AP_SIDECAR_ABSENT : AP_SIDECAR_ERROR;
 
     char errbuf[256];
     toml_table_t *root = toml_parse_file(f, errbuf, sizeof(errbuf));
     fclose(f);
-    if (!root) return -1;
+    if (!root) return AP_SIDECAR_ERROR;
 
     toml_table_t *aperture = toml_table_in(root, "aperture");
     if (aperture) read_groups(aperture, out);
     toml_free(root);
-    return 0;
+    return AP_SIDECAR_OK;
 }
 
-int ap_sidecar_load_culling(const char *source_path, ap_photo_culling *out)
+ap_sidecar_status ap_sidecar_load_culling(const char *source_path,
+                                          ap_photo_culling *out)
 {
-    if (!source_path || !out) return -1;
+    if (!source_path || !out) return AP_SIDECAR_ERROR;
     ap_photo_culling_clear(out);
 
     char path[4096];
-    if (sidecar_path(source_path, path, sizeof(path)) < 0) return -1;
+    if (sidecar_path(source_path, path, sizeof(path)) < 0) {
+        return AP_SIDECAR_ERROR;
+    }
 
     FILE *f = fopen(path, "r");
-    if (!f) return -1;
+    if (!f) return errno == ENOENT ? AP_SIDECAR_ABSENT : AP_SIDECAR_ERROR;
 
     char errbuf[256];
     toml_table_t *root = toml_parse_file(f, errbuf, sizeof(errbuf));
     fclose(f);
-    if (!root) return -1;
+    if (!root) return AP_SIDECAR_ERROR;
 
     toml_table_t *metadata = toml_table_in(root, "metadata");
     if (metadata) read_culling(metadata, out);
     toml_free(root);
-    return 0;
+    return AP_SIDECAR_OK;
 }
 
 int ap_sidecar_load_groups_culling(const char *source_path,

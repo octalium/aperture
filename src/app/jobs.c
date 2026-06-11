@@ -97,7 +97,11 @@ static bool selection_edit_lens_one(selection_edit_job *j, const char *path)
 
     ap_edit_stack stack;
     ap_sidecar_ancillary ancillary;
-    if (ap_sidecar_load_full(path, &stack, &ancillary) != 0) return false;
+    // absent and unreadable both skip: no sidecar means no
+    // lens_correction entry, unreadable must not be written back.
+    if (ap_sidecar_load_full(path, &stack, &ancillary) != AP_SIDECAR_OK) {
+        return false;
+    }
 
     int hit = -1;
     for (int e = 0; e < stack.count; e++) {
@@ -152,12 +156,14 @@ void selection_edit_job_run(ap_work_item *self)
         } else {
             ok = selection_edit_one(j, j->paths[k]);
         }
+        j->ok[k] = ok;
         if (ok) wrote++;
         ap_job_progress(j->job, k + 1, j->count);
     }
     // k = photos the worker reached (== count unless cancelled). The
-    // completion reconciles the cache only this far so it can't claim a
-    // new value for a photo whose sidecar was never written.
+    // completion reconciles the cache only this far, and only where
+    // ok[k] is set, so it can't claim a new value for a photo whose
+    // sidecar was never written (skipped on cancel or write refusal).
     atomic_store(&j->processed, k);
     atomic_store(&j->wrote, wrote);
 }
@@ -218,6 +224,13 @@ void install_loaded_photo(ap_app *app, photo_open_job *j)
         AP_ERROR("photo: build from raw failed for %s", j->path);
         ap_app_close_photo(app);
         return;
+    }
+    if (ap_photo_sidecar_unreadable(app->photo)) {
+        const char *slash = strrchr(j->path, '/');
+        const char *name  = slash ? slash + 1 : j->path;
+        ap_status_notify(AP_STATUS_ERROR,
+                         "Sidecar for %s is unreadable — edits will NOT "
+                         "be saved. Fix or remove the sidecar.", name);
     }
     ap_pipeline_graph *graph = ap_photo_graph(app->photo);
     ap_gpu_set_graph(app->gpu, graph);
@@ -354,16 +367,18 @@ static void handle_selection_edit_complete(ap_app *app, selection_edit_job *j)
     // wrote to the sidecars. Single-flight against library jobs means no
     // structural swap could have run during this job, so the snapshotted
     // indices are still valid (each call bounds-checks regardless). Only
-    // reconcile as far as the worker got: on cancel, photos past
-    // `processed` were never written, so their cache must keep the old
-    // value (the sidecar is the source of truth).
+    // reconcile photos whose write actually succeeded (ok[k]): on cancel
+    // photos past `processed` were never reached, and a refused write
+    // (unreadable sidecar) must keep the old cache/db value — the
+    // sidecar is the source of truth.
     int processed = atomic_load(&j->processed);
     if (app->library) {
         if (j->op == AP_SEL_EDIT_CULLING) {
             ap_library_commit_culling_batch(app->library, j->indices,
-                                            j->cull, processed);
+                                            j->cull, j->ok, processed);
         } else if (j->op == AP_SEL_EDIT_GROUP) {
             for (int k = 0; k < processed; k++) {
+                if (!j->ok[k]) continue;
                 ap_library_apply_group_cache(app->library, j->indices[k],
                                              j->group_name, j->group_add);
             }
@@ -376,6 +391,7 @@ static void handle_selection_edit_complete(ap_app *app, selection_edit_job *j)
             // if a rendered-thumbnail toggle reset the cache mid-batch.
             int n = ap_library_photo_count(app->library);
             for (int k = 0; k < processed; k++) {
+                if (!j->ok[k]) continue;  // unwritten render is unchanged
                 int idx = j->indices[k];
                 if (idx < 0 || idx >= n) continue;
                 // Unbind the grid descriptor before invalidating. The
@@ -397,10 +413,19 @@ static void handle_selection_edit_complete(ap_app *app, selection_edit_job *j)
     }
 
     ap_job_finish(j->job, canceled ? AP_JOB_CANCELED : AP_JOB_DONE);
+    // For LENS a skipped photo is the expected non-match, not a write
+    // failure, so it keeps the plain count message.
+    int skipped = processed - wrote;
     if (canceled) {
         ap_status_notify(AP_STATUS_INFO,
                          "Edit canceled: %d photo%s written.",
                          wrote, wrote == 1 ? "" : "s");
+    } else if (j->op != AP_SEL_EDIT_LENS && skipped > 0) {
+        ap_status_notify(wrote == 0 ? AP_STATUS_ERROR : AP_STATUS_INFO,
+                         "Applied to %d of %d photo%s — %d skipped "
+                         "(unreadable sidecar%s).",
+                         wrote, processed, processed == 1 ? "" : "s",
+                         skipped, skipped == 1 ? "" : "s");
     } else if (wrote > 0) {
         ap_status_notify(AP_STATUS_INFO, "Applied to %d photo%s.",
                          wrote, wrote == 1 ? "" : "s");
@@ -408,6 +433,7 @@ static void handle_selection_edit_complete(ap_app *app, selection_edit_job *j)
 
     free(j->indices);
     free(j->paths);
+    free(j->ok);
     free(j->cull);
     free(j->job);
     free(j);
@@ -587,6 +613,7 @@ void discard_completed_item(ap_app *app, ap_work_item *it)
         ap_job_finish(j->job, AP_JOB_CANCELED);
         free(j->indices);
         free(j->paths);
+        free(j->ok);
         free(j->cull);
         free(j->job);
         free(j);
@@ -796,6 +823,7 @@ void abandon_selection_edit_job(selection_edit_job *j)
     if (!j) return;
     free(j->indices);
     free(j->paths);
+    free(j->ok);
     free(j->cull);
     free(j);
 }
@@ -826,10 +854,12 @@ selection_edit_job *build_selection_edit_job(ap_app *app, ap_sel_edit_op op,
     }
     j->indices = malloc((size_t)sel * sizeof(int));
     j->paths   = malloc((size_t)sel * sizeof(*j->paths));
-    if (!j->indices || !j->paths) {
+    j->ok      = calloc((size_t)sel, sizeof(bool));
+    if (!j->indices || !j->paths || !j->ok) {
         AP_ERROR("selection edit: snapshot alloc failed");
         free(j->indices);
         free(j->paths);
+        free(j->ok);
         free(j);
         return NULL;
     }
@@ -852,6 +882,7 @@ selection_edit_job *build_selection_edit_job(ap_app *app, ap_sel_edit_op op,
     if (count == 0) {
         free(j->indices);
         free(j->paths);
+        free(j->ok);
         free(j);
         return NULL;
     }

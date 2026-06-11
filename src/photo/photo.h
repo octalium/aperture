@@ -51,6 +51,13 @@ ap_edit_stack *ap_photo_stack(ap_photo *photo);
 bool ap_photo_respect_orientation(const ap_photo *photo);
 void ap_photo_set_respect_orientation(ap_photo *photo, bool yes);
 
+// True when a sidecar existed at open but could not be parsed. The
+// photo runs on in-memory defaults and close skips the sidecar save
+// (the unreadable file may be recoverable and is never overwritten),
+// so edits made in this state are discarded — callers should surface
+// this to the user at open time.
+bool ap_photo_sidecar_unreadable(const ap_photo *photo);
+
 // Rebuild the pipeline graph from the current stack. Create-then-swap:
 // on success the new graph is installed and the previous one is handed
 // back via *out_old WITHOUT being destroyed — in-flight GPU work may
