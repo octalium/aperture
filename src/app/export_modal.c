@@ -24,6 +24,20 @@ static int64_t         g_preset_id  = 0;
 static char            g_save_name[AP_EXPORT_PRESET_NAME_LEN] = {0};
 static char            g_status[256] = {0};
 
+// Preset list cached for the lifetime of the modal: ap_export_preset_list
+// queries the library db, so it runs on open and after save/delete
+// rather than per frame.
+static ap_export_preset g_presets[AP_EXPORT_PRESETS_MAX];
+static int              g_preset_count = 0;
+
+static void refresh_presets(const ap_library *lib)
+{
+    g_preset_count = lib ? ap_export_preset_list(lib, g_presets,
+                                                 AP_EXPORT_PRESETS_MAX)
+                         : 0;
+    if (g_preset_count < 0) g_preset_count = 0;
+}
+
 // Write the file stem (basename, no extension) of `path` into `out`.
 // Falls back to "photo" when `path` is NULL.
 static void path_stem(const char *path, char *out, size_t len)
@@ -52,6 +66,7 @@ void draw_export_modal(ap_app *app)
         igOpenPopup_Str("Export", 0);
         app->export_modal = false;
         g_status[0] = '\0';
+        refresh_presets(ap_app_library(app));
         // Default apply_to based on context.
         bool have_photo     = (app->photo != NULL);
         bool have_selection = (app->library && app->grid &&
@@ -80,9 +95,8 @@ void draw_export_modal(ap_app *app)
 
     // Presets row.
     if (lib) {
-        ap_export_preset list[AP_EXPORT_PRESETS_MAX];
-        int np = ap_export_preset_list(lib, list, AP_EXPORT_PRESETS_MAX);
-        if (np < 0) np = 0;
+        const ap_export_preset *list = g_presets;
+        int np = g_preset_count;
 
         igText("Preset:");
         igSameLine(0.0f, -1.0f);
@@ -123,15 +137,15 @@ void draw_export_modal(ap_app *app)
             if (ap_export_preset_save(lib, g_save_name, s) == 0) {
                 snprintf(g_status, sizeof(g_status),
                          "Preset \"%s\" saved.", g_save_name);
-                g_save_name[0] = '\0';
-                // Re-select the preset we just saved.
-                ap_export_preset list2[AP_EXPORT_PRESETS_MAX];
-                int np2 = ap_export_preset_list(lib, list2, AP_EXPORT_PRESETS_MAX);
-                for (int i = 0; i < np2; i++) {
-                    if (strcmp(list2[i].name, g_save_name) == 0) {
-                        g_preset_id = list2[i].id; break;
+                // Re-select the preset we just saved, then clear the
+                // name buffer (in this order — the lookup needs it).
+                refresh_presets(lib);
+                for (int i = 0; i < g_preset_count; i++) {
+                    if (strcmp(g_presets[i].name, g_save_name) == 0) {
+                        g_preset_id = g_presets[i].id; break;
                     }
                 }
+                g_save_name[0] = '\0';
             } else {
                 snprintf(g_status, sizeof(g_status), "Save failed.");
             }
@@ -144,6 +158,7 @@ void draw_export_modal(ap_app *app)
                 if (ap_export_preset_delete(lib, g_preset_id) == 0) {
                     snprintf(g_status, sizeof(g_status), "Preset deleted.");
                     g_preset_id = 0;
+                    refresh_presets(lib);
                 } else {
                     snprintf(g_status, sizeof(g_status), "Delete failed.");
                 }

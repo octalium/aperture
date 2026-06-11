@@ -761,6 +761,7 @@ static void draw_save_as_pipeline_modal(ap_app *app, ap_photo *photo,
                     snprintf(g_save_status, sizeof(g_save_status),
                              "Pipeline \"%s\" overwritten.",
                              g_save_as_name);
+                    ap_panel_pipelines_generation++;
                     igCloseCurrentPopup();
                     g_save_as_pending_overwrite = false;
                 } else {
@@ -779,6 +780,7 @@ static void draw_save_as_pipeline_modal(ap_app *app, ap_photo *photo,
             if (ap_pipeline_create(g_save_as_name, stack, &new_id) == 0) {
                 snprintf(g_save_status, sizeof(g_save_status),
                          "Saved as \"%s\".", g_save_as_name);
+                ap_panel_pipelines_generation++;
                 igCloseCurrentPopup();
             } else {
                 // Probably a name collision — flip into overwrite mode
@@ -806,12 +808,21 @@ static void draw_save_as_pipeline_modal(ap_app *app, ap_photo *photo,
 
 #define APPLY_LIST_MAX 64
 
+// Pipeline list cached for the lifetime of the modal: ap_pipeline_list
+// hits sqlite and TOML-parses every definition, so it runs once on
+// open rather than per frame. Static storage keeps the ~2.6MB array
+// off the stack. Nothing can mutate pipelines while the modal is up.
+static ap_pipeline_def g_apply_list[APPLY_LIST_MAX];
+static int g_apply_list_count = 0;
+
 static void draw_apply_pipeline_modal(ap_app *app, ap_photo *photo,
                                       ap_edit_stack *stack)
 {
     if (g_apply_open) {
         igOpenPopup_Str("Apply Pipeline", 0);
         g_apply_open = false;
+        g_apply_list_count = ap_pipeline_list(g_apply_list, APPLY_LIST_MAX);
+        if (g_apply_list_count < 0) g_apply_list_count = 0;
     }
     if (!igBeginPopupModal("Apply Pipeline", NULL, 0)) return;
 
@@ -821,8 +832,8 @@ static void draw_apply_pipeline_modal(ap_app *app, ap_photo *photo,
         igText("Replace the current edit stack with:");
         igSeparator();
 
-        ap_pipeline_def list[APPLY_LIST_MAX];
-        int n = ap_pipeline_list(list, APPLY_LIST_MAX);
+        const ap_pipeline_def *list = g_apply_list;
+        int n = g_apply_list_count;
         if (n <= 0) {
             igTextDisabled("(no pipelines available)");
         } else {
