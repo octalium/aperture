@@ -54,6 +54,12 @@ struct ap_photo {
     // Keyword list, persisted in the sidecar's [metadata] `keywords`
     // array. Carried through so a sidecar save on close preserves it.
     ap_photo_keywords keywords;
+
+    // Set when a sidecar existed at open but failed to parse. The
+    // photo runs on in-memory defaults and close skips the sidecar
+    // save so the unreadable (possibly recoverable) file is never
+    // overwritten.
+    bool sidecar_unreadable;
 };
 
 static char *strdup_or_null(const char *s)
@@ -145,14 +151,23 @@ ap_photo *ap_photo_open_with_raw(ap_gpu *g, const char *path,
     ap_photo_culling_clear(&photo->culling);
     ap_photo_keywords_clear(&photo->keywords);
 
-    if (ap_sidecar_load(path, &photo->stack, &photo->respect_orientation,
-                        &photo->user_meta, photo->user_set,
-                        &photo->culling, &photo->groups,
-                        &photo->keywords) == 0) {
+    ap_sidecar_status side = ap_sidecar_load(
+        path, &photo->stack, &photo->respect_orientation,
+        &photo->user_meta, photo->user_set,
+        &photo->culling, &photo->groups, &photo->keywords);
+    if (side == AP_SIDECAR_OK) {
         AP_INFO("photo: loaded sidecar for %s", path);
     } else {
-        // First open of this photo (or schema mismatch). Seed the
-        // stack from the registry's default pipeline.
+        if (side == AP_SIDECAR_ERROR) {
+            // The sidecar exists but is unreadable. Open on defaults
+            // but never save over it — the file holds the photo's
+            // edit history and may be recoverable by hand.
+            photo->sidecar_unreadable = true;
+            AP_ERROR("photo: unreadable sidecar for %s; opening with "
+                     "defaults, edits will not be saved", path);
+        }
+        // First open of this photo: seed the stack from the
+        // registry's default pipeline.
         seed_stack_from_default(&photo->stack);
     }
 
@@ -225,7 +240,10 @@ void ap_photo_close(ap_photo *photo)
     // thumbnail blob is the app's job — it owns the library handle
     // and stores it via ap_library_store_thumbnail before calling
     // close.
-    if (photo->path) {
+    if (photo->path && photo->sidecar_unreadable) {
+        AP_ERROR("photo: not saving sidecar for %s: the existing file "
+                 "is unreadable (fix or remove it)", photo->path);
+    } else if (photo->path) {
         if (ap_sidecar_save(photo->path, &photo->stack,
                             photo->respect_orientation,
                             &photo->user_meta, photo->user_set,
