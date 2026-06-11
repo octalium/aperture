@@ -223,6 +223,13 @@ void install_loaded_photo(ap_app *app, photo_open_job *j)
         ap_app_close_photo(app);
         return;
     }
+    if (ap_photo_sidecar_unreadable(app->photo)) {
+        const char *slash = strrchr(j->path, '/');
+        const char *name  = slash ? slash + 1 : j->path;
+        ap_status_notify(AP_STATUS_ERROR,
+                         "Sidecar for %s is unreadable — edits will NOT "
+                         "be saved. Fix or remove the sidecar.", name);
+    }
     ap_pipeline_graph *graph = ap_photo_graph(app->photo);
     ap_gpu_set_graph(app->gpu, graph);
     ap_canvas_bind_graph(app->canvas, graph);

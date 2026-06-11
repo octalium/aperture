@@ -316,6 +316,11 @@ void ap_photo_set_respect_orientation(ap_photo *photo, bool yes)
     photo->respect_orientation = yes;
 }
 
+bool ap_photo_sidecar_unreadable(const ap_photo *photo)
+{
+    return photo ? photo->sidecar_unreadable : false;
+}
+
 const char *ap_photo_metadata_value(const ap_photo *photo, ap_meta_field f)
 {
     if (!photo || f < 0 || f >= AP_META_FIELD_COUNT) return "";
