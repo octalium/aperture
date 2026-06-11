@@ -2678,7 +2678,7 @@ int ap_app_run_frame(ap_app *app)
             app->library_rescan_pending = false;
         }
     }
-    drain_one_completed_job(app);
+    drain_completed_jobs(app);
     ap_export_coord_pump(app);
     ap_status_draw();
     ap_toast_draw();

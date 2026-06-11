@@ -622,29 +622,44 @@ void drain_all_workers(ap_app *app)
     }
 }
 
-void drain_one_completed_job(ap_app *app)
+// per-frame wall-time budget for retiring completions. thumb completions
+// each do a GPU upload, so a time budget bounds main-thread work per
+// frame while still retiring far more than one item when the queue is
+// deep (a 1/frame drain capped thumbnail population at ~60/s).
+#define DRAIN_BUDGET_SECS 0.003
+
+void drain_completed_jobs(ap_app *app)
 {
     if (!app->workers) return;
-    ap_work_item *it = ap_worker_pool_poll(app->workers);
-    if (!it) return;
-    if (it->run == thumb_job_run) {
-        handle_thumb_complete(app, (thumb_job *)it);
-    } else if (it->run == photo_open_job_run) {
-        handle_photo_open_complete(app, (photo_open_job *)it);
-    } else if (it->run == export_job_run) {
-        handle_export_complete(app, (export_job *)it);
-    } else if (it->run == thumb_encode_job_run) {
-        handle_thumb_encode_complete(app, (thumb_encode_job *)it);
-    } else if (it->run == import_job_run) {
-        handle_import_complete(app, (import_job *)it);
-    } else if (it->run == selection_edit_job_run) {
-        handle_selection_edit_complete(app, (selection_edit_job *)it);
-    } else if (it->run == library_job_run) {
-        handle_library_complete(app, (library_job *)it);
-    } else if (it->run == ap_update_check_run) {
-        handle_update_check_complete(app, (ap_update_check_job *)it);
-    } else {
-        AP_WARN("worker: unknown completed run-fn, leaking item");
+    double deadline = igGetTime() + DRAIN_BUDGET_SECS;
+    for (;;) {
+        ap_work_item *it = ap_worker_pool_poll(app->workers);
+        if (!it) return;
+        if (it->run == thumb_job_run) {
+            handle_thumb_complete(app, (thumb_job *)it);
+        } else if (it->run == photo_open_job_run) {
+            handle_photo_open_complete(app, (photo_open_job *)it);
+        } else if (it->run == export_job_run) {
+            handle_export_complete(app, (export_job *)it);
+        } else if (it->run == thumb_encode_job_run) {
+            handle_thumb_encode_complete(app, (thumb_encode_job *)it);
+        } else if (it->run == import_job_run) {
+            handle_import_complete(app, (import_job *)it);
+        } else if (it->run == selection_edit_job_run) {
+            handle_selection_edit_complete(app, (selection_edit_job *)it);
+        } else if (it->run == library_job_run) {
+            handle_library_complete(app, (library_job *)it);
+            // a library swap stalls the GPU (wait_idle), renumbers the
+            // photo list, and bumps thumb_load_gen — the budget is spent
+            // and anything still queued is better re-validated against
+            // the new generation next frame.
+            return;
+        } else if (it->run == ap_update_check_run) {
+            handle_update_check_complete(app, (ap_update_check_job *)it);
+        } else {
+            AP_WARN("worker: unknown completed run-fn, leaking item");
+        }
+        if (igGetTime() >= deadline) return;
     }
 }
 

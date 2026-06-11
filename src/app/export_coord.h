@@ -52,7 +52,7 @@ ap_export_coord *ap_export_coord_create(ap_app *app, ap_export_item *items,
 // per call, honouring the byte budget and the concurrent-encode cap.
 // When the work is fully drained (or cancellation has drained), finishes
 // the job, frees the coordinator, and clears app->export_coord. Call
-// once per frame from the main thread, next to drain_one_completed_job.
+// once per frame from the main thread, next to drain_completed_jobs.
 void ap_export_coord_pump(ap_app *app);
 
 // Account a completed encode work item against the coordinator: drop its
