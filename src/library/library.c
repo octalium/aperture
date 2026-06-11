@@ -926,35 +926,36 @@ static void backfill_identity_column(sqlite3 *db)
 }
 
 // Stat every photo with a NULL `size` and write the on-disk byte
-// count back. One-shot pass on library open; subsequent imports
-// store the size at copy time. Wrapped in a single transaction so
-// the WAL doesn't grow per-row.
-static void backfill_photo_sizes(ap_library *lib)
+// count back. Runs in the off-thread rescan; imports store the size
+// at copy time, so this only does real work for files that reached
+// the db without one (scan-discovered, pre-upgrade rows). Wrapped in
+// a single transaction so the WAL doesn't grow per-row.
+static void backfill_photo_sizes(sqlite3 *db, const char *root)
 {
-    if (!lib || !lib->db || !lib->root) return;
+    if (!db || !root) return;
 
     sqlite3_stmt *sel = NULL;
-    if (sqlite3_prepare_v2(lib->db,
+    if (sqlite3_prepare_v2(db,
             "SELECT path FROM photos WHERE size IS NULL;",
             -1, &sel, NULL) != SQLITE_OK) {
         return;
     }
     sqlite3_stmt *upd = NULL;
-    if (sqlite3_prepare_v2(lib->db,
+    if (sqlite3_prepare_v2(db,
             "UPDATE photos SET size = ? WHERE path = ?;",
             -1, &upd, NULL) != SQLITE_OK) {
         sqlite3_finalize(sel);
         return;
     }
 
-    sqlite3_exec(lib->db, "BEGIN;", NULL, NULL, NULL);
+    sqlite3_exec(db, "BEGIN;", NULL, NULL, NULL);
     int filled = 0;
     while (sqlite3_step(sel) == SQLITE_ROW) {
         const char *rel = (const char *)sqlite3_column_text(sel, 0);
         if (!rel) continue;
         char abs[4096];
         if (snprintf(abs, sizeof(abs), "%s/%s",
-                     lib->root, rel) >= (int)sizeof(abs)) {
+                     root, rel) >= (int)sizeof(abs)) {
             continue;
         }
         struct stat st;
@@ -966,7 +967,7 @@ static void backfill_photo_sizes(ap_library *lib)
         sqlite3_bind_text (upd, 2, rel, -1, SQLITE_STATIC);
         if (sqlite3_step(upd) == SQLITE_DONE) filled++;
     }
-    sqlite3_exec(lib->db, "COMMIT;", NULL, NULL, NULL);
+    sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL);
 
     sqlite3_finalize(upd);
     sqlite3_finalize(sel);
@@ -1218,6 +1219,10 @@ static int db_rescan(sqlite3 *db, const char *root)
     // Scan only adds; reconcile the other direction too. prune drops
     // db rows whose files have been removed.
     prune_missing_photos(db, root);
+
+    // Fill sizes for rows the scan added (imports store theirs at copy
+    // time); no-op when every row already has one.
+    backfill_photo_sizes(db, root);
     return 0;
 }
 
@@ -1571,15 +1576,13 @@ static int cache_seed_culling(sqlite3 *db, ap_library_cache *cache)
     return 0;
 }
 
-// Build the per-photo group index + culling cache in ONE pass with ONE
-// sidecar parse per photo. The `groups` table seeds the registry (any
-// group a sidecar references that the table is missing gets folded in,
-// keeping the registry a superset of all membership); the db's cached
-// culling columns seed the cells, then each sidecar — the source of
-// truth — is reconciled on top, with divergent rows written back in a
-// single transaction (so culling set outside aperture is picked up).
-static int cache_load_sidecars(sqlite3 *db, ap_library_cache *cache,
-                               const char *root, cache_build_ctx *bp)
+// Allocate the per-photo group/culling arrays and seed them from the
+// db alone: the registry from the `groups` table, the culling cells
+// from the photos table's cached columns. No sidecar or filesystem
+// I/O — ap_library_open uses this so opening is db-only fast, with the
+// disk truth delivered by the next off-thread cache build. Returns 0
+// on success.
+static int cache_seed_from_db(sqlite3 *db, ap_library_cache *cache)
 {
     cache_load_registry(db, cache);
 
@@ -1601,8 +1604,24 @@ static int cache_load_sidecars(sqlite3 *db, ap_library_cache *cache,
     for (int i = 0; i < cache->photo_count; i++) {
         ap_photo_culling_clear(&cache->photo_culling[i]);
     }
-    if (cache_seed_culling(db, cache) < 0) {
+    return cache_seed_culling(db, cache);
+}
+
+// Build the per-photo group index + culling cache in ONE pass with ONE
+// sidecar parse per photo. The `groups` table seeds the registry (any
+// group a sidecar references that the table is missing gets folded in,
+// keeping the registry a superset of all membership); the db's cached
+// culling columns seed the cells, then each sidecar — the source of
+// truth — is reconciled on top, with divergent rows written back in a
+// single transaction (so culling set outside aperture is picked up).
+static int cache_load_sidecars(sqlite3 *db, ap_library_cache *cache,
+                               const char *root, cache_build_ctx *bp)
+{
+    if (cache_seed_from_db(db, cache) < 0) {
         return -1;
+    }
+    if (cache->photo_count <= 0) {
+        return 0;
     }
 
     // indices whose sidecar disagrees with the seeded db columns
@@ -1861,30 +1880,11 @@ ap_library *ap_library_open(const char *path)
     if (set_schema_kv(lib->db, "library_id",       lib->id)             < 0) goto fail;
     if (set_schema_kv(lib->db, "library_path",     lib->root)           < 0) goto fail;
 
-    sqlite3_stmt *insert_stmt = NULL;
-    int rc = sqlite3_prepare_v2(lib->db,
-        "INSERT OR IGNORE INTO photos(path, added_at) VALUES (?, ?);",
-        -1, &insert_stmt, NULL);
-    if (rc != SQLITE_OK) {
-        AP_ERROR("ap_library_open: prepare insert: %s", sqlite3_errmsg(lib->db));
-        goto fail;
-    }
-
-    int64_t now = (int64_t)time(NULL);
-
-    sqlite3_exec(lib->db, "BEGIN;", NULL, NULL, NULL);
-    scan_dir(lib->db, insert_stmt, lib->root, "", now);
-    sqlite3_exec(lib->db, "COMMIT;", NULL, NULL, NULL);
-    sqlite3_finalize(insert_stmt);
-
-    // Scan only adds; reconcile the other direction too.
-    prune_missing_photos(lib->db, lib->root);
-
-    // One-shot: stat any photos with NULL size and fill the column.
-    // Subsequent imports store size at copy time, so this only does
-    // real work the first time the library is opened after upgrade.
-    backfill_photo_sizes(lib);
-
+    // Db-only from here: the photo list + group/culling caches come
+    // from the last session's rows so the open is fast regardless of
+    // library size. No disk scan, no sidecar parses — the caller runs
+    // an off-thread RESCAN cache build (ap_library_cache_build) to
+    // reconcile with the filesystem and swap the disk truth in.
     lib->cache = calloc(1, sizeof(*lib->cache));
     if (!lib->cache) {
         AP_ERROR("library: cache alloc failed");
@@ -1907,7 +1907,7 @@ ap_library *ap_library_open(const char *path)
         }
     }
 
-    if (cache_load_sidecars(lib->db, lib->cache, lib->root, NULL) < 0) goto fail;
+    if (cache_seed_from_db(lib->db, lib->cache) < 0) goto fail;
 
     AP_INFO("library: %s [%s] (%d photos)",
             lib->root, lib->id, lib->cache->photo_count);

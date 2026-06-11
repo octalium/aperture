@@ -1052,6 +1052,11 @@ int ap_app_open_library(ap_app *app, const char *path)
     app->culling_filter       = (ap_culling_filter){ 0, AP_FLAG_NONE, AP_COLOR_NONE };
     rebuild_grid_map(app);
     app->mode = AP_MODE_LIBRARY;
+    // The open was db-only (last session's rows); queue the background
+    // rescan that scans the tree + sidecars and swaps the disk truth
+    // in. The frame pump submits it once the single-flight guards
+    // clear, exactly like an import-triggered rescan.
+    app->library_rescan_pending = true;
     bind_mode_view(app);
     refresh_window_title(app);
     return 0;

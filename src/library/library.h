@@ -96,9 +96,15 @@ int ap_settings_set(const char *key, const char *value);
 //   - Resolves `path` to an absolute root.
 //   - Opens or creates `<root>/library.db` (SQLite).
 //   - Runs schema-create-if-needed for the v1 tables.
-//   - Recursively scans the tree for raw files; inserts new ones
-//     into the photos table.
-//   - Caches the photo list in memory for browsing.
+//   - Caches the photo list + group/culling state from the db's rows
+//     in memory for browsing.
+//
+// Db-only and therefore fast regardless of library size: no disk
+// scan and no sidecar parsing happen here. Run an off-thread
+// AP_LIBRARY_OP_RESCAN cache build (ap_library_cache_build +
+// ap_library_cache_swap) after opening to reconcile the db with the
+// filesystem and the sidecars; until it lands the library reflects
+// the previous session (empty for a brand-new library folder).
 //
 // Returns NULL on failure (path not a directory, db open failure,
 // out of memory, etc.). On success the caller owns the returned
