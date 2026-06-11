@@ -9,12 +9,6 @@
 // for 90° rotations). Each output pixel maps back to a sensor coordinate
 // using the flip code, samples the raw R16_UNORM Bayer plane, and runs a
 // 3x3 neighborhood-average demosaic.
-//
-// Flip codes (dcraw / LibRaw convention):
-//   0 = no rotation
-//   3 = 180°
-//   5 = 90° CCW (sensor was rotated 90° CW for the shot)
-//   6 = 90° CW  (sensor was rotated 90° CCW for the shot)
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
@@ -28,27 +22,8 @@ layout(push_constant) uniform PushConstants {
     uvec4 sensor_size_flip;   // .xy = sensor (W, H), .z = flip code, .w = pad
 } pc;
 
-uint channel_at(ivec2 p)
-{
-    return pc.channel_map[(p.y & 1) * 2 + (p.x & 1)];
-}
-
-float sample_raw(ivec2 p)
-{
-    return imageLoad(in_image, p).r * 65535.0;
-}
-
-ivec2 sensor_coord_of(ivec2 out_coord, ivec2 sensor_size, uint flip)
-{
-    if (flip == 3u) {
-        return sensor_size - ivec2(1) - out_coord;
-    } else if (flip == 5u) {
-        return ivec2(sensor_size.x - 1 - out_coord.y, out_coord.x);
-    } else if (flip == 6u) {
-        return ivec2(out_coord.y, sensor_size.y - 1 - out_coord.x);
-    }
-    return out_coord;
-}
+#include "bayer_common.glsl"
+#include "sensor_coord.glsl"
 
 void main()
 {
@@ -71,14 +46,11 @@ void main()
             // clamp once so channel and texel agree at the borders;
             // deriving the channel from the unclamped coord flips the
             // bayer parity and normalizes with the wrong black level.
-            ivec2 p     = clamp(center + ivec2(dx, dy),
-                                ivec2(0), sensor_size - 1);
-            uint  ch    = channel_at(p);
-            float raw   = sample_raw(p);
+            ivec2 p      = clamp(center + ivec2(dx, dy),
+                                 ivec2(0), sensor_size - 1);
+            uint  ch     = channel_at(p);
             uint  out_ch = (ch == 3u) ? 1u : ch;
-            float v      = (raw - pc.black_level[ch])
-                         / max(pc.white_minus_black[ch], 1.0);
-            sum[out_ch]   += v;
+            sum[out_ch]   += bayer(p, sensor_size);
             count[out_ch] += 1.0;
         }
     }
