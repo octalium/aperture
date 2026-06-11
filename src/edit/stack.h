@@ -88,8 +88,9 @@ const ap_edit_entry *ap_edit_stack_at_const(const ap_edit_stack *s, int idx);
 void           ap_edit_stack_set_focus(ap_edit_stack *s, int idx);
 int            ap_edit_stack_focus(const ap_edit_stack *s);
 
-// Reset the entry at idx to its module's default params. No-op for
-// modules with no params or unknown module. Returns 0 on success.
+// Reset the entry at idx to its module's default params, then re-run
+// init_instance (same as a fresh add). No-op for modules with no
+// params or unknown module. Returns 0 on success.
 int            ap_edit_stack_reset(ap_edit_stack *s, int idx);
 
 // The label shown in the Edits row / config window title. Returns
