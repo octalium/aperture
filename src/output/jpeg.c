@@ -62,15 +62,28 @@ static int run_compress(const uint8_t *rgba, int width, int height,
     cinfo.err = ap_jpeg_error_install(&err, "export");
 
     volatile int rc = -1;
+    volatile int mem_ready = 0;
     if (setjmp(err.jump) == 0) {
         jpeg_create_compress(&cinfo);
         if (f) {
             jpeg_stdio_dest(&cinfo, f);
         } else {
             jpeg_mem_dest(&cinfo, buf, size);
+            mem_ready = 1;
         }
         encode_rgba(&cinfo, rgba, width, height, quality, row);
         rc = 0;
+    }
+    // on a mem-dest error the encoder may have regrown its buffer:
+    // empty_mem_output_buffer frees the block *buf points at, and only
+    // term_destination re-syncs *buf/*size (jpeg_destroy_compress does
+    // not call it), so without this the caller would free a dangling
+    // pointer and leak the live buffer. term_mem_destination merely
+    // assigns and cannot error; the stdio term flushes and can, so it
+    // must never be invoked here. mem_ready guards against a longjmp
+    // from inside jpeg_mem_dest leaving the destination uninitialized.
+    if (rc != 0 && mem_ready) {
+        (*cinfo.dest->term_destination)(&cinfo);
     }
     jpeg_destroy_compress(&cinfo);
     free(row);
