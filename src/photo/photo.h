@@ -85,6 +85,12 @@ int         ap_photo_width(const ap_photo *photo);
 int         ap_photo_height(const ap_photo *photo);
 const char *ap_photo_path(const ap_photo *photo);
 
+// Unique, monotonically increasing id assigned at open (never 0).
+// Use this — not the pointer — to detect a photo change across frames:
+// the allocator may hand a closed photo's address to the next open.
+// Returns 0 for NULL.
+uint64_t    ap_photo_open_id(const ap_photo *photo);
+
 // Active viewport — crop / rotation / flip / scale — from the photo's
 // first enabled "transform" stack entry, or the identity viewport
 // when none. Consumed by the canvas (display) and export, not by the
