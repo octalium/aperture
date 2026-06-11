@@ -22,7 +22,7 @@ library_test = executable(
     '../../src/core/memstream.c',
     '../../src/core/random.c',
     '../support/aptest_modules.c',
-  ) + ap_dir_src,
+  ) + ap_dir_src + ap_thread_src,
   include_directories: [aperture_inc, aptest_inc, library_vulkan_stub_inc],
   dependencies: [sqlite3_dep, tomlc99_dep] + platform_deps,
 )

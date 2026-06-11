@@ -163,7 +163,6 @@ enum {
     CROP_HANDLE_STRAIGHTEN = 9,
 };
 
-#define THUMB_MAX_INFLIGHT 8
 #define ZOOM_FACTOR 0.10f
 
 #ifndef M_PI

@@ -131,7 +131,9 @@ int ap_edit_stack_write_toml(const ap_edit_stack *stack, FILE *f)
             if (write_toml_string(f, "name", e->display_name) != 0) return -1;
         }
         if (m && m->params_names) {
-            for (int s = 0; s < m->params_count; s++) {
+            int np = m->params_count;
+            if (np > AP_EDIT_PARAMS_SLOTS) np = AP_EDIT_PARAMS_SLOTS;
+            for (int s = 0; s < np; s++) {
                 const char *name = m->params_names[s];
                 if (!name) continue;
                 if (fprintf(f, "%-9s = %g\n", name, (double)e->params[s]) < 0) {

@@ -34,6 +34,10 @@ shader_sources = [
   'grid.frag',
 ]
 
+# shared glsl snippets pulled in via `#include` + glslc -I; rebuilds are
+# tracked through glslc's -MD depfiles.
+shader_include_dir = meson.current_source_dir() / 'include'
+
 shader_headers = []
 
 foreach src : shader_sources
@@ -42,7 +46,11 @@ foreach src : shader_sources
   spv = custom_target('spv_' + base,
     input: src,
     output: src + '.spv',
-    command: [glslc, '-O', '--target-env=vulkan1.3', '-o', '@OUTPUT@', '@INPUT@'],
+    depfile: src + '.spv.d',
+    command: [glslc, '-O', '--target-env=vulkan1.3',
+              '-I', shader_include_dir,
+              '-MD', '-MF', '@DEPFILE@',
+              '-o', '@OUTPUT@', '@INPUT@'],
   )
 
   hdr = custom_target('hdr_' + base,
