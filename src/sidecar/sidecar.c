@@ -112,11 +112,11 @@ void ap_sidecar_ancillary_clear(ap_sidecar_ancillary *a)
     ap_photo_keywords_clear(&a->keywords);
 }
 
-int ap_sidecar_load_full(const char *source_path,
-                         ap_edit_stack *stack,
-                         ap_sidecar_ancillary *ancillary)
+ap_sidecar_status ap_sidecar_load_full(const char *source_path,
+                                       ap_edit_stack *stack,
+                                       ap_sidecar_ancillary *ancillary)
 {
-    if (!source_path || !stack || !ancillary) return -1;
+    if (!source_path || !stack || !ancillary) return AP_SIDECAR_ERROR;
     ap_edit_stack_init(stack);
     ap_sidecar_ancillary_clear(ancillary);
     return ap_sidecar_load(source_path, stack,
@@ -126,31 +126,34 @@ int ap_sidecar_load_full(const char *source_path,
                            &ancillary->keywords);
 }
 
-int ap_sidecar_load(const char *source_path, ap_edit_stack *stack,
-                    bool *respect_orientation,
-                    ap_photo_metadata *user_meta,
-                    bool user_set[AP_META_FIELD_COUNT],
-                    ap_photo_culling *culling,
-                    ap_photo_groups *groups,
-                    ap_photo_keywords *keywords)
+ap_sidecar_status ap_sidecar_load(const char *source_path, ap_edit_stack *stack,
+                                  bool *respect_orientation,
+                                  ap_photo_metadata *user_meta,
+                                  bool user_set[AP_META_FIELD_COUNT],
+                                  ap_photo_culling *culling,
+                                  ap_photo_groups *groups,
+                                  ap_photo_keywords *keywords)
 {
-    if (!source_path || !stack) return -1;
+    if (!source_path || !stack) return AP_SIDECAR_ERROR;
 
     char path[4096];
-    if (sidecar_path(source_path, path, sizeof(path)) < 0) return -1;
+    if (sidecar_path(source_path, path, sizeof(path)) < 0) {
+        return AP_SIDECAR_ERROR;
+    }
 
     FILE *f = fopen(path, "r");
     if (!f) {
-        if (errno != ENOENT) AP_WARN("sidecar: fopen(%s): %s", path, strerror(errno));
-        return -1;
+        if (errno == ENOENT) return AP_SIDECAR_ABSENT;
+        AP_ERROR("sidecar: fopen(%s): %s", path, strerror(errno));
+        return AP_SIDECAR_ERROR;
     }
 
     char errbuf[256];
     toml_table_t *root = toml_parse_file(f, errbuf, sizeof(errbuf));
     fclose(f);
     if (!root) {
-        AP_WARN("sidecar: parse %s: %s", path, errbuf);
-        return -1;
+        AP_ERROR("sidecar: parse %s: %s", path, errbuf);
+        return AP_SIDECAR_ERROR;
     }
 
     toml_table_t *aperture = toml_table_in(root, "aperture");
@@ -199,7 +202,7 @@ int ap_sidecar_load(const char *source_path, ap_edit_stack *stack,
     }
 
     toml_free(root);
-    return 0;
+    return AP_SIDECAR_OK;
 }
 
 // TOML strings have to escape backslash + quote. Conservative writer
@@ -340,48 +343,54 @@ io_fail:
     return -1;
 }
 
-int ap_sidecar_load_groups(const char *source_path, ap_photo_groups *out)
+ap_sidecar_status ap_sidecar_load_groups(const char *source_path,
+                                         ap_photo_groups *out)
 {
-    if (!source_path || !out) return -1;
+    if (!source_path || !out) return AP_SIDECAR_ERROR;
     out->count = 0;
 
     char path[4096];
-    if (sidecar_path(source_path, path, sizeof(path)) < 0) return -1;
+    if (sidecar_path(source_path, path, sizeof(path)) < 0) {
+        return AP_SIDECAR_ERROR;
+    }
 
     FILE *f = fopen(path, "r");
-    if (!f) return -1;
+    if (!f) return errno == ENOENT ? AP_SIDECAR_ABSENT : AP_SIDECAR_ERROR;
 
     char errbuf[256];
     toml_table_t *root = toml_parse_file(f, errbuf, sizeof(errbuf));
     fclose(f);
-    if (!root) return -1;
+    if (!root) return AP_SIDECAR_ERROR;
 
     toml_table_t *aperture = toml_table_in(root, "aperture");
     if (aperture) read_groups(aperture, out);
     toml_free(root);
-    return 0;
+    return AP_SIDECAR_OK;
 }
 
-int ap_sidecar_load_culling(const char *source_path, ap_photo_culling *out)
+ap_sidecar_status ap_sidecar_load_culling(const char *source_path,
+                                          ap_photo_culling *out)
 {
-    if (!source_path || !out) return -1;
+    if (!source_path || !out) return AP_SIDECAR_ERROR;
     ap_photo_culling_clear(out);
 
     char path[4096];
-    if (sidecar_path(source_path, path, sizeof(path)) < 0) return -1;
+    if (sidecar_path(source_path, path, sizeof(path)) < 0) {
+        return AP_SIDECAR_ERROR;
+    }
 
     FILE *f = fopen(path, "r");
-    if (!f) return -1;
+    if (!f) return errno == ENOENT ? AP_SIDECAR_ABSENT : AP_SIDECAR_ERROR;
 
     char errbuf[256];
     toml_table_t *root = toml_parse_file(f, errbuf, sizeof(errbuf));
     fclose(f);
-    if (!root) return -1;
+    if (!root) return AP_SIDECAR_ERROR;
 
     toml_table_t *metadata = toml_table_in(root, "metadata");
     if (metadata) read_culling(metadata, out);
     toml_free(root);
-    return 0;
+    return AP_SIDECAR_OK;
 }
 
 int ap_sidecar_remove(const char *source_path)
