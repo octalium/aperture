@@ -91,8 +91,8 @@ int ap_edit_stack_read_toml_array(toml_array_t *arr, ap_edit_stack *out)
 }
 
 // Emit `key = "value"` with the value escaped as a TOML basic string.
-// Paths can carry backslashes and quotes, so they need real escaping
-// (unlike the identifier-shaped module names written raw above).
+// Every string that round-trips through the sidecar goes through here:
+// one unescaped quote in a value corrupts the whole document.
 static int write_toml_string(FILE *f, const char *key, const char *val)
 {
     if (fprintf(f, "%-9s = \"", key) < 0) return -1;
@@ -124,13 +124,11 @@ int ap_edit_stack_write_toml(const ap_edit_stack *stack, FILE *f)
         const ap_edit_entry *e = ap_edit_stack_at_const(stack, i);
         if (!e) continue;
         const ap_module *m = ap_module_find(e->module_name);
-        if (fprintf(f,
-            "[[edit]]\n"
-            "module  = \"%s\"\n"
-            "enabled = %d\n",
-            e->module_name, e->enabled ? 1 : 0) < 0) return -1;
+        if (fputs("[[edit]]\n", f) == EOF) return -1;
+        if (write_toml_string(f, "module", e->module_name) != 0) return -1;
+        if (fprintf(f, "enabled   = %d\n", e->enabled ? 1 : 0) < 0) return -1;
         if (e->display_name[0]) {
-            if (fprintf(f, "name    = \"%s\"\n", e->display_name) < 0) return -1;
+            if (write_toml_string(f, "name", e->display_name) != 0) return -1;
         }
         if (m && m->params_names) {
             for (int s = 0; s < m->params_count; s++) {
