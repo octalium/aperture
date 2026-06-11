@@ -20,6 +20,7 @@
 #include "core/fs.h"
 #include "core/memstream.h"
 #include "core/random.h"
+#include "core/thread.h"
 
 #include <errno.h>
 #include <stdbool.h>
@@ -281,20 +282,32 @@ static int seed_default_pipeline(sqlite3 *reg)
     return 0;
 }
 
-static int registry_open(sqlite3 **out_db)
+// Process-lifetime registry connection (<app_root>/aperture.db),
+// opened + migrated + seeded once on first use and released by
+// ap_registry_close at shutdown. The handle is opened FULLMUTEX
+// (serialized) because selection-edit worker jobs reach the registry
+// through seed_default_stack when a photo has no sidecar yet — every
+// other access is main-thread. The mutex guards the lazy open/close;
+// statement execution is serialized by sqlite itself.
+static sqlite3 *g_registry = NULL;
+static ap_mutex g_registry_mu = AP_MUTEX_INITIALIZER;
+
+static sqlite3 *registry_open_connection(void)
 {
-    if (ap_app_root_ensure() < 0) return -1;
+    if (ap_app_root_ensure() < 0) return NULL;
 
     char reg_path[4096];
     if (ap_app_root_join("aperture.db", reg_path, sizeof(reg_path)) < 0) {
-        return -1;
+        return NULL;
     }
 
     sqlite3 *reg = NULL;
-    if (sqlite3_open(reg_path, &reg) != SQLITE_OK) {
+    if (sqlite3_open_v2(reg_path, &reg,
+                        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE |
+                        SQLITE_OPEN_FULLMUTEX, NULL) != SQLITE_OK) {
         AP_ERROR("registry: sqlite3_open(%s): %s", reg_path, sqlite3_errmsg(reg));
         if (reg) sqlite3_close(reg);
-        return -1;
+        return NULL;
     }
     sqlite3_busy_timeout(reg, 5000);
 
@@ -307,29 +320,47 @@ static int registry_open(sqlite3 **out_db)
         AP_ERROR("registry: schema: %s", err ? err : "(no message)");
         sqlite3_free(err);
         sqlite3_close(reg);
-        return -1;
+        return NULL;
     }
     backfill_name_column(reg);
 
     if (seed_default_pipeline(reg) < 0) {
         sqlite3_close(reg);
-        return -1;
+        return NULL;
     }
+    return reg;
+}
 
-    *out_db = reg;
-    return 0;
+// Hand out the shared connection, opening it on first use. Callers
+// must never sqlite3_close the returned handle.
+static sqlite3 *registry_get(void)
+{
+    ap_mutex_lock(&g_registry_mu);
+    if (!g_registry) g_registry = registry_open_connection();
+    sqlite3 *reg = g_registry;
+    ap_mutex_unlock(&g_registry_mu);
+    return reg;
+}
+
+void ap_registry_close(void)
+{
+    ap_mutex_lock(&g_registry_mu);
+    if (g_registry) {
+        sqlite3_close(g_registry);
+        g_registry = NULL;
+    }
+    ap_mutex_unlock(&g_registry_mu);
 }
 
 static int registry_resolve_id(const char *abs_path, char id_out[37])
 {
-    sqlite3 *reg = NULL;
-    if (registry_open(&reg) < 0) return -1;
+    sqlite3 *reg = registry_get();
+    if (!reg) return -1;
 
     sqlite3_stmt *sel = NULL;
     if (sqlite3_prepare_v2(reg, "SELECT id FROM libraries WHERE path = ?;",
                            -1, &sel, NULL) != SQLITE_OK) {
         AP_ERROR("registry: prepare select: %s", sqlite3_errmsg(reg));
-        sqlite3_close(reg);
         return -1;
     }
     sqlite3_bind_text(sel, 1, abs_path, -1, SQLITE_STATIC);
@@ -339,18 +370,15 @@ static int registry_resolve_id(const char *abs_path, char id_out[37])
         const char *existing = (const char *)sqlite3_column_text(sel, 0);
         snprintf(id_out, 37, "%s", existing ? existing : "");
         sqlite3_finalize(sel);
-        sqlite3_close(reg);
         return id_out[0] ? 0 : -1;
     }
     sqlite3_finalize(sel);
     if (rc != SQLITE_DONE) {
         AP_ERROR("registry: select step: %s", sqlite3_errstr(rc));
-        sqlite3_close(reg);
         return -1;
     }
 
     if (gen_uuid_v4(id_out) < 0) {
-        sqlite3_close(reg);
         return -1;
     }
 
@@ -359,7 +387,6 @@ static int registry_resolve_id(const char *abs_path, char id_out[37])
             "INSERT INTO libraries(id, path, created_at) VALUES (?, ?, ?);",
             -1, &ins, NULL) != SQLITE_OK) {
         AP_ERROR("registry: prepare insert: %s", sqlite3_errmsg(reg));
-        sqlite3_close(reg);
         return -1;
     }
     sqlite3_bind_text(ins, 1, id_out,   -1, SQLITE_STATIC);
@@ -367,7 +394,6 @@ static int registry_resolve_id(const char *abs_path, char id_out[37])
     sqlite3_bind_int64(ins, 3, (int64_t)time(NULL));
     rc = sqlite3_step(ins);
     sqlite3_finalize(ins);
-    sqlite3_close(reg);
     if (rc != SQLITE_DONE) {
         AP_ERROR("registry: insert step: %s", sqlite3_errstr(rc));
         return -1;
@@ -392,15 +418,14 @@ int ap_pipeline_get_default(ap_pipeline_def *out)
     if (!out) return -1;
     memset(out, 0, sizeof(*out));
 
-    sqlite3 *reg = NULL;
-    if (registry_open(&reg) < 0) return -1;
+    sqlite3 *reg = registry_get();
+    if (!reg) return -1;
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(reg,
             "SELECT id, name, definition FROM pipelines WHERE name = ?;",
             -1, &stmt, NULL) != SQLITE_OK) {
         AP_ERROR("pipeline: prepare select default: %s", sqlite3_errmsg(reg));
-        sqlite3_close(reg);
         return -1;
     }
     sqlite3_bind_text(stmt, 1, DEFAULT_PIPELINE_NAME, -1, SQLITE_STATIC);
@@ -409,12 +434,10 @@ int ap_pipeline_get_default(ap_pipeline_def *out)
     if (rc != SQLITE_ROW) {
         AP_ERROR("pipeline: default missing after seed (%s)", sqlite3_errstr(rc));
         sqlite3_finalize(stmt);
-        sqlite3_close(reg);
         return -1;
     }
     int load_rc = row_to_def(stmt, out);
     sqlite3_finalize(stmt);
-    sqlite3_close(reg);
     return load_rc;
 }
 
@@ -423,15 +446,14 @@ int ap_pipeline_get(int64_t id, ap_pipeline_def *out)
     if (!out) return -1;
     memset(out, 0, sizeof(*out));
 
-    sqlite3 *reg = NULL;
-    if (registry_open(&reg) < 0) return -1;
+    sqlite3 *reg = registry_get();
+    if (!reg) return -1;
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(reg,
             "SELECT id, name, definition FROM pipelines WHERE id = ?;",
             -1, &stmt, NULL) != SQLITE_OK) {
         AP_ERROR("pipeline: prepare select id: %s", sqlite3_errmsg(reg));
-        sqlite3_close(reg);
         return -1;
     }
     sqlite3_bind_int64(stmt, 1, id);
@@ -442,7 +464,6 @@ int ap_pipeline_get(int64_t id, ap_pipeline_def *out)
         load_rc = row_to_def(stmt, out);
     }
     sqlite3_finalize(stmt);
-    sqlite3_close(reg);
     return load_rc;
 }
 
@@ -451,15 +472,14 @@ int ap_pipeline_get_by_name(const char *name, ap_pipeline_def *out)
     if (!name || !*name || !out) return -1;
     memset(out, 0, sizeof(*out));
 
-    sqlite3 *reg = NULL;
-    if (registry_open(&reg) < 0) return -1;
+    sqlite3 *reg = registry_get();
+    if (!reg) return -1;
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(reg,
             "SELECT id, name, definition FROM pipelines WHERE name = ?;",
             -1, &stmt, NULL) != SQLITE_OK) {
         AP_ERROR("pipeline: prepare select name: %s", sqlite3_errmsg(reg));
-        sqlite3_close(reg);
         return -1;
     }
     sqlite3_bind_text(stmt, 1, name, -1, SQLITE_STATIC);
@@ -469,7 +489,6 @@ int ap_pipeline_get_by_name(const char *name, ap_pipeline_def *out)
         load_rc = row_to_def(stmt, out);
     }
     sqlite3_finalize(stmt);
-    sqlite3_close(reg);
     return load_rc;
 }
 
@@ -477,15 +496,14 @@ int ap_pipeline_list(ap_pipeline_def *out, int max)
 {
     if (!out || max <= 0) return 0;
 
-    sqlite3 *reg = NULL;
-    if (registry_open(&reg) < 0) return -1;
+    sqlite3 *reg = registry_get();
+    if (!reg) return -1;
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(reg,
             "SELECT id, name, definition FROM pipelines ORDER BY name COLLATE NOCASE;",
             -1, &stmt, NULL) != SQLITE_OK) {
         AP_ERROR("pipeline: prepare list: %s", sqlite3_errmsg(reg));
-        sqlite3_close(reg);
         return -1;
     }
     int n = 0;
@@ -493,7 +511,6 @@ int ap_pipeline_list(ap_pipeline_def *out, int max)
         if (row_to_def(stmt, &out[n]) == 0) n++;
     }
     sqlite3_finalize(stmt);
-    sqlite3_close(reg);
     return n;
 }
 
@@ -506,15 +523,14 @@ int ap_pipeline_create(const char *name, const ap_edit_stack *stack,
     size_t toml_len = 0;
     if (stack_to_toml_string(stack, &toml_buf, &toml_len) != 0) return -1;
 
-    sqlite3 *reg = NULL;
-    if (registry_open(&reg) < 0) { free(toml_buf); return -1; }
+    sqlite3 *reg = registry_get();
+    if (!reg) { free(toml_buf); return -1; }
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(reg,
             "INSERT INTO pipelines(name, definition) VALUES (?, ?);",
             -1, &stmt, NULL) != SQLITE_OK) {
         AP_ERROR("pipeline: prepare insert: %s", sqlite3_errmsg(reg));
-        sqlite3_close(reg);
         free(toml_buf);
         return -1;
     }
@@ -525,12 +541,10 @@ int ap_pipeline_create(const char *name, const ap_edit_stack *stack,
     sqlite3_finalize(stmt);
     if (rc != SQLITE_DONE) {
         AP_ERROR("pipeline: insert step: %s", sqlite3_errstr(rc));
-        sqlite3_close(reg);
         free(toml_buf);
         return -1;
     }
     if (out_id) *out_id = sqlite3_last_insert_rowid(reg);
-    sqlite3_close(reg);
     free(toml_buf);
     return 0;
 }
@@ -541,16 +555,16 @@ int ap_pipeline_update(int64_t id, const char *name,
     if (id <= 0) return -1;
     if (!name && !stack) return 0;  // nothing to change
 
-    sqlite3 *reg = NULL;
-    if (registry_open(&reg) < 0) return -1;
+    sqlite3 *reg = registry_get();
+    if (!reg) return -1;
 
     // Refuse to mutate the seeded default pipeline. The default
     // reflects the current build's baseline and gets re-seeded on
-    // every library open; letting the UI overwrite or rename it would
-    // either lose the user's changes on the next open or strand the
-    // library without a sensible default. Users wanting a custom
-    // baseline duplicate the default and set the copy as the library
-    // default via the pipelines panel.
+    // every run's first registry access; letting the UI overwrite or
+    // rename it would either lose the user's changes on the next run
+    // or strand the library without a sensible default. Users wanting
+    // a custom baseline duplicate the default and set the copy as the
+    // library default via the pipelines panel.
     sqlite3_stmt *guard = NULL;
     if (sqlite3_prepare_v2(reg,
             "SELECT 1 FROM pipelines WHERE id = ? AND name = ?;",
@@ -561,7 +575,6 @@ int ap_pipeline_update(int64_t id, const char *name,
         sqlite3_finalize(guard);
         if (is_default) {
             AP_WARN("pipeline: refusing to modify the default pipeline");
-            sqlite3_close(reg);
             return -1;
         }
     }
@@ -570,7 +583,6 @@ int ap_pipeline_update(int64_t id, const char *name,
     size_t toml_len = 0;
     if (stack) {
         if (stack_to_toml_string(stack, &toml_buf, &toml_len) != 0) {
-            sqlite3_close(reg);
             return -1;
         }
     }
@@ -588,7 +600,6 @@ int ap_pipeline_update(int64_t id, const char *name,
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(reg, sql, -1, &stmt, NULL) != SQLITE_OK) {
         AP_ERROR("pipeline: prepare update: %s", sqlite3_errmsg(reg));
-        sqlite3_close(reg);
         free(toml_buf);
         return -1;
     }
@@ -599,7 +610,6 @@ int ap_pipeline_update(int64_t id, const char *name,
 
     int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
-    sqlite3_close(reg);
     free(toml_buf);
     if (rc != SQLITE_DONE) {
         AP_ERROR("pipeline: update step: %s", sqlite3_errstr(rc));
@@ -612,8 +622,8 @@ int ap_pipeline_delete(int64_t id)
 {
     if (id <= 0) return -1;
 
-    sqlite3 *reg = NULL;
-    if (registry_open(&reg) < 0) return -1;
+    sqlite3 *reg = registry_get();
+    if (!reg) return -1;
 
     // The default pipeline is protected: it's the user-invisible
     // seed of every fresh photo's stack.
@@ -627,7 +637,6 @@ int ap_pipeline_delete(int64_t id)
         sqlite3_finalize(guard);
         if (is_default) {
             AP_WARN("pipeline: refusing to delete the default pipeline");
-            sqlite3_close(reg);
             return -1;
         }
     }
@@ -637,13 +646,11 @@ int ap_pipeline_delete(int64_t id)
             "DELETE FROM pipelines WHERE id = ?;",
             -1, &stmt, NULL) != SQLITE_OK) {
         AP_ERROR("pipeline: prepare delete: %s", sqlite3_errmsg(reg));
-        sqlite3_close(reg);
         return -1;
     }
     sqlite3_bind_int64(stmt, 1, id);
     int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
-    sqlite3_close(reg);
     if (rc != SQLITE_DONE) {
         AP_ERROR("pipeline: delete step: %s", sqlite3_errstr(rc));
         return -1;
@@ -696,14 +703,13 @@ int ap_pipeline_apply_default_to_stack(ap_edit_stack *out)
 int ap_settings_get(const char *key, char *out, size_t out_len)
 {
     if (!key || !out || out_len == 0) return -1;
-    sqlite3 *reg = NULL;
-    if (registry_open(&reg) < 0) return -1;
+    sqlite3 *reg = registry_get();
+    if (!reg) return -1;
 
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(reg, "SELECT value FROM settings WHERE key = ?;",
                            -1, &st, NULL) != SQLITE_OK) {
         AP_ERROR("settings: prepare get: %s", sqlite3_errmsg(reg));
-        sqlite3_close(reg);
         return -1;
     }
     sqlite3_bind_text(st, 1, key, -1, SQLITE_STATIC);
@@ -717,22 +723,20 @@ int ap_settings_get(const char *key, char *out, size_t out_len)
         }
     }
     sqlite3_finalize(st);
-    sqlite3_close(reg);
     return result;
 }
 
 int ap_settings_set(const char *key, const char *value)
 {
     if (!key) return -1;
-    sqlite3 *reg = NULL;
-    if (registry_open(&reg) < 0) return -1;
+    sqlite3 *reg = registry_get();
+    if (!reg) return -1;
 
     sqlite3_stmt *st = NULL;
     if (!value || !*value) {
         if (sqlite3_prepare_v2(reg, "DELETE FROM settings WHERE key = ?;",
                                -1, &st, NULL) != SQLITE_OK) {
             AP_ERROR("settings: prepare delete: %s", sqlite3_errmsg(reg));
-            sqlite3_close(reg);
             return -1;
         }
         sqlite3_bind_text(st, 1, key, -1, SQLITE_STATIC);
@@ -742,7 +746,6 @@ int ap_settings_set(const char *key, const char *value)
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
                 -1, &st, NULL) != SQLITE_OK) {
             AP_ERROR("settings: prepare upsert: %s", sqlite3_errmsg(reg));
-            sqlite3_close(reg);
             return -1;
         }
         sqlite3_bind_text(st, 1, key,   -1, SQLITE_STATIC);
@@ -750,7 +753,6 @@ int ap_settings_set(const char *key, const char *value)
     }
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
-    sqlite3_close(reg);
     if (rc != SQLITE_DONE) {
         AP_ERROR("settings: step: %s", sqlite3_errstr(rc));
         return -1;
@@ -762,8 +764,8 @@ int ap_registry_list(ap_registry_entry *out, int max)
 {
     if (!out || max <= 0) return 0;
 
-    sqlite3 *reg = NULL;
-    if (registry_open(&reg) < 0) return -1;
+    sqlite3 *reg = registry_get();
+    if (!reg) return -1;
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(reg,
@@ -771,7 +773,6 @@ int ap_registry_list(ap_registry_entry *out, int max)
             "ORDER BY created_at DESC;",
             -1, &stmt, NULL) != SQLITE_OK) {
         AP_ERROR("registry: prepare list: %s", sqlite3_errmsg(reg));
-        sqlite3_close(reg);
         return -1;
     }
 
@@ -782,7 +783,6 @@ int ap_registry_list(ap_registry_entry *out, int max)
         if (rc != SQLITE_ROW) {
             AP_ERROR("registry: list step: %s", sqlite3_errstr(rc));
             sqlite3_finalize(stmt);
-            sqlite3_close(reg);
             return -1;
         }
         const char *id   = (const char *)sqlite3_column_text(stmt, 0);
@@ -797,7 +797,6 @@ int ap_registry_list(ap_registry_entry *out, int max)
         n++;
     }
     sqlite3_finalize(stmt);
-    sqlite3_close(reg);
     return n;
 }
 
@@ -1732,8 +1731,8 @@ ap_library *ap_library_open(const char *path)
 
     // Load existing display name from the registry, if any.
     {
-        sqlite3 *reg = NULL;
-        if (registry_open(&reg) == 0) {
+        sqlite3 *reg = registry_get();
+        if (reg) {
             sqlite3_stmt *st = NULL;
             if (sqlite3_prepare_v2(reg,
                     "SELECT name FROM libraries WHERE id = ?;",
@@ -1745,7 +1744,6 @@ ap_library *ap_library_open(const char *path)
                 }
                 sqlite3_finalize(st);
             }
-            sqlite3_close(reg);
         }
     }
 
@@ -1890,15 +1888,14 @@ const char *ap_library_name(const ap_library *lib)
 int ap_library_set_name(ap_library *lib, const char *name)
 {
     if (!lib) return -1;
-    sqlite3 *reg = NULL;
-    if (registry_open(&reg) < 0) return -1;
+    sqlite3 *reg = registry_get();
+    if (!reg) return -1;
 
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(reg,
             "UPDATE libraries SET name = ? WHERE id = ?;",
             -1, &st, NULL) != SQLITE_OK) {
         AP_ERROR("registry: prepare set name: %s", sqlite3_errmsg(reg));
-        sqlite3_close(reg);
         return -1;
     }
     if (name && *name) {
@@ -1909,7 +1906,6 @@ int ap_library_set_name(ap_library *lib, const char *name)
     sqlite3_bind_text(st, 2, lib->id, -1, SQLITE_STATIC);
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
-    sqlite3_close(reg);
     if (rc != SQLITE_DONE) {
         AP_ERROR("registry: set name step: %s", sqlite3_errstr(rc));
         return -1;

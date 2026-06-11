@@ -32,6 +32,11 @@ typedef struct {
 // + schema if needed).
 int ap_registry_list(ap_registry_entry *out, int max);
 
+// Release the process-lifetime registry connection that the settings /
+// pipeline / registry helpers share. Call once at shutdown, after all
+// worker threads have stopped; any later registry access reopens it.
+void ap_registry_close(void);
+
 #define AP_PIPELINE_NAME_LEN 64
 
 // A pipeline is a named, ordered list of edit-stack entries
