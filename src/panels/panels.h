@@ -42,6 +42,15 @@ extern bool ap_panel_visible_library_metadata;
 extern bool ap_panel_visible_library_pipelines;
 extern bool ap_panel_visible_library_groups;
 
+// Generation counter for the pipeline registry as seen by panels.
+// Every pipeline mutation made through a panel (create / delete /
+// rename / overwrite) increments it; panels that cache
+// ap_pipeline_list results compare their last-seen value against it
+// so a mutation in one panel invalidates every panel's cache, even
+// while both are visible. Starts at 1 so a zero-initialised
+// last-seen value always forces the first fetch.
+extern unsigned ap_panel_pipelines_generation;
+
 #ifdef __cplusplus
 }
 #endif

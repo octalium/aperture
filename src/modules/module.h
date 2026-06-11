@@ -1,6 +1,7 @@
 #ifndef APERTURE_MODULE_H
 #define APERTURE_MODULE_H
 
+#include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -14,6 +15,14 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// Clamp a param at the pack boundary so corrupt or hand-edited sidecar
+// values can't reach a shader outside its slider range. NaN collapses
+// to `lo` via fmaxf.
+static inline float ap_clampf(float v, float lo, float hi)
+{
+    return fminf(fmaxf(v, lo), hi);
+}
 
 // Categories shape both the module's role in the pipeline graph and which
 // mode's UI hosts its controls. Adding a category is a single enum entry
@@ -303,6 +312,12 @@ extern const ap_module *const ap_module_registry[];
 
 // Lookup by name. Returns NULL if no module matches.
 const ap_module *ap_module_find(const char *name);
+
+// Enforce the documented registry contract (params_count <=
+// AP_EDIT_PARAMS_SLOTS, str_params_count <= AP_EDIT_STR_SLOTS) at
+// startup. Logs every violation, asserts in debug builds, and returns
+// 0 when the registry is valid, -1 otherwise.
+int ap_module_registry_validate(void);
 
 #ifdef __cplusplus
 }

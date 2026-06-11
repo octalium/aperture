@@ -4,10 +4,8 @@
 #include "library/library.h"
 
 #include <errno.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <time.h>
 
 #ifndef APERTURE_VERSION
 #error "APERTURE_VERSION must be defined at compile time (set via meson)"
@@ -32,7 +30,6 @@ static int open_argument(ap_app *app, const char *path)
 
 int main(int argc, char **argv)
 {
-    srand((unsigned int)time(NULL));
     AP_INFO("aperture %s", APERTURE_VERSION);
 
     ap_app *app = ap_app_create(1280, 720, "Aperture");

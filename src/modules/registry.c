@@ -1,8 +1,10 @@
 #include "module.h"
 
 #include "cimgui.h"
+#include "core/log.h"
 #include "edit/stack.h"
 
+#include <assert.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -44,6 +46,28 @@ const ap_module *const ap_module_registry[] = {
     &module_output_transfer,
     NULL,
 };
+
+int ap_module_registry_validate(void)
+{
+    int violations = 0;
+    for (const ap_module *const *p = ap_module_registry; *p; p++) {
+        const ap_module *m = *p;
+        if (m->params_count > AP_EDIT_PARAMS_SLOTS) {
+            AP_ERROR("module '%s': params_count %d exceeds "
+                     "AP_EDIT_PARAMS_SLOTS %d",
+                     m->name, m->params_count, AP_EDIT_PARAMS_SLOTS);
+            violations++;
+        }
+        if (m->str_params_count > AP_EDIT_STR_SLOTS) {
+            AP_ERROR("module '%s': str_params_count %d exceeds "
+                     "AP_EDIT_STR_SLOTS %d",
+                     m->name, m->str_params_count, AP_EDIT_STR_SLOTS);
+            violations++;
+        }
+    }
+    assert(violations == 0 && "module registry violates param slot caps");
+    return violations == 0 ? 0 : -1;
+}
 
 const ap_module *ap_module_find(const char *name)
 {

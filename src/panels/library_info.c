@@ -18,6 +18,23 @@
 static char g_name_buf[128] = {0};
 static bool g_name_editing  = false;
 
+// Cached pipeline list for the default-pipeline combo: same rationale
+// as library_pipelines.c (ap_pipeline_list hits sqlite + TOML per
+// row, and the array is ~2.6MB). Refreshes when the panel reappears
+// and whenever ap_panel_pipelines_generation moves, so a mutation in
+// the Pipelines panel is visible here while both panels are open.
+static ap_pipeline_def g_pipelines[PIPELINES_MAX];
+static int      g_pipelines_count = 0;
+static unsigned g_pipelines_gen   = 0;
+static int      g_pipelines_frame = -1;
+
+static void refresh_pipelines(void)
+{
+    g_pipelines_count = ap_pipeline_list(g_pipelines, PIPELINES_MAX);
+    if (g_pipelines_count < 0) g_pipelines_count = 0;
+    g_pipelines_gen = ap_panel_pipelines_generation;
+}
+
 static void library_info_draw(ap_app *app)
 {
     if (!app) return;
@@ -78,8 +95,14 @@ static void library_info_draw(ap_app *app)
 
     igText("Default pipeline:");
     int64_t def_id = ap_library_default_pipeline_id(lib);
-    ap_pipeline_def pipelines[PIPELINES_MAX];
-    int np = ap_pipeline_list(pipelines, PIPELINES_MAX);
+    int frame = igGetFrameCount();
+    if (g_pipelines_gen != ap_panel_pipelines_generation
+        || frame - g_pipelines_frame > 1) {
+        refresh_pipelines();
+    }
+    g_pipelines_frame = frame;
+    const ap_pipeline_def *pipelines = g_pipelines;
+    int np = g_pipelines_count;
 
     const char *def_name = "(none)";
     int         def_idx  = -1;

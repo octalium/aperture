@@ -30,8 +30,12 @@ static int denoise_pack_push(const ap_module *self,
     (void)str_params;
     (void)meta;
     denoise_push_t *pc = push_out;
-    pc->strength = params ? params[SLOT_STRENGTH] : 0.0f;
-    pc->radius   = params ? params[SLOT_RADIUS]   : 1.0f;
+    // clamp at the pack boundary: a NaN strength would slip past the
+    // shader's <= disable check and int(NaN) for the radius is undefined.
+    pc->strength = ap_clampf(params ? params[SLOT_STRENGTH] : 0.0f,
+                             0.0f, 0.20f);
+    pc->radius   = ap_clampf(params ? params[SLOT_RADIUS] : 1.0f,
+                             1.0f, 4.0f);
     return 0;
 }
 

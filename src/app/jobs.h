@@ -87,10 +87,12 @@ typedef struct import_job {
 
 // Which worker-safe sidecar op a selection_edit_job runs. Each maps to
 // a pure path-based ap_library_* per-item function (no GPU, no in-memory
-// library cache mutation, no shared db handle, no sqlite). PIPELINE is
+// library cache mutation, no per-library db handle). PIPELINE is
 // resolved to a concrete edit stack at submit on the main thread and
-// runs as STACK on the worker, so the worker never touches the pipeline
-// db connection.
+// runs as STACK on the worker. The only sqlite a worker can reach is
+// the shared registry connection, via the default-stack seed for photos
+// without a sidecar — safe because that handle is opened serialized
+// (FULLMUTEX, see registry_get in library.c).
 typedef enum {
     AP_SEL_EDIT_PIPELINE = 0,  // apply a pipeline to each photo's stack
     AP_SEL_EDIT_STACK,         // write a copied edit stack to each photo
@@ -199,7 +201,13 @@ int commit_selection_edit_job(ap_app *app, selection_edit_job *j,
 
 void discard_completed_item(ap_app *app, ap_work_item *it);
 void drain_all_workers(ap_app *app);
-void drain_one_completed_job(ap_app *app);
+
+// Retire completed worker items on the main thread, looping until the
+// completion queue is empty or a per-frame wall-time budget (~3ms) is
+// hit. A library-swap completion ends the drain early: it stalls the
+// GPU and invalidates the thumbnail generation, so anything still
+// queued is re-validated next frame. Call once per frame.
+void drain_completed_jobs(ap_app *app);
 void submit_pending_thumbs(ap_app *app);
 // Read back the open photo's rendered pixels and refresh its library
 // thumbnail on a worker. Resolves the library index from the photo's

@@ -29,6 +29,24 @@ static int64_t g_rename_for_id  = 0;     // which id g_rename_buf reflects
 static char    g_rename_buf[AP_PIPELINE_NAME_LEN] = {0};
 static char    g_status[256] = {0};
 
+// Cached pipeline list: ap_pipeline_list hits sqlite and TOML-parses
+// every definition, so it must not run per frame. The cache refreshes
+// when the panel reappears (wasn't drawn last frame) and whenever
+// ap_panel_pipelines_generation moves; mutations here bump the
+// generation so other caching panels (library_info) follow. Static
+// storage keeps the ~2.6MB array off the stack.
+static ap_pipeline_def g_list[PIPELINES_MAX];
+static int      g_list_count = 0;
+static unsigned g_list_gen   = 0;
+static int      g_list_frame = -1;
+
+static void refresh_list(void)
+{
+    g_list_count = ap_pipeline_list(g_list, PIPELINES_MAX);
+    if (g_list_count < 0) g_list_count = 0;
+    g_list_gen = ap_panel_pipelines_generation;
+}
+
 static void set_status(const char *fmt, ...)
 {
     va_list ap;
@@ -63,9 +81,14 @@ static void library_pipelines_draw(ap_app *app)
         return;
     }
 
-    ap_pipeline_def list[PIPELINES_MAX];
-    int n = ap_pipeline_list(list, PIPELINES_MAX);
-    if (n < 0) n = 0;
+    int frame = igGetFrameCount();
+    if (g_list_gen != ap_panel_pipelines_generation
+        || frame - g_list_frame > 1) {
+        refresh_list();
+    }
+    g_list_frame = frame;
+    const ap_pipeline_def *list = g_list;
+    int n = g_list_count;
 
     int64_t lib_default = ap_library_default_pipeline_id(lib);
 
@@ -158,6 +181,7 @@ static void library_pipelines_draw(ap_app *app)
             if (ap_pipeline_create(new_name, &def.stack, &new_id) == 0) {
                 g_selected_id = new_id;
                 g_rename_for_id = 0;  // force re-sync on next frame
+                ap_panel_pipelines_generation++;
                 set_status("Duplicated as \"%s\".", new_name);
             } else {
                 set_status("Duplicate failed (name collision?).");
@@ -173,6 +197,7 @@ static void library_pipelines_draw(ap_app *app)
             set_status("Deleted.");
             g_selected_id = 0;
             g_rename_for_id = 0;
+            ap_panel_pipelines_generation++;
         } else {
             set_status("Cannot delete (default protected).");
         }
@@ -193,6 +218,7 @@ static void library_pipelines_draw(ap_app *app)
             if (ap_pipeline_update(g_selected_id, g_rename_buf, NULL) == 0) {
                 set_status("Renamed to \"%s\".", g_rename_buf);
                 g_rename_for_id = 0;
+                ap_panel_pipelines_generation++;
             } else {
                 set_status("Rename failed (name collision?).");
             }

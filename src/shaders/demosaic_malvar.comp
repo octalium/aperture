@@ -19,31 +19,8 @@ layout(push_constant) uniform PushConstants {
     uvec4 sensor_size_flip;   // .xy = sensor (W, H), .z = flip code
 } pc;
 
-uint channel_at(ivec2 p)
-{
-    return pc.channel_map[(p.y & 1) * 2 + (p.x & 1)];
-}
-
-// Black-level-normalized Bayer sample at a sensor coordinate.
-float bayer(ivec2 p, ivec2 size)
-{
-    p = clamp(p, ivec2(0), size - 1);
-    uint  ch  = channel_at(p);
-    float raw = imageLoad(in_image, p).r * 65535.0;
-    return (raw - pc.black_level[ch]) / max(pc.white_minus_black[ch], 1.0);
-}
-
-ivec2 sensor_coord_of(ivec2 out_coord, ivec2 sensor_size, uint flip)
-{
-    if (flip == 3u) {
-        return sensor_size - ivec2(1) - out_coord;
-    } else if (flip == 5u) {
-        return ivec2(sensor_size.x - 1 - out_coord.y, out_coord.x);
-    } else if (flip == 6u) {
-        return ivec2(out_coord.y, sensor_size.y - 1 - out_coord.x);
-    }
-    return out_coord;
-}
+#include "bayer_common.glsl"
+#include "sensor_coord.glsl"
 
 // M is the 5x5 normalized window, M[row][col], center M[2][2].
 // Each mask sums to 8.
@@ -100,6 +77,10 @@ void main()
     ivec2 center      = sensor_coord_of(out_coord, sensor_size, flip);
 
     float M[5][5];
+    // each tap is normalized self-consistently by bayer(); at clamped
+    // borders an off-centre tap can still carry a different channel
+    // than its mask position assumes — inherent to clamp extension, a
+    // parity-preserving mirror would be needed to remove it.
     for (int dy = -2; dy <= 2; dy++) {
         for (int dx = -2; dx <= 2; dx++) {
             M[dy + 2][dx + 2] = bayer(center + ivec2(dx, dy), sensor_size);

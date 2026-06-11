@@ -2,9 +2,11 @@
 
 #include "grain_comp_spv.h"
 
+#include "core/random.h"
+
 #include "cimgui.h"
 
-#include <stdlib.h>
+#include <stdint.h>
 
 typedef struct {
     float amount;
@@ -33,19 +35,23 @@ static int grain_pack_push(const ap_module *self,
     (void)str_params;
     (void)meta;
     grain_push_t *pc = push_out;
-    pc->amount   = params ? params[SLOT_AMOUNT] : 0.0f;
-    pc->size     = params ? params[SLOT_SIZE]   : 1.0f;
-    pc->mid_bias = params ? params[SLOT_BIAS]   : 0.8f;
-    pc->seed     = params ? params[SLOT_SEED]   : 0.137f;
+    pc->amount   = ap_clampf(params ? params[SLOT_AMOUNT] : 0.0f, 0.0f, 0.5f);
+    pc->size     = ap_clampf(params ? params[SLOT_SIZE]   : 1.0f, 1.0f, 8.0f);
+    pc->mid_bias = ap_clampf(params ? params[SLOT_BIAS]   : 0.8f, 0.0f, 1.0f);
+    pc->seed     = ap_clampf(params ? params[SLOT_SEED] : 0.137f, 0.0f, 10.0f);
     return 0;
 }
 
 static void grain_init_instance(float *params)
 {
-    // Randomise the seed so two Grain edits on the same or different
-    // photos don't produce identical patterns. rand() seeded by the C
-    // runtime is sufficient — grain seed is not a security value.
-    params[SLOT_SEED] = (float)(rand() % 100000) / 10000.0f;
+    // randomise the seed so two grain edits don't produce identical
+    // patterns. system entropy keeps the derivation independent of
+    // global prng state (no srand ordering concerns). on failure the
+    // entry keeps the copied default seed; ap_random_bytes logs it.
+    uint32_t r;
+    if (ap_random_bytes(&r, sizeof(r)) == 0) {
+        params[SLOT_SEED] = (float)(r % 100000u) / 10000.0f;
+    }
 }
 
 static void grain_render(const ap_module *self, float *params,
