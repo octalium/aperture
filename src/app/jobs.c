@@ -548,7 +548,16 @@ void discard_completed_item(ap_app *app, ap_work_item *it)
         ap_raw_image_free(&j->raw);
         // Coordinator decodes own no status bar (the coordinator's own
         // drain reclaims them); a generic drain here still frees the raw.
-        if (!j->from_coord) ap_status_progress_finish(j->status_id, 0);
+        if (!j->from_coord) {
+            ap_status_progress_finish(j->status_id, 0);
+            // Discarding the open the app is still waiting on must also
+            // clear the loading gate, or photo/library input stays
+            // wedged for the session (no completion will ever arrive).
+            if (j->gen == app->photo_load_gen && app->photo_loading) {
+                app->photo_loading   = false;
+                app->loading_path[0] = '\0';
+            }
+        }
         free(j);
     } else if (it->run == export_job_run) {
         export_job *j = (export_job *)it;

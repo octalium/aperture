@@ -2104,10 +2104,32 @@ void delete_edit_photo(ap_app *app)
 {
     if (!app->library || !app->photo) return;
 
-    int idx = app->photo_library_idx;
+    // The synchronous remove below renumbers the photo list on the live
+    // cache: it must not overlap a selection-edit batch (its snapshotted
+    // indices would reconcile onto the wrong photos) or a library job
+    // (the imminent cache swap would discard the removal). Reject with
+    // the standard busy toast rather than drain — a full worker drain
+    // would abort unrelated batch exports (see handle_library_complete).
+    if (app->library_job_inflight || app->selection_edit_inflight) {
+        ap_status_notify(AP_STATUS_INFO, "A library task is already running.");
+        return;
+    }
+
+    // Resolve the index from the open photo's path, not
+    // photo_library_idx: an in-flight navigation moves the index to the
+    // target photo before the async open lands, and the user is asking
+    // to delete the photo on screen.
+    int idx = library_index_for_path(app, ap_photo_path(app->photo));
     if (idx < 0) return;
 
-    drain_all_workers(app);
+    // Discard a pending async open by generation bump (mirrors
+    // ap_app_close_photo) instead of draining the pool; clearing
+    // photo_loading here is what un-gates photo/library input again.
+    if (app->photo_loading) {
+        app->photo_load_gen++;
+        app->photo_loading = false;
+        app->loading_path[0] = '\0';
+    }
     ap_app_wait_idle(app);
 
     // Release the photo before removal so its files are not open.
@@ -2121,6 +2143,11 @@ void delete_edit_photo(ap_app *app)
         rebuild_grid_map(app);
         return;
     }
+
+    // The remove renumbered the photo list; in-flight thumb completions
+    // carry pre-remove indices, so mark them stale rather than let them
+    // land on the wrong photo.
+    app->thumb_load_gen++;
 
     int n_after = ap_library_photo_count(app->library);
 
